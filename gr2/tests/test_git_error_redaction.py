@@ -83,10 +83,16 @@ def test_git_error_keeps_the_host_of_a_userinfo_remote():
     assert _error("ls-remote", USERINFO) == "git ls-remote https://127.0.0.1:9/a.git: fatal: unable to access"
 
 
-@pytest.mark.parametrize("args", [("ls-remote", "https://127.0.0.1:9/a.git"), ("ls-remote", "git@host:org/a.git"),
-                                  ("rev-parse", "refs/heads/a#b"), ("cat-file", "HEAD@{1}"), ("fetch", "origin")])
-def test_git_error_shows_a_plain_argument_as_written(args):
-    assert _error(*args) == f"git {' '.join(args)}: fatal: unable to access"
+@pytest.mark.parametrize("args, shown", [
+    (("ls-remote", "https://127.0.0.1:9/a.git"), "ls-remote https://127.0.0.1:9/a.git"),
+    (("ls-remote", "git@host:org/a.git"), "ls-remote git@host:org/a.git"),
+    (("rev-parse", "refs/heads/a#b"), "rev-parse 'refs/heads/a#b'"),
+    (("cat-file", "HEAD@{1}"), "cat-file 'HEAD@{1}'"),
+    (("fetch", "origin"), "fetch origin"),
+    (("rev-parse", "refs/heads/x"), "rev-parse refs/heads/x"),
+])
+def test_git_error_shows_a_plain_argument_as_a_shell_would_read_it(args, shown):
+    assert _error(*args) == f"git {shown}: fatal: unable to access"
 
 
 def _cli_merge(w):

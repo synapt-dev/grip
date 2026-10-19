@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import contextvars
+import copy
 import dataclasses
 import fcntl
 import json
@@ -582,11 +584,44 @@ def find_unit_spec(workspace_root: Path, owner_unit: str) -> dict:
     raise SystemExit(f"unit not found in workspace spec: {owner_unit}")
 
 
+# One command's lane reads, shared by its call path: None outside a `lane_read_scope`, so nothing is
+# kept between commands (the test suite runs many in one process).
+_lane_reads: contextvars.ContextVar[dict | None] = contextvars.ContextVar("gr2_lane_reads", default=None)
+
+
+@contextlib.contextmanager
+def lane_read_scope():
+    """Read each lane record and native member set once for the enclosed command.
+
+    A lane record is keyed by its text, so a rewrite inside the scope is read fresh; native members are
+    keyed by the lane root alone, so a scope must not move a native lane root's HEAD."""
+    if _lane_reads.get() is not None:
+        yield
+        return
+    token = _lane_reads.set({})
+    try:
+        yield
+    finally:
+        _lane_reads.reset(token)
+
+
 def load_lane_doc(workspace_root: Path, owner_unit: str, lane_name: str) -> dict:
     path = lane_file(workspace_root, owner_unit, lane_name)
     if not path.exists():
         raise SystemExit(f"lane not found: {owner_unit}/{lane_name}")
-    doc = tomllib.loads(path.read_text())
+    text = path.read_text()
+    reads = _lane_reads.get()
+    key = ("doc", str(path), text)
+    if reads is not None and key in reads:
+        return copy.deepcopy(reads[key])
+    doc = _load_lane_doc_text(workspace_root, owner_unit, lane_name, text)
+    if reads is not None:
+        reads[key] = copy.deepcopy(doc)
+    return doc
+
+
+def _load_lane_doc_text(workspace_root: Path, owner_unit: str, lane_name: str, text: str) -> dict:
+    doc = tomllib.loads(text)
     members = native_lane_members(workspace_root, doc)
     if members is not None:
         doc["repos"] = [m["name"] for m in members]
@@ -609,6 +644,17 @@ def native_lane_members(workspace_root: Path, doc: dict) -> list[dict[str, str]]
     root = canonicalize_workspace_path(workspace_root, doc["checkout_root"], field_name="lane.checkout_root")
     if not (root / ".git").exists():
         return None
+    reads = _lane_reads.get()
+    key = ("native", str(root))
+    if reads is not None and key in reads:
+        return copy.deepcopy(reads[key])
+    members = _read_native_lane_members(root)
+    if reads is not None:
+        reads[key] = copy.deepcopy(members)
+    return members
+
+
+def _read_native_lane_members(root: Path) -> list[dict[str, str]]:
     from gr2.python_cli import grip_cli
 
     top = gitops.git(root, "rev-parse", "--show-toplevel")

@@ -3227,7 +3227,11 @@ def _native_store_materialize(root: Path) -> list[dict[str, str]]:
             # means an unreachable or unauthenticated origin, and only an answered, empty ls-remote says "gone".
             if _store_git(path, "cat-file", "-e", f"{member['pin']}^{{commit}}", check=False).returncode:
                 asked = _store_git(path, "ls-remote", "origin", covered_by, check=False)
-                if asked.returncode == 0 and not asked.stdout.strip():
+                try:
+                    vanished = asked.returncode == 0 and gitops.ls_remote_oid(asked.stdout, covered_by) is None
+                except ValueError:
+                    vanished = False
+                if vanished:
                     raise NativeStoreRefusal(
                         f"full_mode_covering_ref_vanished: {member['name']} covering ref {covered_by} is gone from origin "
                         f"(a merged branch is usually deleted) and pin {member['pin']} is not in the clone; "

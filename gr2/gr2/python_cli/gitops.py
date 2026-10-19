@@ -5,6 +5,7 @@ import re
 import subprocess
 import unicodedata
 from pathlib import Path
+from urllib.parse import quote, unquote, urlsplit
 
 from . import next_steps
 
@@ -153,9 +154,94 @@ DEFAULT_TIMEOUT = 600.0
 class GitError(RuntimeError):
     """A git command exited non-zero. Carries the return code and git's own message."""
 
-    def __init__(self, args: tuple[str, ...], returncode: int, stderr: str):
+    def __init__(self, args: tuple[str, ...], returncode: int, stderr: str, secrets: frozenset[str] = frozenset()):
         self.git_args, self.returncode, self.stderr = args, returncode, stderr
-        super().__init__(f"git {' '.join(args[:2])}: {stderr}".rstrip(": "))
+        shown = [next_steps._shown(_masked(_shown_arg(arg), secrets)) for arg in args[:2]]
+        super().__init__(f"git {' '.join(shown)}: {_masked(_shown_stderr(args, stderr), secrets)}".rstrip(": "))
+
+
+_CREDENTIAL_SHOWN = "<a remote with a credential>"
+#: A credential value shorter than this is not masked, so a two-letter token does not shred ordinary words.
+_MIN_SECRET = 4
+_QUERY_PAIR = re.compile(r"""([A-Za-z0-9_.-]+)=([^&;#\s'"()<>]*)""")
+
+
+def credential_values(argv, cwd: Path | None = None) -> frozenset[str]:
+    """Every credential VALUE a git call could echo back: the userinfo password (and a non-ssh userinfo user),
+    each credential-named query value and any fragment, taken from the call's arguments and from every
+    `remote.*.url` / `remote.*.pushurl` of the repository at `cwd`, each raw, percent-decoded and re-encoded.
+    A git or server message may echo a value in a shape no pattern expects; masking the values catches it."""
+    from .grip import _CREDENTIAL_PARAMS  # lazy, as _shown_arg
+
+    texts = [str(arg) for arg in argv]
+    if cwd is not None:
+        proc = run(cwd, "config", "--get-regexp", r"^remote\..*\.(push)?url$", timeout=30)
+        texts += [line.split(" ", 1)[1] for line in proc.stdout.splitlines() if " " in line]
+    found: set[str] = set()
+    for text in texts:
+        if "://" in text:
+            try:
+                parts = urlsplit(text.split("::", 1)[-1] if "::" in text.split("://", 1)[0] else text)
+                found.add(parts.password or "")
+                if parts.scheme.lower() not in {"ssh", "git+ssh", "ssh+git"}:
+                    found.add(parts.username or "")
+            except ValueError:
+                pass
+        if "#" in text and "://" in text:
+            found.add(text.split("#", 1)[1])
+        if "?" in text:
+            for name, value in _QUERY_PAIR.findall(text.split("?", 1)[1]):
+                if name.strip().lower().replace("-", "_") in _CREDENTIAL_PARAMS:
+                    found.add(value)
+    values = {form for value in found for form in (value, unquote(value), quote(unquote(value), safe=""))}
+    return frozenset(value for value in values if len(value) >= _MIN_SECRET)
+
+
+def _masked(text: str, secrets: frozenset[str]) -> str:
+    """`text` with every known credential value replaced by the placeholder, longest first."""
+    for value in sorted(secrets, key=len, reverse=True):
+        text = text.replace(value, _CREDENTIAL_SHOWN)
+    return text
+# git's own rule for an scp-form address: a colon before the first slash (so `./a:b` stays a local path)
+_SCP_ADDRESS = re.compile(r"[^/]*:")
+
+
+def _strip_userinfo(url: str) -> str:
+    from .migration import _strip_url_userinfo  # lazy: migration imports this module's importers
+
+    return _strip_url_userinfo(url)
+
+
+def _shown_arg(arg: str) -> str:
+    """An argument as an error message may show it: a URL loses its userinfo, and a URL that still carries a
+    credential after that (a token in the query, an unparsable address) is named, not shown. An scp-form address
+    (user@host:path, which git reaches over ssh) that carries a credential is named too. Any other argument is
+    returned as written."""
+    from .grip import url_has_credentials  # lazy, as above
+
+    if "://" not in arg:
+        return _CREDENTIAL_SHOWN if _SCP_ADDRESS.match(arg) and url_has_credentials(arg) else arg
+    if not url_has_credentials(arg):
+        return arg
+    stripped = _strip_userinfo(arg)
+    return _CREDENTIAL_SHOWN if url_has_credentials(stripped) else stripped
+
+
+def _shown_stderr(args, stderr: str) -> str:
+    """git's stderr for a command run with `args`, each argument that carries a credential replaced as `_shown_arg`
+    shows it. git strips userinfo from the URLs it prints, not a credential in the query, so both forms are replaced.
+    A remote named in `args` prints the URL from git's config, so every URL in the stderr is shown as `_shown_arg`
+    shows it too. git prints an scp-form address without its `user@` (`'host:x.git?access_token=...'`), so every
+    word with a colon and no `://` is shown as `_shown_arg` shows it as well; a word with no credential stays."""
+    for arg in args:
+        if (redacted := _shown_arg(str(arg))) != str(arg):
+            stderr = stderr.replace(str(arg), redacted).replace(_strip_userinfo(str(arg)), redacted)
+    stderr = _URL_IN_TEXT.sub(lambda m: _shown_arg(m.group(0)), stderr)
+    return _SCP_IN_TEXT.sub(lambda m: m.group(0) if "://" in m.group(0) else _shown_arg(m.group(0)), stderr)
+
+
+_URL_IN_TEXT = re.compile(r"""[A-Za-z][A-Za-z0-9+.-]*://[^\s'"]+""")
+_SCP_IN_TEXT = re.compile(r"""[^\s'"/]+:[^\s'"]*""")
 
 
 # Git's global options that take their value as the next word; `--opt=value` forms are one word.
@@ -279,24 +365,25 @@ def check(proc: subprocess.CompletedProcess) -> subprocess.CompletedProcess:
     return proc
 
 
-def _raise(proc: subprocess.CompletedProcess, args: tuple[str, ...], error: type[Exception] | None) -> None:
+def _raise(proc: subprocess.CompletedProcess, args: tuple[str, ...], error: type[Exception] | None,
+           cwd: Path | None = None) -> None:
     if proc.returncode:
         err = proc.stderr.decode("utf-8", errors="replace") if isinstance(proc.stderr, bytes) else proc.stderr
-        exc = GitError(args, proc.returncode, err.strip())
+        exc = GitError(args, proc.returncode, err.strip(), credential_values([*proc.args, *args], cwd))
         raise exc if error is None else error(str(exc))
 
 
 def out(cwd: Path, *args: str, error: type[Exception] | None = None, strip: bool = True, **kw) -> str:
     """Text stdout of one git command; a non-zero exit raises GitError, or `error` when given."""
     proc = run(cwd, *args, **kw)
-    _raise(proc, args, error)
+    _raise(proc, args, error, cwd)
     return proc.stdout.strip() if strip else proc.stdout
 
 
 def out_bytes(cwd: Path, *args: str, error: type[Exception] | None = None, **kw) -> bytes:
     """Raw stdout bytes of one git command (stdin may be bytes); a non-zero exit raises like out()."""
     proc = run(cwd, *args, binary=True, **kw)
-    _raise(proc, args, error)
+    _raise(proc, args, error, cwd)
     return proc.stdout
 
 

@@ -199,9 +199,9 @@ def _refresh_tracking(repo: Path, remote: str, into: str) -> dict | None:
     if name is None:
         target = "origin" if "origin" in names else names[0]
         shown = next_steps._shown  # every value quoted whole: a refname may hold ';', so the line runs as printed
-        return {"command": f"git -C {shown(repo)} fetch --no-tags --refmap= -- {shown(remote)} "
+        return {"command": f"git -C {shown(repo)} fetch --no-tags --refmap= -- {shown(gitops._shown_arg(remote))} "
                            f"{shown(f'+refs/heads/{into}:refs/remotes/{target}/{into}')}",
-                "reason": f"no remote of this clone names {remote}"}
+                "reason": f"no remote of this clone names {gitops._shown_arg(remote)}"}
     spec = f"+refs/heads/{into}:refs/remotes/{name}/{into}"
     proc = gitops.run(repo, "fetch", "--no-tags", "-q", "--refmap=", name, spec, timeout=120)
     shown = next_steps._shown
@@ -777,9 +777,15 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
                                           f"{builds[r['key']]}:refs/heads/{into}", binary=True, timeout=120,
                                           env={**os.environ, "GIT_TRACE2_EVENT": str(trace)})
                         hook_said = _pre_push_refused(trace)
-                    out, err = (_text(b).split("\n") for b in (proc.stdout, proc.stderr))
+                    out = _text(proc.stdout).split("\n")
+                    err = gitops._shown_stderr(proc.args, _text(proc.stderr))
+                    secrets = gitops.credential_values(proc.args, repo)
+                    err = gitops._masked(err, secrets).split("\n")
                     status = [] if hook_said else _push_verdict(out, into, None if hook_said is False else m["remote"])
                     remote_said = any("[remote rejected]" in ln for ln in status)
+                    # the verdict line carries the server's reason text: masked after the test, so a short
+                    # credential cannot erase the marker
+                    status = [gitops._masked(ln, secrets) for ln in status]
                     if proc.returncode == 124:  # gitops' expiry: the push may still land after it
                         push_error, unconfirmed = f"push_unconfirmed: {_capped(chr(10).join(err).strip())}", True
                     elif remote_said:  # the remote's own words and git's verdict line, never the URL it repeats

@@ -15,6 +15,7 @@ import os
 import subprocess
 import sys
 import types
+import zlib
 from pathlib import Path
 
 import pytest
@@ -26,6 +27,41 @@ _project_root = Path(__file__).parent
 # `/private/tmp/...` on this host and the test would fire on a correct install. Measured while
 # witnessing this precondition's own second branch.
 _project_root_resolved = _project_root.resolve()
+
+
+# CI runs the suite in N shards: GR2_TEST_SHARD="i/n" (1 <= i <= n) keeps the test FILES whose path hashes to
+# shard i, so a file never splits and its module fixtures stay whole. The hash is crc32 of the file's path as
+# pytest names it (relative to the rootdir), the same on every machine, and the n shards partition the suite:
+# tests/test_ci_shards.py collects each shard and checks every test lands in exactly one.
+# The setting is read once at configure time and REMOVED from the environment, so a test that runs pytest (or
+# anything else) in a child process does not shard the child's run too.
+SHARD_ENV = "GR2_TEST_SHARD"
+_SHARD_KEY = pytest.StashKey["tuple[int, int] | None"]()
+
+
+def shard_of(path: str, count: int) -> int:
+    """The 1-based shard of a test file's rootdir-relative path among `count` shards."""
+    return zlib.crc32(path.encode("utf-8")) % count + 1
+
+
+def _shard_setting(value: str) -> tuple[int, int]:
+    index, sep, count = value.partition("/")
+    if not (sep and index.isdigit() and count.isdigit() and 1 <= int(index) <= int(count)):
+        raise pytest.UsageError(f'{SHARD_ENV}={value!r}: expected "i/n" with 1 <= i <= n, e.g. "2/6"')
+    return int(index), int(count)
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    setting = config.stash.get(_SHARD_KEY, None)
+    if setting is None:
+        return
+    index, count = setting
+    keep, drop = [], []
+    for item in items:
+        (keep if shard_of(item.nodeid.split("::", 1)[0], count) == index else drop).append(item)
+    if drop:
+        config.hook.pytest_deselected(items=drop)
+    items[:] = keep
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -74,6 +110,9 @@ def pytest_configure(config: pytest.Config) -> None:
     bytes would pass here. The fix belongs in that helper -- give it the same explicit
     ``PYTHONPATH`` its two siblings carry -- and is deliberately not in this change.
     """
+    value = os.environ.pop(SHARD_ENV, "")
+    config.stash[_SHARD_KEY] = _shard_setting(value) if value else None
+
     probe = "import gr2.python_cli.app as m; print(m.__file__)"
     env = {**os.environ, "PYTHONPATH": str(_project_root)}
     try:

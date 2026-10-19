@@ -61,7 +61,8 @@ class _Store:
         return self
 
     def __exit__(self, *exc) -> None:
-        self.close()
+        # hand the raise to the reader: on a raise mid-body, close() would wait on git blocked writing
+        self._reader.__exit__(*exc)
 
 
 def _size(repo: Path) -> int:

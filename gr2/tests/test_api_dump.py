@@ -498,11 +498,11 @@ def test_api_dump_carries_every_store_exit_code() -> None:
         f"  missing: {sorted(want - got)}\n"
         f"  extra:   {sorted(got - want)}"
     )
-    # The store group is still moving, so its exit table is may-change with its
-    # verbs rather than stable on its own. Marking it stable here would promise
-    # the codes while the verbs that return them are not yet promised.
+    # The exit table travels with the store verbs' stability. With the help-surface
+    # cut, the store verbs `gr2 --help` shows (init, status, check, push, materialize)
+    # are stable for 2.x, and the codes they return are promised with them.
     store_markers = {marker for kind, label, marker in rows if kind == "exit" and label.startswith("store ")}
-    assert store_markers == {"may-change"}, (
+    assert store_markers == {"stable"}, (
         f"the store exit table must travel with the store verbs' stability, "
         f"found {sorted(store_markers)}"
     )

@@ -3897,7 +3897,7 @@ def grip_materialize_cmd(
         typer.echo(line, err=True)
 
 
-@grip_app.command("migrate")
+@grip_app.command("migrate", hidden=True)
 def grip_migrate_cmd(
     dry_run: bool = typer.Option(False, "--dry-run", help="Print the alpha-to-native plan without writing"),
     root: Optional[Path] = STORE_ROOT_OPTION,
@@ -3926,7 +3926,7 @@ def grip_migrate_cmd(
         typer.echo(f"Migrated alpha {payload['alpha_head']} to root {payload['root_commit']}")
 
 
-@grip_app.command("migrate-reviews")
+@grip_app.command("migrate-reviews", hidden=True)
 def grip_migrate_reviews_cmd(
     root: Optional[Path] = typer.Argument(None, help="The native store root whose pinned reviews to migrate"),
     root_option: Optional[Path] = STORE_ROOT_OPTION,
@@ -3999,7 +3999,7 @@ def grip_snapshot_cmd(
         _echo_layered(root, layered)
 
 
-@grip_app.command("log")
+@grip_app.command("log", hidden=True)
 def grip_log_cmd(
     max_count: int = typer.Option(10, "--max-count", "-n", help="Max entries to show"),
     root: Optional[Path] = STORE_ROOT_OPTION,
@@ -4036,7 +4036,7 @@ def grip_log_cmd(
         typer.echo(f"{entry['commit']} {entry['message']}")
 
 
-@grip_app.command("diff")
+@grip_app.command("diff", hidden=True)
 def grip_diff_cmd(
     ref_a: str = typer.Argument(None, help="First root commit (default: HEAD~1)"),
     ref_b: str = typer.Argument(None, help="Second root commit (default: HEAD)"),
@@ -4071,7 +4071,7 @@ def grip_diff_cmd(
             typer.echo(f"{marker} {member['name']} {member['old_pin']} -> {member['new_pin']}")
 
 
-@grip_app.command("checkout")
+@grip_app.command("checkout", hidden=True)
 def grip_checkout_cmd(
     ref: str = typer.Argument(..., help="Root commit to materialize the members at"),
     root: Optional[Path] = STORE_ROOT_OPTION,

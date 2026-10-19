@@ -5,6 +5,8 @@ pair to ONE command object, the same options, and the same output on the same in
 """
 from __future__ import annotations
 
+import re
+
 import pytest
 import typer
 from typer.testing import CliRunner
@@ -51,7 +53,11 @@ def test_name_and_alias_give_the_same_output_on_the_same_input(name, alias, tmp_
 
 
 def test_review_help_lists_each_name_with_its_alias():
-    result = runner.invoke(app, ["review", "--help"])
-    assert result.exit_code == 0, result.output
+    # Since the help surface split the aliases (and `repin`) are plumbing: `review --help`
+    # lists pin and stamp, and `gr2 help -a` lists each alias as "Alias of `review <name>`".
+    review_help = runner.invoke(app, ["review", "--help"])
+    help_all = runner.invoke(app, ["help", "-a"])
+    assert review_help.exit_code == 0 and help_all.exit_code == 0, (review_help.output, help_all.output)
     for name, alias in PAIRS:
-        assert name in result.output and f"Alias of `review {name}`" in result.output
+        shown = name in review_help.output or f"gr2 review {name} " in help_all.output
+        assert shown and re.search(rf"gr2 review {alias} +Alias of `review {name}`", help_all.output), (name, alias)

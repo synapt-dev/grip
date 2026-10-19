@@ -244,7 +244,7 @@ jobs:
         run: GR=./target/debug/gr ./tests/spawn_graceful_shutdown.sh
 
   gr2_python:
-    name: gr2 Python Tests (${{ matrix.python-version }})
+    name: gr2 Python Tests (${{ matrix.python-version }}, ${{ matrix.shard }}/6)
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -254,6 +254,12 @@ jobs:
         # or a floor regression can pass CI while silently no longer installing
         # for real 3.11 users (see grip#788's own class of masked failure).
         python-version: ["3.11", "3.13"]
+        # The suite runs in six shards per Python, split by test FILE (gr2/conftest.py, GR2_TEST_SHARD):
+        # one unsharded job took 38-55 min, and six bring the slowest to about 11 min of test time
+        # (measured from per-file log stamps of a green dev run). tests/test_ci_shards.py checks the
+        # shards partition the suite. The required check is the CI aggregate below, so the job names
+        # can carry the shard.
+        shard: [1, 2, 3, 4, 5, 6]
     steps:
       - uses: actions/checkout@v4
 
@@ -271,6 +277,8 @@ jobs:
 
       - name: Run gr2 test suite
         working-directory: gr2
+        env:
+          GR2_TEST_SHARD: ${{ matrix.shard }}/6
         run: python -m pytest
 
       # Runs AFTER pytest on purpose: pytest populates __pycache__, so the
@@ -288,6 +296,7 @@ jobs:
       # before nothing in particular: it builds its own fixture in a temp dir, so
       # it neither needs pytest nor a populated __pycache__ in this tree.
       - name: No source-less .pyc (witness)
+        if: matrix.shard == 1
         run: ./scripts/check-no-orphan-pyc-selftest.sh
 
       # REPORTS, CANNOT FAIL THE BUILD. gr2 has shipped a committed [tool.ruff]
@@ -348,7 +357,7 @@ jobs:
       # **CI green does not mean this report ran; the NO REPORT line is what says it
       # did not.**
       - name: ruff report (not gated)
-        if: matrix.python-version == '3.11'
+        if: matrix.python-version == '3.11' && matrix.shard == 1
         working-directory: gr2
         continue-on-error: true
         run: |

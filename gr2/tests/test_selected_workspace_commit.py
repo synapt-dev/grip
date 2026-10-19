@@ -226,6 +226,29 @@ def test_lane_commit_reads_native_members_once_per_command(selected_workspace, m
         assert len(calls) == n + 1
 
 
+
+def test_lane_push_reads_native_members_once_per_command(selected_workspace, monkeypatch, tmp_path):
+    from gr2.python_cli.push import push_lane
+    ws, remote, commits, rows = selected_workspace
+    root = _commit_paths_lane(ws, commits, rows, 'pushonce')
+    for member in rows[1]:
+        # One remote per member: two members pushing one branch to one remote would reject the second.
+        own = tmp_path/('push-'+member['name']+'.git')
+        _git(tmp_path,'clone','-q','--bare',str(remote),str(own))
+        _git(root/member['path'],'remote','set-url','origin',str(own))
+    calls = []
+    real = grip_cli._native_members
+    monkeypatch.setattr(grip_cli, '_native_members', lambda *a, **k: calls.append(a) or real(*a, **k))
+    for n, word in enumerate(['one', 'two']):
+        for member in rows[1]:
+            path = root/member['path']
+            (path/'payload').write_text(word+' '+member['name'])
+            _git(path,'commit','-qam',word)
+        pushed = push_lane(ws, 'a', 'pushonce', set_upstream=True)
+        assert sorted(r.status for r in pushed) == ['pushed', 'pushed'], pushed
+        # Once in each command: a read kept from the first command would make the second count zero.
+        assert len(calls) == n + 1
+
 def test_lane_read_scope_rereads_a_rewritten_lane_record(selected_workspace):
     ws, _, commits, rows = selected_workspace
     _commit_paths_lane(ws, commits, rows, 'rewrite')

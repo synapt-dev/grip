@@ -4898,6 +4898,12 @@ def _review_refusal(exc: BaseException) -> tuple[str, str, list[str]]:
             extra = [next_steps.head_behind_remote_branch(str(exc.observed).split()[-1])]
         elif exc.refusal == "remote_branch_diverged":
             extra = [next_steps.remote_branch_diverged()]
+        elif exc.refusal == "at_base_not_ancestor":  # expected is the base, observed the ref's live tip
+            extra = [next_steps.at_base_not_ancestor(str(exc.observed))]
+        elif exc.refusal == "at_base_unreachable":  # observed is the remote
+            extra = [next_steps.at_base_unreachable()]
+        elif exc.refusal == "at_base_tip_unfetchable":  # expected is the ref's tip, observed the remote
+            extra = [next_steps.at_base_tip_unfetchable()]
         if exc.refusal == "unresolved_merge":  # a member and its unmerged paths, not two values that disagreed
             return exc.refusal, f"{exc.expected}: {exc.observed}", extra
         return exc.refusal, f"expected {exc.expected!r}, observed {exc.observed!r}", extra
@@ -5019,6 +5025,7 @@ def review_bind(
     path: Optional[str] = typer.Option(None, "--path", help="Workspace path for the row (defaults to --repo)"),
     source: Optional[Path] = typer.Option(None, "--source", help="Author clone holding the pre-push head; required to carry the range so `review open` can reconstruct"),
     from_range: Optional[Path] = typer.Option(None, "--from-range", help="A frozen range.patch (freeze-public-range.sh output). Carries the range so `review open` reconstructs, deriving the head-tree by applying it over --base in a throwaway clone — NO author clone that holds the head is needed. Exclusive with --source."),
+    at_base: bool = typer.Option(False, "--at-base", help="With --from-range: pin at --base, the dev the range was cut on, even when --ref has moved past it; read-only (nothing is rebased) and recorded in the pin as at-base"),
     title: str = typer.Option("", "--title", help="Platform title text (NORM-hashed into the object)"),
     body: str = typer.Option("", "--body", help="Platform body text (NORM-hashed into the object)"),
     rows_json: Optional[Path] = typer.Option(None, "--rows-json", help="A JSON file with a list of row objects (key/remote/base/head, optional path/ref/title/body; source or range is optional on a single row but required on every row when the file holds more than one); pins ALL rows into ONE gr commit. Exclusive with the single-row flags."),
@@ -5037,6 +5044,8 @@ def review_bind(
     """
     single = any(v is not None for v in (key, remote, base, head))
     nothing_given = rows_json is None and not single and source is None and from_range is None
+    if at_base and from_range is None:
+        raise typer.BadParameter("--at-base requires --from-range")
     if members is not None and not nothing_given:
         raise typer.BadParameter("--members only narrows the members chosen when no row is given")
     if nothing_given:
@@ -5109,6 +5118,8 @@ def review_bind(
                 row["range_patch"] = from_range.read_text()
             except OSError as exc:
                 raise typer.BadParameter(f"--from-range {from_range}: {exc.strerror or exc}")
+            if at_base:
+                row["at_base"] = True
         rows = [row]
     if len(rows) > 1:
         # A review over several members merges only on a `set` record, and `check set` needs every member's objects;

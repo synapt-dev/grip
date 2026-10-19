@@ -11,6 +11,10 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Added
 
+- **`gr2 review pin --from-range --at-base`.** A frozen range cut on an older dev
+  pins at the base it was cut on, read-only (nothing is rebased), and the pin names
+  that base as at-base (`review show` reports `at_base`). Without the flag a moved
+  ref still refuses with `base_not_live_head`.
 - **`gr spawn up` interactive fallback.** When tmux is not installed (native
   Windows, a bare container) or `--interactive` is passed, one named agent runs
   in the foreground of the current terminal with the same command, cwd, env, and

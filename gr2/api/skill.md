@@ -248,6 +248,7 @@ Pin a review gr commit for one or more repository rows; print ``gr:<commit>``.
 - `--path`: Workspace path for the row (defaults to --repo)
 - `--source`: Author clone holding the pre-push head; required to carry the range so `review open` can reconstruct
 - `--from-range`: A frozen range.patch (freeze-public-range.sh output). Carries the range so `review open` reconstructs, deriving the head-tree by applying it over --base in a throwaway clone — NO author clone that holds the head is needed. Exclusive with --source.
+- `--at-base`: With --from-range: pin at --base, the dev the range was cut on, even when --ref has moved past it; read-only (nothing is rebased) and recorded in the pin as at-base
 - `--title`: Platform title text (NORM-hashed into the object)
 - `--body`: Platform body text (NORM-hashed into the object)
 - `--rows-json`: A JSON file with a list of row objects (key/remote/base/head, optional path/ref/title/body; source or range is optional on a single row but required on every row when the file holds more than one); pins ALL rows into ONE gr commit. Exclusive with the single-row flags.
@@ -355,6 +356,18 @@ next: more approvers are required; each one stamps from their own checkout: gr2 
 ### approvals_unset
 
 next: say how many approvals this merge needs: rerun with --approvals N (--approvals 0 merges without approvals), or set [approvals] required = N in '<workspace>'/grip.toml
+
+### at_base_not_ancestor
+
+check: the range's base is not in the history of the ref's tip '<observed>'; re-freeze the range on '<observed>', or pin without --at-base
+
+### at_base_tip_unfetchable
+
+check: the ref's tip could not be fetched from the remote, so its history was not read; the ref moved after it was read, or the fetch failed in transport or auth; pin again on the live tip, or pin without --at-base
+
+### at_base_unreachable
+
+check: the range's base is not on the remote; push the base the range was cut on, re-freeze the range on the live tip, or pin without --at-base
 
 ### base_moved
 

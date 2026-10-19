@@ -345,6 +345,10 @@ Merge a pinned review into its members' remotes: preflight every member, merge n
 
 gr2 names the next step beside the refusal; the same text is here, keyed by the code. A code ending in `*` covers every code that starts with it and has no row of its own.
 
+### ancestry_unmeasurable
+
+next: git -C '<path>' fetch --unshallow, then run gr2 review merge '<workspace>' '<review>' again; nothing was pushed for this member
+
 ### approvals_incomplete
 
 next: an approval stamp is still writing the chain to the members it names; retry the merge once it finishes. If a member stays without it, any approver's gr2 review stamp '<workspace>' '<review>' republishes the chain to the members that lack it

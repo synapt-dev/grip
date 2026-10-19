@@ -174,6 +174,10 @@ def merge_row(refused: str, *, workspace: str, review: str, remote: str, path: s
     """The next command for one member's merge refusal, or None when no single command answers it. ``siblings`` maps
     a declared-set member's name to what the gate found for it: the newest review of it at its pin in this workspace
     (or None), its remote, its clone and its target's live head."""
+    if refused.startswith("ancestry_unmeasurable"):
+        clone = re.search(r"; clone: (.+)$", refused)
+        return (f"next: git -C {_shown(clone[1] if clone else path)} fetch --unshallow, then run gr2 review merge "
+                f"{_shown(workspace)} {_shown(review)} again; nothing was pushed for this member")
     if refused.startswith("review_not_on_member_remote"):
         return f"next: gr2 review publish {_shown(workspace)} {_shown(review)} --remote {_shown(remote)}"
     if refused.startswith("declared_set_pin_unreviewed"):

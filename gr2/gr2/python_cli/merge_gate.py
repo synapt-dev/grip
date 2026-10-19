@@ -241,8 +241,12 @@ def _pin_tie(root: Path, declaration: declared_sets.Declaration, into: str):
         try:
             tips = _remote_tips(repo, remote, (into,), scan=_REVIEW_REF_PREFIX)  # the target and every review, one read
             tip = tips.pop(f"refs/heads/{into}")
-            if tip and gitops.is_ancestor(repo, pin, tip):
+            merged = gitops.is_ancestor(repo, pin, tip) if tip else False
+            if merged is True:
                 return None
+            # None (a shallow clone, or the target's commit not in this clone) is no answer: a review may still tie the
+            # pin below, but the refusal at the end must not say "not merged".
+            unknown = merged is None
             if len(tips) > _REVIEW_SCAN_CAP:
                 return (f"declared_set_pin_unmeasured: {name}'s remote advertises {len(tips)} reviews, over the "
                         f"{_REVIEW_SCAN_CAP} this gate reads; its pin {short} cannot be tied to a reviewed head")
@@ -288,6 +292,9 @@ def _pin_tie(root: Path, declaration: declared_sets.Declaration, into: str):
             return f"declared_set_pin_unmeasured: {name}'s pin {short} could not be read from its remote: {exc}"
         tie.siblings[name] = {"review": _local_review_of(root, declaration, name, pin), "remote": remote, "path": str(repo),
                              "base": tip, "ref": f"refs/heads/{into}", "member_path": info["path"], "pin": pin}
+        if unknown:
+            return (f"ancestry_unmeasurable: {name}'s pin {short} is named by no review its remote serves, and this "
+                    f"clone cannot tell whether it is in {into} at {tip[:12]}; clone: {repo}")
         if retracted:
             return (f"declared_set_pin_unreviewed: {name} is pinned at {short}, which is not merged into {into}, and "
                     f"the reviews that named it were retracted from its remote (ref deleted or moved): {retracted}")
@@ -813,11 +820,15 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
                     try:
                         now, unread = _remote_tip(repo, m["remote"], into), None
                         # One more git call, on this failure path only: is the reviewed head already in the moved target?
-                        landed = bool(now and now != m["base"]) and gitops.is_ancestor(repo, m["head"], now) is True
+                        landed = gitops.is_ancestor(repo, m["head"], now) if now and now != m["base"] else False
                     except (RuntimeError, subprocess.SubprocessError, OSError) as exc:
                         now, unread, landed = None, f"{type(exc).__name__}: {exc}", False
                     if unread:
                         r["refused"] = f"target_unread_at_push: {_capped(unread)}"
+                    elif landed is None:  # a shallow clone cannot tell landed from moved: never read it as moved
+                        r["refused"] = (f"ancestry_unmeasurable: remote {into} moved to {now} at the push, and this "
+                                        f"clone cannot tell whether the reviewed head {m['head']} is in it; clone: {repo}")
+                        r["_heads"] = (m["base"], now)
                     elif now is None:
                         r["refused"] = f"target_deleted_at_push: remote {into} is gone, the gate read {m['base']}"
                         r["_heads"] = (m["base"], None)

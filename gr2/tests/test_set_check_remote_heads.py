@@ -7,6 +7,7 @@ new commit until the check fetches it), one command, a non-zero exit that names 
 from __future__ import annotations
 
 import json
+import shlex
 import sys
 from pathlib import Path
 
@@ -147,7 +148,8 @@ def test_the_feature_moved_next_step_names_the_check_and_does_not_point_only_at_
     beta = next(m for m in receipt["members"] if m["key"] == "beta")
     line = beta["next"]
     root = Path(slice2["author"]).resolve()  # the gate names the resolved root (macOS: /private/var/...)
-    assert f"gr2 check set {root} {slice2['review']} --at-remote-heads feat --" in line, line
+    # Quoted as the printed line quotes it, so the row holds under a root with a space or a quote.
+    assert f"gr2 check set {shlex.quote(str(root))} {shlex.quote(slice2['review'])} --at-remote-heads feat --" in line, line
     assert "pin it before you push" in line and "--ratified" in line, line
     # The printed check is the real verb: it runs as printed and sees the moved head.
     out = at_remote(slice2, [sys.executable, "-c", "pass"], branch="feat")

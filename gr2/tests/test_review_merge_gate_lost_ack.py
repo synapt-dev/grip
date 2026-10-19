@@ -304,6 +304,8 @@ def test_a_later_member_moving_after_an_earlier_push_is_partial_not_none(slice2,
     rows = {r["key"]: r for r in receipt["members"]}
     assert rows["alpha"]["final"] == "merged", receipt
     assert rows["beta"]["refused"].startswith("feature_moved_before_push"), receipt
+    # The README's own case: beta moved after alpha was pushed, so its next is the pin-alone recovery.
+    assert rows["beta"]["next"].startswith("next: alpha already merged and beta's feature branch moved"), receipt
     assert code == merge_gate.EXIT_PARTIAL, receipt
 
 

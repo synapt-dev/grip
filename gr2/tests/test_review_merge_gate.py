@@ -129,13 +129,17 @@ def test_refuses_a_moved_base(world, tmp_path):
 @pytest.fixture
 def slice2(tmp_path, monkeypatch):
     """Two members, alpha and beta, bound into ONE review with --rows-json."""
+    return make_slice(tmp_path, monkeypatch, ("alpha", "beta"))
+
+
+def make_slice(tmp_path, monkeypatch, names):
     import json
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     monkeypatch.setenv("GIT_TERMINAL_PROMPT", "0")
     author = tmp_path / "author"
     author.mkdir()
     out = {"author": author, "members": {}}
-    for name in ("alpha", "beta"):
+    for name in names:
         remote, seed = tmp_path / f"{name}.git", tmp_path / f"seed-{name}"
         git(tmp_path, "init", "--bare", "-b", "main", remote)
         seed.mkdir()

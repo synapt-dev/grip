@@ -312,6 +312,42 @@ def test_a_partial_clone_names_the_absent_record_when_reading_a_members_pin(tmp_
     assert grip_cli._member_record(root, "alpha", None, True)[1] == "gitlink"   # control: the full root reads it
 
 
+def test_a_partial_clone_without_the_sidecar_checked_out_refuses_rather_than_fetch_it(tmp_path):
+    """A blob:none clone that checks out everything but the sidecar (materialize's own sparse pattern) holds the
+    sidecar's trees and none of its blobs. The sidecar read is local, as the record readers are: the commit refuses
+    with the fetch that brings the record in, fetches nothing, and commits nothing."""
+    import pytest
+    from gr2.python_cli import grip_cli
+    from gr2.python_cli import review_field_tree as rft
+
+    if not _git_at_least(tmp_path, 2, 44):
+        pytest.skip("git before 2.44 ignores GIT_NO_LAZY_FETCH")
+    root, _ = _root_with_a_check_on_alpha(tmp_path)
+    git(root, "config", "uploadpack.allowFilter", "true")
+    git(tmp_path, "clone", "-q", "--filter=blob:none", "--no-checkout", f"file://{root}", "partial")
+    partial = tmp_path / "partial"
+    configure_identity(partial)
+    git(partial, "sparse-checkout", "set", "--no-cone", "/*", grip_cli.FIELDS_SPARSE_PATTERN)
+    git(partial, "checkout", "-q", "main")
+    schema = git(partial, "rev-parse", "HEAD:.grip/fields/alpha/schema").stdout.strip()
+    local = {**os.environ, "GIT_NO_LAZY_FETCH": "1"}
+    assert subprocess.run(["git", "-C", str(partial), "cat-file", "-e", schema], env=local).returncode != 0
+    for name in ("alpha", "beta"):
+        git(tmp_path, "clone", "-q", git(root / name, "remote", "get-url", "origin").stdout.strip(), str(partial / name))
+        configure_identity(partial / name)
+    head = git(partial, "rev-parse", "HEAD").stdout.strip()
+    _advance(partial, "beta", push=True)
+
+    refused = gr2(partial, "commit", "-m", "from a partial clone", check=False)
+
+    out = refused.stdout + refused.stderr
+    assert refused.returncode == 4, out
+    assert rft.missing_locally(partial, "cat-file blob", schema) in out, out
+    assert "Traceback" not in out
+    assert subprocess.run(["git", "-C", str(partial), "cat-file", "-e", schema], env=local).returncode != 0
+    assert git(partial, "rev-parse", "HEAD").stdout.strip() == head   # nothing was committed
+
+
 def test_a_shallow_partial_clone_keeps_the_unshallow_advice_for_a_record_it_does_not_reach(tmp_path):
     """A clone that is both shallow and partial does not hold the field-commit at all. That is a shallow clone's
     absence, so the refusal names `git fetch --unshallow`, not a fetch of an unresolved `<commit>^{tree}`."""

@@ -274,8 +274,8 @@ def _resolve_snapshot_or_exit(
         raise typer.Exit(code=1)
 
 
-def _store_git(root: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-    result = gitops.run_argv(["git", "-C", str(root), *args])
+def _store_git(root: Path, *args: str, check: bool = True, env: dict | None = None) -> subprocess.CompletedProcess[str]:
+    result = gitops.run_argv(["git", "-C", str(root), *args], env=env)
     if check and result.returncode:
         raise RuntimeError(result.stderr.strip() or "git command failed")
     return result
@@ -1911,8 +1911,10 @@ def _gitlink_disagreement(root: Path, member: dict, gitlink: str | None, full: b
     gitlink that moved while grip.toml did not is a plain `git commit` at the root (gr2 writes both together), so the
     line names that state and the one command that records it; anything else keeps the plain disagreement."""
     if full and gitlink and member.get("pin") and _has_field_sidecar(root, "HEAD"):
-        layer = _store_git(root, "cat-file", "-e", f"HEAD:{FIELDS_DIR}/{member['name']}/layers/{gitlink}",
-                           check=False).returncode == 0
+        from . import review_field_tree as rft
+        # the layer's presence in the tree, read locally: the blob itself is not needed, so a partial clone never fetches
+        layer = _store_git(root, "rev-parse", "--verify", "-q", f"HEAD:{FIELDS_DIR}/{member['name']}/layers/{gitlink}",
+                           check=False, env=rft._local()).returncode == 0
         return (f"{member['name']}: the root commit moved its gitlink to {gitlink[:7]} outside gr2 (a plain git commit), "
                 f"so grip.toml still pins {member['pin'][:7]} and the sidecar has "
                 f"{'a layer' if layer else 'no layer'} for {gitlink[:7]}; run {_store_advice(root, 'commit')} to record it")
@@ -1977,27 +1979,62 @@ def _field_record(root: Path, member: dict[str, str], revision: str = "HEAD") ->
         raise NativeStoreRefusal(f"{member['name']} field record cannot be read: {exc}{hint}", 4) from exc
 
 
+def _sidecar_git(root: Path, verb: str, obj: str, read) -> subprocess.CompletedProcess:
+    """``read(env)``, a sidecar read run under the record readers' local environment, so a partial clone never
+    fetches; when it fails for an object the clone does not hold, mft._local's own check raises mft.MissingLocally.
+    Any other failure (the path is not in the tree) is returned for the caller to read as absent."""
+    from . import member_field_tree as mft
+    from . import review_field_tree as rft
+
+    result = read(rft._local())
+    if result.returncode:
+        def failed():
+            raise rft.ReviewRecordError(f"git {verb} failed")
+        try:
+            mft._local(root, verb, obj, failed)
+        except mft._AbsentObject as exc:
+            raise mft._field_error(exc) from None
+        except rft.ReviewRecordError:
+            pass
+    return result
+
+
 def _sidecar_record(root: Path, member: dict[str, str], revision: str, pin: str) -> dict:
     """The member's record from the sidecar at ``revision``: the pin is the gitlink, the url and ref are grip.toml's,
     the remote ref that covers the pin is derived from the upstream, and the layer and records are the ones keyed by
-    the pin. Entries keyed by another commit are ignored."""
+    the pin. Entries keyed by another commit are ignored. Every read is local: an object a partial clone does not
+    hold is a refusal that names the fetch, never a lazy fetch."""
+    from . import member_field_tree as mft
+
+    try:
+        return _sidecar_read(root, member, revision, pin)
+    except mft.MissingLocally as exc:
+        raise NativeStoreRefusal(f"{member['name']} field record cannot be read: {exc}", 4) from exc
+
+
+def _sidecar_read(root: Path, member: dict[str, str], revision: str, pin: str) -> dict:
     from . import member_field_tree as mft
 
     base = f"{revision}:{FIELDS_DIR}/{member['name']}"
-    schema = _store_git(root, "cat-file", "blob", f"{base}/schema", check=False)
+    schema = _sidecar_git(root, "cat-file blob", f"{base}/schema",
+                          lambda env: _store_git(root, "cat-file", "blob", f"{base}/schema", check=False, env=env))
     if schema.returncode or schema.stdout != mft.PACKAGE:
         raise NativeStoreRefusal(f"{member['name']} has no {mft.PACKAGE} record under {FIELDS_DIR}/{member['name']}", 4)
     layers: list[bytes] = []
     layer = f"{base}/layers/{pin}"
-    size = _store_git(root, "cat-file", "-s", layer, check=False)
+    size = _sidecar_git(root, "cat-file -s", layer,
+                        lambda env: _store_git(root, "cat-file", "-s", layer, check=False, env=env))
     if size.returncode == 0:
         if int(size.stdout) > mft.MAX_LAYER_BYTES:
             raise NativeStoreRefusal(f"{member['name']} layer is {size.stdout.strip()} bytes, over the "
                                      f"{mft.MAX_LAYER_BYTES} a layer may carry", 4)
-        layers = [gitops.run(root, "cat-file", "blob", layer, binary=True).stdout]
+        layers = [_sidecar_git(root, "cat-file blob", layer,
+                               lambda env: gitops.run(root, "cat-file", "blob", layer, binary=True, env=env)).stdout]
         if not layers[0].startswith(mft.BUNDLE_HEADERS):
             raise NativeStoreRefusal(f"{member['name']} layer for {pin[:12]} is not a git bundle", 4)
-    listed = _store_git(root, "ls-tree", f"{base}/records/{pin}", check=False).stdout.splitlines()
+    records_tree = f"{base}/records/{pin}"
+    listed = _sidecar_git(root, "ls-tree", records_tree,
+                          lambda env: _store_git(root, "ls-tree", records_tree, check=False, env=env)).stdout.splitlines()
     records = [line.split()[2] for line in listed if line.split()[1:2] == ["tree"]]
     branch = member["upstream"].partition("/")[2]
     record = dict(schema=mft.PACKAGE, kind=mft.KIND_REPO, pin=pin, url="", ref=member.get("ref", ""),

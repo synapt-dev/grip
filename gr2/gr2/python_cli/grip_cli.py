@@ -2410,7 +2410,7 @@ def _layer_carries(root: Path, member: dict[str, str], layers: list[bytes]) -> N
         bundle = Path(tmp) / "layer.bundle"
         bundle.write_bytes(layers[-1])
         heads = gitops.run(root, "bundle", "list-heads", str(bundle), binary=True)
-    carried = {line.split()[0] for line in heads.stdout.decode(errors="replace").splitlines() if line.split()}
+    carried = {line.split()[0] for line in heads.stdout.decode(errors="replace").split("\n") if line.split()}
     if heads.returncode or member["pin"] not in carried:
         raise NativeStoreRefusal(
             f"full_mode_layer_does_not_carry_pin: {member['name']} pin {member['pin']} is not the head of its last layer", 3)

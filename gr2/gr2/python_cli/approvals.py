@@ -537,7 +537,7 @@ def pr_head_approvals(store: Path, repo: str, head: str) -> dict:
                         str(exc),
                         next_step=f"next: the stamp in commit {commit} on {_shown(ref)} breaks the approver-name "
                                   f"rule; remove this head's stamps, then stamp it again: "
-                                  f"git -C {_shown(str(store))} update-ref -d {_shown(ref)} {tip}") from None
+                                  f"git -C {_shown(str(store))} update-ref -d {_shown(ref)} {_shown(tip)}") from None
                 links.append(link)
     links.reverse()
     return {"repo": repo, "head": head, "tip": tip or None,

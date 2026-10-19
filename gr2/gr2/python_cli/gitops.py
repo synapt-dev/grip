@@ -546,9 +546,14 @@ def ancestry_proc(repo: Path, ancestor: str, descendant: str, *, via_cwd: bool =
 def is_ancestor(repo: Path, ancestor: str, descendant: str, *, via_cwd: bool = False) -> bool | None:
     """True when `ancestor` is an ancestor of `descendant` in the real history (replace refs, grafts and
     commit-graph files ignored), False when it is not, None when git could not tell (a missing object, a bad name, a
-    timeout)."""
+    timeout, or a no from a shallow clone)."""
     rc = ancestry_proc(repo, ancestor, descendant, via_cwd=via_cwd).returncode
-    return True if rc == 0 else False if rc == 1 else None
+    if rc == 1:
+        # A shallow clone cuts the walk at .git/shallow (GIT_GRAFT_FILE does not lift it), so rc 1 there is "not
+        # inside the truncated graph", not "not an ancestor". Only a full history can say no.
+        shallow = run(repo, "rev-parse", "--is-shallow-repository", via_cwd=via_cwd)
+        return False if shallow.returncode == 0 and shallow.stdout.strip() == "false" else None
+    return True if rc == 0 else None
 
 
 def is_git_repo(path: Path) -> bool:

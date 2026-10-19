@@ -504,7 +504,11 @@ def since_my_stamp(workspace: Path, review_id: str) -> dict:
             row["paths"] = sorted(m["files"] or [])
         elif then != now:
             # gitops.is_ancestor, the same real-history view as the rev-list below: a local graft cannot invent a range.
-            if gitops.is_ancestor(repo, then, now):
+            ancestry = gitops.is_ancestor(repo, then, now)
+            if ancestry is None:  # a shallow clone (or a missing object) cannot tell a rebase from a range
+                raise ApprovalRefused(f"approval_unmeasurable: {key}: cannot tell whether {then} is an ancestor of "
+                                      f"{now}; next: git -C {repo} fetch --unshallow")
+            if ancestry:
                 row["range"] = f"{then}..{now}"
                 row["commits"] = _git(repo, "rev-list", "--reverse", row["range"]).splitlines()
             # A rebased head has no range; the paths are still the diff between the two trees.

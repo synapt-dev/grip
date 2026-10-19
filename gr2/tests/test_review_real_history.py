@@ -19,7 +19,7 @@ from gr2.python_cli.app import app
 from gr2.python_cli.grip import GripReviewRefused
 
 from tests.test_is_ancestor_commit_graph import _forge, _world
-from tests.test_is_ancestor_replace import _git, _replace_with_fake_child, _setup
+from tests.test_is_ancestor_replace import _commit, _git, _replace_with_fake_child, _setup
 from tests.test_review_approvals import approve_as, runner, set_policy, world  # noqa: F401  (world is a fixture)
 from tests.test_review_read_pr import forge  # noqa: F401  (a fixture)
 from tests.test_review_reads import repin, since
@@ -51,6 +51,29 @@ def test_change_under_a_forged_commit_graph_has_no_fork_point(tmp_path):
     with pytest.raises(GripReviewRefused) as caught:
         review_diff.change(tmp_path, _member(w, x, t), with_diff=False)
     assert "member_no_merge_base" in str(caught.value)
+
+
+def test_change_under_a_forged_replace_ref_reads_the_real_files_count_and_diff(tmp_path):
+    """review_diff._git: the numstat diff, the commit count and the diff. History r-b-x-h; a replace ref swaps h for a
+    child of b that adds t, so plain git reads files [t] and 1 commit; the real change is files [h, x] and 2 commits.
+    The first row's forge keeps the tree and the count, so it cannot see these reads."""
+    work = tmp_path / "work"
+    _git(tmp_path, "init", "-q", "-b", "main", str(work))
+    _commit(work, "r")
+    b = _commit(work, "b")
+    _commit(work, "x")
+    h = _commit(work, "h")
+    real = review_diff.change(tmp_path, _member(work, b, h), with_diff=True)
+    _git(work, "checkout", "-q", "-b", "side", b)
+    _git(work, "replace", h, _commit(work, "t"))
+    # The probe is real: plain git now reads the change as t alone, in one commit.
+    assert _git(work, "diff", "--name-only", f"{b}...{h}").split() == ["t"]
+    assert _git(work, "rev-list", "--count", f"{b}..{h}") == "1"
+    for with_diff in (False, True):
+        read = review_diff.change(tmp_path, _member(work, b, h), with_diff=with_diff)
+        assert read["files"] == ["h", "x"], read
+        assert read["diffstat"] == {"files": 2, "commits": 2, "added": 2, "removed": 0}, read
+    assert read["diff"] == real["diff"] and "+t" not in read["diff"] and "+x" in read["diff"], read
 
 
 def _fake(repo, tree: str, *parents: str, name: str = "t") -> str:

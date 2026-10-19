@@ -320,3 +320,47 @@ def test_duplicate_git_tree_paths_refuse_without_replacing_remote(repositories, 
         with pytest.raises(check_records.CheckRefused, match='duplicate_checks_tree_path'):
             check_records.publish_observation(repo, remote, receipt(head))
         assert check_records._snapshot(repo, remote) == snapshot
+
+
+def test_entries_reads_object_format_once_per_listing(repositories, monkeypatch):
+    repo, remote, head, root = repositories
+    heads = [head]
+    for n in range(2):
+        check_records._git(repo, 'commit', '--allow-empty', '-m', 'H%d' % n)
+        heads.append(check_records._git(repo, 'rev-parse', 'HEAD').decode().strip())
+    for h in heads:
+        check_records.publish_observation(repo, remote, receipt(h))
+    snapshot = read(repo, remote, heads[-1])['snapshot_oid']
+    original = check_records._git
+    formats = []
+
+    def count(path, *args, **kwargs):
+        if args == ('rev-parse', '--show-object-format'):
+            formats.append(path)
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(check_records, '_git', count)
+    entries = check_records._entries(repo, snapshot)
+    assert sorted(entries) == sorted(h[:2] + '/' + h[2:] for h in heads)
+    assert formats == [repo]
+    assert check_records._entries(repo, None) == {}
+    assert formats == [repo]
+
+
+def test_entries_uses_the_format_it_reads(repositories):
+    repo, remote, head, root = repositories
+    check_records.publish_observation(repo, remote, receipt(head))
+    assert read(repo, remote, head)['status'] == 'pass'
+    remote2, repo2 = root / 'remote256.git', root / 'writer256'
+    subprocess.run(['git', 'init', '--bare', '--object-format=sha256', str(remote2)], check=True, capture_output=True)
+    subprocess.run(['git', 'init', '--object-format=sha256', str(repo2)], check=True, capture_output=True)
+    for key, value in [('user.name', 'Check proof'), ('user.email', 'check-proof@example.invalid')]:
+        check_records._git(repo2, 'config', key, value)
+    check_records._git(repo2, 'commit', '--allow-empty', '-m', 'H')
+    head2 = check_records._git(repo2, 'rev-parse', 'HEAD').decode().strip()
+    assert len(head2) == 64
+    check_records._git(repo2, 'push', str(remote2), 'HEAD:refs/heads/main')
+    check_records.publish_observation(repo2, str(remote2), receipt(head2))
+    seen = read(repo2, str(remote2), head2)
+    assert seen['status'] == 'pass' and [r['head'] for r in seen['records']] == [head2]
+    assert sorted(check_records._entries(repo2, seen['snapshot_oid'])) == [head2[:2] + '/' + head2[2:]]

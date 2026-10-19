@@ -13,8 +13,15 @@ import ast
 import re
 from pathlib import Path
 
+import pytest
 import typer.main
+from typer import rich_utils
 from typer.testing import CliRunner
+
+try:
+    from typer._click.utils import strip_ansi
+except ImportError:  # older Typer
+    from click.utils import strip_ansi
 
 from gr2.python_cli import surface
 from gr2.python_cli.app import app
@@ -80,6 +87,22 @@ def _root():
     return typer.main.get_command(app)
 
 
+def _help(args: list[str]) -> tuple[int, str]:
+    """Exit code and rendered output with any styling removed.
+
+    CI forces a styled terminal, so a row that reads the raw output finds no names
+    there; each row that parses help runs both ways (the `colored` fixture).
+    """
+    result = CliRunner().invoke(app, args, terminal_width=200)
+    return result.exit_code, strip_ansi(result.output)
+
+
+@pytest.fixture(params=[False, True], ids=["plain", "styled"])
+def colored(request, monkeypatch) -> bool:
+    monkeypatch.setattr(rich_utils, "FORCE_TERMINAL", request.param)
+    return request.param
+
+
 def _flat(text: str) -> str:
     return re.sub(r"[│╭╮╰╯─\s]+", " ", text)
 
@@ -99,51 +122,51 @@ def test_the_visible_commands_are_exactly_the_porcelain() -> None:
     assert top == TOP_LEVEL and len(top) == 12, sorted(top)
 
 
-def test_help_and_bare_gr2_list_the_porcelain_and_no_plumbing() -> None:
+def test_help_and_bare_gr2_list_the_porcelain_and_no_plumbing(colored: bool) -> None:
     hidden_top = {name for name, cmd in _root().commands.items() if getattr(cmd, "hidden", False)}
     assert {"workspace", "grip", "hooks", "config", "plan", "apply", "help"} <= hidden_top
     for args in (["--help"], []):
-        result = CliRunner().invoke(app, args, terminal_width=200)
-        listed = _listed_commands(result.output)
+        _, output = _help(args)
+        listed = _listed_commands(output)
         assert listed == set(TOP_LEVEL), (args, sorted(listed))
 
 
-def test_help_a_lists_every_plumbing_path_and_nothing_else() -> None:
+def test_help_a_lists_every_plumbing_path_and_nothing_else(colored: bool) -> None:
     expected = {p for p, _, hidden in surface.leaves(_root()) if hidden} - surface.COMPAT_PATHS - {"help"}
     expected = {p for p in expected if p.split()[0] not in surface.COMPAT_GROUPS}
     assert len(expected) >= 55, f"the walk found only {len(expected)} plumbing paths"
     for flag in ("-a", "--all"):
-        result = CliRunner().invoke(app, ["help", flag], terminal_width=200)
-        assert result.exit_code == 0, result.output
-        section = result.output.split("Plumbing (hidden from gr2 --help", 1)[1]
+        code, output = _help(["help", flag])
+        assert code == 0, output
+        section = output.split("Plumbing (hidden from gr2 --help", 1)[1]
         listed = set(re.findall(r"^  gr2 (\S+(?: \S+)*?) {2,}", section, re.M))
         assert listed == expected, (flag, sorted(listed ^ expected))
-    plain = CliRunner().invoke(app, ["help"], terminal_width=200)
-    assert plain.exit_code == 0 and "Plumbing (hidden" not in plain.output
+    code, output = _help(["help"])
+    assert code == 0 and "Plumbing (hidden" not in output
 
 
 def test_every_hidden_path_still_runs_by_its_full_name() -> None:
     hidden = [p for p, _, h in surface.leaves(_root()) if h and p != "help"]
     assert set(surface.COMPAT_PATHS) <= set(hidden), sorted(set(surface.COMPAT_PATHS) - set(hidden))
     for path in hidden:
-        result = CliRunner().invoke(app, path.split() + ["--help"], terminal_width=200)
-        assert result.exit_code == 0 and "Usage:" in result.output, (path, result.output[-300:])
+        code, output = _help(path.split() + ["--help"])
+        assert code == 0 and "Usage:" in output, (path, output[-300:])
 
 
-def test_compat_paths_are_listed_nowhere() -> None:
-    listing = CliRunner().invoke(app, ["help", "-a"], terminal_width=200).output
+def test_compat_paths_are_listed_nowhere(colored: bool) -> None:
+    _, listing = _help(["help", "-a"])
     for path in surface.COMPAT_PATHS:
         assert f"gr2 {path} " not in listing, path
 
 
-def test_pr_merge_and_review_merge_each_name_the_other() -> None:
+def test_pr_merge_and_review_merge_each_name_the_other(colored: bool) -> None:
     root = _root()
     review_merge = root.commands["review"].commands["merge"]
     pr_merge = root.commands["pr"].commands["merge"]
     assert "pr merge" in review_merge.short_help and "review merge" in pr_merge.short_help
     for args, other in ((["review", "--help"], "use pr merge"), (["pr", "--help"], "use review merge"),
                         (["review", "merge", "--help"], "gr2 pr merge"), (["pr", "merge", "--help"], "gr2 review merge")):
-        out = _flat(CliRunner().invoke(app, args, terminal_width=200).output)
+        out = _flat(_help(args)[1])
         assert other in out, (args, other)
 
 
@@ -203,7 +226,7 @@ def test_the_promised_store_items_exist_and_are_stable() -> None:
     assert markers.get("verb store commit") == "may-change", "store commit is to be renamed; it must not be stable"
 
 
-def test_help_a_lists_no_path_under_a_registered_alias_group() -> None:
+def test_help_a_lists_no_path_under_a_registered_alias_group(colored: bool) -> None:
     # `grip` is the registered alias of `store` ("alias grip" in api/deprecations.toml): help -a lists none of it.
-    listing = CliRunner().invoke(app, ["help", "-a"], terminal_width=200).output
+    _, listing = _help(["help", "-a"])
     assert not re.findall(r"^  gr2 grip ", listing, re.M), re.findall(r"^  gr2 grip \S+", listing, re.M)

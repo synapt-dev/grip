@@ -119,7 +119,7 @@ def test_m2_review_refs_name_ids_holding_the_separator(tmp_path, sep):
     p = merge_gate._REVIEW_REF_PREFIX
     names = [f"{p}a{sep}b", f"{p}z{sep}"]
     origin, repo, _ = _bare(tmp_path, *names)
-    assert merge_gate._review_refs(repo, str(origin)) == names
+    assert list(merge_gate._remote_tips(repo, str(origin), (), scan=p)) == names
 
 
 def _bind_commit(tmp_path, quote_path, *names):

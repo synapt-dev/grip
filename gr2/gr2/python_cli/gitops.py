@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import unicodedata
 from pathlib import Path
@@ -311,6 +312,50 @@ def positional(value: str, kind: str, error: type[Exception] = RuntimeError) -> 
 def plain_remote(remote: str, error: type[Exception] = RuntimeError) -> str:
     """A remote git would parse as an option (e.g. --upload-pack=...) never reaches a git argv."""
     return positional(remote, "remote", error)
+
+
+class LsRemoteMalformed(ValueError):
+    """An ls-remote answer holding a line that is not a row (no tab, or an oid that is not 40 or 64 lowercase hex):
+    a fault, never an absent ref."""
+
+
+_OID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+
+
+def ls_remote_rows(listing: str, symref: bool = False) -> list[tuple[str, str]]:
+    """(oid, name) per row of ls-remote output, split on "\n" only: str.splitlines and str.split() also cut at U+2028
+    and U+0085, which a ref name may hold. A non-empty line without a tab, or whose oid is not 40 (sha1) or 64 (sha256)
+    lowercase hex, raises LsRemoteMalformed: dropping it would read a garbled answer as "the remote does not hold that
+    ref", and keeping it would hand a caller a tip git never named, so each caller turns it into its own fault. Only a
+    caller that asked ``--symref`` passes ``symref=True``, and then a "ref: <target>" row stands in place of an oid."""
+    rows = []
+    for line in listing.split("\n"):
+        if not line:
+            continue
+        if "\t" not in line:
+            raise LsRemoteMalformed(f"ls-remote answered a line that is not a row: {line[:80]!r}")
+        oid, name = line.split("\t", 1)
+        if not (_OID.fullmatch(oid) or (symref and oid.startswith("ref: "))):
+            raise LsRemoteMalformed(f"ls-remote answered a row whose oid is not an object id: {line[:80]!r}")
+        rows.append((oid, name))
+    return rows
+
+
+def ls_remote_oid(listing: str, ref: str) -> str | None:
+    """The oid of the one ls-remote row whose name is exactly ``ref``, or None when no row names it. ls-remote matches
+    its pattern by tail, so refs/heads/a/<ref> answers too and may sort first: the first row is an order, not the asked
+    ref. Two rows naming ``ref`` raise ValueError rather than pick one."""
+    oids = [oid for oid, name in ls_remote_rows(listing) if name == ref]
+    if len(oids) > 1:
+        raise ValueError(f"ls-remote listed {len(oids)} rows named {ref!r}")
+    return oids[0] if oids else None
+
+
+def for_each_ref_rows(listing: str) -> list[str]:
+    """The non-empty rows of for-each-ref output, split on "\n" only. A ref name cannot hold "\n" (or any control
+    character), but it may hold U+2028 and U+0085, which str.splitlines also cuts at and str.strip/str.split() also
+    eat; each caller splits its own --format fields from the row."""
+    return [line for line in listing.split("\n") if line]
 
 
 def git(

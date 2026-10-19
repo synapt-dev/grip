@@ -30,9 +30,9 @@ def git(root, *args, check=True):
 
 
 def tip(remote, ref):
-    """What the remote serves at `ref`, or None."""
-    out = git(remote, "ls-remote", str(remote), ref)
-    return out.split()[0] if out else None
+    """What the remote serves at exactly `ref`, or None (not ls-remote's first token: a lookalike by tail sorts first)."""
+    out = git(remote, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}", check=False)
+    return out or None
 
 
 @pytest.fixture(autouse=True)
@@ -290,3 +290,83 @@ def test_s_from_a_subdirectory_of_the_workspace(w, monkeypatch):
     for m in w["members"].values():
         assert tip(m["remote"], "refs/heads/feat") == m["head"]
         assert review_on(m["remote"], w["full"]) == w["full"]
+
+
+# ls-remote answers refs/heads/<branch> by tail, so refs/heads/a/refs/heads/<branch> answers too and sorts first; the
+# first token of the listing is then the lookalike's tip. Both reads of the member's branch (before the push and after
+# it) take the row named exactly the branch, and a malformed line is a fault, not absence.
+
+def _lookalike(m, oid):
+    git(m["remote"], "update-ref", f"refs/heads/a/refs/heads/{m['branch']}", oid)
+
+
+def _listing(monkeypatch, rewrite, call):
+    """Hand the `call`-th ls-remote of beta's branch (1 = before the push, 2 = after) through `rewrite`."""
+    from gr2.python_cli import grip
+    real, seen = grip.git, {"n": 0}
+
+    def fake(cwd, *args, **kw):
+        out = real(cwd, *args, **kw)
+        if args[:1] == ("ls-remote",) and args[-1] == "refs/heads/feat" and "beta" in args[-2]:
+            seen["n"] += 1
+            if seen["n"] == call:
+                return subprocess.CompletedProcess(out.args, out.returncode, rewrite(out.stdout), out.stderr)
+        return out
+    monkeypatch.setattr(grip, "git", fake)
+
+
+def test_l1_before_the_push_a_lookalike_sorting_first_is_not_read_as_the_feature(w, tmp_path):
+    beta = w["members"]["beta"]
+    stray = git(beta["repo"], "commit-tree", "-m", "stray", git(beta["repo"], "rev-parse", "HEAD^{tree}"))
+    git(beta["repo"], "push", beta["remote"], f"{stray}:refs/heads/keep")  # an object the remote holds, off the feature
+    _lookalike(beta, stray)
+    out = publish(w["review"])
+    assert out.exit_code == 0, out.output
+    assert tip(beta["remote"], "refs/heads/feat") == beta["head"]
+
+
+def test_l2_before_the_push_a_malformed_line_refuses_and_nothing_leaves(w, monkeypatch):
+    beta = w["members"]["beta"]
+    _listing(monkeypatch, lambda s: f"{beta['head']}\trefs/heads/feat\nnot a row\n", 1)
+    out = publish(w["review"])
+    assert out.exit_code == 2, out.output
+    assert receipt(out)["refused"].startswith("remote_unreadable: beta"), out.stdout
+    assert untouched(beta) and untouched(w["members"]["alpha"])
+
+
+def test_l3_after_the_push_a_lookalike_sorting_first_is_not_read_as_the_pushed_head(w):
+    beta = w["members"]["beta"]
+    _lookalike(beta, beta["base"])
+    out = publish(w["review"])
+    assert out.exit_code == 0, out.output
+    assert {m["key"]: m for m in receipt(out)["members"]}["beta"]["head_state"] == "pushed", out.stdout
+    assert tip(beta["remote"], "refs/heads/feat") == beta["head"]
+
+
+def test_l4_after_the_push_a_malformed_line_is_a_failure_not_a_confirmation(w, monkeypatch):
+    beta = w["members"]["beta"]
+    _listing(monkeypatch, lambda s: s + "not a row\n", 2)
+    out = publish(w["review"])
+    assert out.exit_code == 4, out.output
+    row = {m["key"]: m for m in receipt(out)["members"]}["beta"]
+    assert row["state"] == "failed" and row["error"].startswith("remote_unreadable: "), out.stdout
+
+
+def test_c1_before_the_push_a_tabbed_row_with_no_oid_refuses_remote_unreadable(w, monkeypatch):
+    beta = w["members"]["beta"]
+    _listing(monkeypatch, lambda s: "garbage\trefs/heads/feat\n", 1)
+    out = publish(w["review"])
+    assert out.exit_code == 2, out.output
+    assert receipt(out)["refused"].startswith("remote_unreadable: beta"), out.stdout
+    assert untouched(beta) and untouched(w["members"]["alpha"])
+
+
+def test_c2_after_the_push_a_tabbed_row_with_no_oid_fails_remote_unreadable(w, monkeypatch):
+    beta = w["members"]["beta"]
+    _listing(monkeypatch, lambda s: "garbage\trefs/heads/feat\n", 2)
+    out = publish(w["review"])
+    assert out.exit_code == 4, out.output
+    row = {m["key"]: m for m in receipt(out)["members"]}["beta"]
+    assert row["state"] == "failed" and row["error"].startswith("remote_unreadable: "), out.stdout
+    assert row["head_state"] == "failed" and tip(beta["remote"], "refs/heads/feat") == beta["head"]
+    assert {r["remote"]: r for r in receipt(out)["remotes"]}[str(beta["remote"])]["review"] != "pushed", out.stdout

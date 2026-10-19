@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from .gitops import git, is_ancestor
+from .gitops import LsRemoteMalformed, git, is_ancestor, ls_remote_oid, ls_remote_rows
 from .review_records import lane_paths_for_repo, read_review_records_for_guard, review_record_pointer_path
 
 
@@ -108,8 +108,10 @@ def _remote_branch_sha(repo: Path, remote: str, branch: str) -> str:
         raise PushEvidenceError(
             detail or "push was acknowledged but the remote branch could not be queried"
         )
-    rows = [line.split() for line in result.stdout.splitlines() if line.strip()]
-    matches = [parts[0] for parts in rows if len(parts) == 2 and parts[1] == ref]
+    try:
+        matches = [sha for sha, name in ls_remote_rows(result.stdout) if name == ref]
+    except LsRemoteMalformed as exc:
+        raise PushEvidenceError(f"push was acknowledged but remote receipt evidence was unreadable: {exc}") from None
     if len(matches) != 1:
         raise PushEvidenceError(
             f"push was acknowledged but remote '{remote}' did not provide exactly one receipt for {ref}"
@@ -218,9 +220,12 @@ def _lane_branch_uncovered(repo: Path, receipt: PushReceipt, lane_branch: str) -
     listed = git(repo, "ls-remote", "--heads", "--", receipt.remote, f"refs/heads/{lane_branch}")
     if listed.returncode != 0:
         return f"cannot tell whether head {receipt.local_sha} is on {where}: ls-remote failed"
-    if not listed.stdout.strip():
+    try:
+        tip = ls_remote_oid(listed.stdout, f"refs/heads/{lane_branch}")
+    except ValueError:
+        return f"cannot tell whether head {receipt.local_sha} is on {where}: ls-remote answered a malformed listing"
+    if tip is None:
         return not_on
-    tip = listed.stdout.split()[0]
     ancestry = is_ancestor(repo, receipt.local_sha, tip, via_cwd=True)
     if ancestry is None:
         fetched = git(repo, "fetch", "--no-tags", "--refmap=", "--no-write-fetch-head", "--", receipt.remote, f"refs/heads/{lane_branch}")

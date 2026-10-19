@@ -288,10 +288,13 @@ def _start_lane_branch(repo_name: str, repo: Path, branch: str, ref: str | None,
         target = f"refs/heads/{ref}" if ref else "HEAD"
         live = git(repo, "ls-remote", "origin", target)
         # ls-remote matches a pattern by its tail, so refs/heads/x/refs/heads/main answers for main: take the exact name.
-        rows = (line.split("\t", 1) for line in live.stdout.splitlines() if "\t" in line) if live.returncode == 0 else ()
+        try:
+            rows, garbled = (gitops.ls_remote_rows(live.stdout) if live.returncode == 0 else ()), False
+        except gitops.LsRemoteMalformed:
+            rows, garbled = (), True
         tip = next((sha for sha, name in rows if name == target), "")
         if not tip:
-            why = "cannot read the live tip of" if live.returncode else "the remote has no branch"
+            why = "cannot read the live tip of" if live.returncode or garbled else "the remote has no branch"
             print(f"gr2: {repo_name}: {why} origin/{ref or 'HEAD'}; {branch} starts at the pin", file=sys.stderr)
             start = "pin"
         elif tip != head:
@@ -890,7 +893,10 @@ def _pr_create_for_review(workspace_root, review, platform, base_branch, draft, 
         seen = git(workspace_root, "ls-remote", m["remote"], f"refs/heads/{branch}", timeout=_REMOTE_TIP_TIMEOUT)
         if seen.returncode != 0:
             _refuse(f"cannot read {branch} on {m['key']}'s remote: {seen.stderr.strip()}")
-        tips = [line.split()[0] for line in seen.stdout.splitlines() if line.split()[1:] == [f"refs/heads/{branch}"]]
+        try:
+            tips = [sha for sha, name in gitops.ls_remote_rows(seen.stdout) if name == f"refs/heads/{branch}"]
+        except gitops.LsRemoteMalformed as exc:
+            _refuse(f"cannot read {branch} on {m['key']}'s remote: {exc}")
         if tips != [m["commit"]]:
             where = tips[0][:12] if tips else "absent"
             _refuse(f"{m['key']}: {branch} on the remote is {where}, not the reviewed commit {m['commit'][:12]}; push the reviewed commit first")
@@ -927,8 +933,11 @@ def _live_remote_tips(workspace_root: Path, remote: str, *refs: str) -> dict[str
     if seen.returncode != 0:
         _refuse(f"cannot read {' and '.join(refs)} on the remote: {seen.stderr.strip()}")
     tips = {}
-    for line in seen.stdout.splitlines():
-        sha, _, name = line.partition("\t")
+    try:
+        rows = gitops.ls_remote_rows(seen.stdout)
+    except gitops.LsRemoteMalformed as exc:
+        _refuse(f"cannot read {' and '.join(refs)} on the remote: {exc}")
+    for sha, name in rows:
         if name in refs:  # ls-remote matches a pattern by its tail, so refs/heads/x also lists a/refs/heads/x
             tips[name] = sha
     return tips
@@ -3750,7 +3759,10 @@ def _unpushed_commits(repo: Path, *, fetch: bool = True) -> list[tuple[str, str]
     for tips, prefix in ((["--branches"], "refs/heads/"), (["HEAD"], ""), (["--tags"], "refs/tags/")):
         out = gitops.run_argv(["git", "log", "--source", *tips, "--not", "--remotes", "--stdin", "--format=%H %S"],
                               cwd=repo, input=not_held).stdout
-        for line in out.splitlines():
+        # By "\n" only: str.splitlines also cuts at U+2028, U+2029 and U+0085, which a branch name may hold.
+        for line in out.split("\n"):
+            if not line:
+                continue
             sha, _, ref = line.partition(" ")
             found.setdefault(sha, prefix + ref.removeprefix(prefix))
     if found and not fetch:
@@ -3775,7 +3787,11 @@ def _remote_tag_shas(repo: Path) -> list[str]:
         if listed.returncode != 0:
             raise SystemExit(f"cannot list {remote}'s tags in {repo}, so cannot show a tagged commit is pushed: "
                              f"{listed.stderr.strip()}")
-        shas += [line.split()[0] for line in listed.stdout.splitlines() if line.strip()]
+        try:
+            shas += [oid for oid, _ in gitops.ls_remote_rows(listed.stdout)]
+        except gitops.LsRemoteMalformed as exc:
+            raise SystemExit(f"cannot list {remote}'s tags in {repo}, so cannot show a tagged commit is pushed: "
+                             f"{exc}") from None
     if not shas:
         return []
     have = gitops.run_argv(["git", "cat-file", "--batch-check=%(objectname)"], cwd=repo,
@@ -5736,11 +5752,11 @@ def _resolve_merged_defaults(ws: Path, review_id: Optional[str], into: Optional[
         for m in view["members"]:
             repo = (ws / m["path"]).resolve()
             try:
-                out = merge_gate._git(repo, "ls-remote", "--symref", "--", m["remote"], "HEAD")
-            except (RuntimeError, subprocess.SubprocessError, OSError):
-                out = ""
-            default = next((left.removeprefix("ref: refs/heads/") for left, _, ref in
-                            (line.partition("\t") for line in out.splitlines())
+                out = merge_gate._git(repo, "ls-remote", "--symref", "--", m["remote"], "HEAD", raw=True)
+                rows = gitops.ls_remote_rows(out, symref=True)
+            except (RuntimeError, subprocess.SubprocessError, OSError, gitops.LsRemoteMalformed):
+                rows = []
+            default = next((left.removeprefix("ref: refs/heads/") for left, ref in rows
                             if left.startswith("ref: refs/heads/") and ref == "HEAD"), None)
             if default is None:
                 raise defaults.Unresolved(f"into_unresolved: {m['path']}: no remote default branch readable; "

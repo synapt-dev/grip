@@ -2410,7 +2410,7 @@ def _layer_carries(root: Path, member: dict[str, str], layers: list[bytes]) -> N
         bundle = Path(tmp) / "layer.bundle"
         bundle.write_bytes(layers[-1])
         heads = gitops.run(root, "bundle", "list-heads", str(bundle), binary=True)
-    carried = {line.split()[0] for line in heads.stdout.decode(errors="replace").splitlines() if line.split()}
+    carried = {line.split()[0] for line in heads.stdout.decode(errors="replace").split("\n") if line.split()}
     if heads.returncode or member["pin"] not in carried:
         raise NativeStoreRefusal(
             f"full_mode_layer_does_not_carry_pin: {member['name']} pin {member['pin']} is not the head of its last layer", 3)
@@ -2470,7 +2470,10 @@ def _atomic_push(root: Path, refspecs: list[tuple[str, str]], verify: bool = Tru
     if proc.returncode == 0:
         return False
     listed = _store_git(root, "ls-remote", "origin", *[ref for _, ref in refspecs], check=False)
-    held = {parts[1]: parts[0] for parts in (line.split("\t") for line in listed.stdout.splitlines()) if len(parts) == 2}
+    try:
+        held = {name: sha for sha, name in gitops.ls_remote_rows(listed.stdout)}
+    except gitops.LsRemoteMalformed:
+        held = {}  # an unreadable answer proves nothing landed: the refusal below names the push's own rejection
     if listed.returncode == 0 and all(held.get(ref) == sha for sha, ref in refspecs):
         return True
     rejected = [line.split("\t") for line in proc.stdout.splitlines() if line.startswith("!")]
@@ -2589,7 +2592,10 @@ def _leases(root: Path, tip: str, refs: list[str]) -> dict[str, str]:
     if listed.returncode:
         detail = " | ".join(line.strip() for line in listed.stderr.splitlines() if line.strip())[:300]
         raise NativeStoreRefusal(f"cannot verify origin's shadow, so nothing was pushed: {detail}", 5)
-    held = {parts[1]: parts[0] for parts in (line.split("\t") for line in listed.stdout.splitlines()) if len(parts) == 2}
+    try:
+        held = {name: sha for sha, name in gitops.ls_remote_rows(listed.stdout)}
+    except gitops.LsRemoteMalformed as exc:
+        raise NativeStoreRefusal(f"cannot verify origin's shadow, so nothing was pushed: {exc}", 5) from None
     leases: dict[str, str] = {}
     for ref in refs:
         now = held.get(ref, "")
@@ -3221,7 +3227,11 @@ def _native_store_materialize(root: Path) -> list[dict[str, str]]:
             # means an unreachable or unauthenticated origin, and only an answered, empty ls-remote says "gone".
             if _store_git(path, "cat-file", "-e", f"{member['pin']}^{{commit}}", check=False).returncode:
                 asked = _store_git(path, "ls-remote", "origin", covered_by, check=False)
-                if asked.returncode == 0 and not asked.stdout.strip():
+                try:
+                    vanished = asked.returncode == 0 and gitops.ls_remote_oid(asked.stdout, covered_by) is None
+                except ValueError:
+                    vanished = False
+                if vanished:
                     raise NativeStoreRefusal(
                         f"full_mode_covering_ref_vanished: {member['name']} covering ref {covered_by} is gone from origin "
                         f"(a merged branch is usually deleted) and pin {member['pin']} is not in the clone; "

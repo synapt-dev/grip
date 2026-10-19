@@ -25,11 +25,20 @@ from . import check_records, declared_sets, gitops, grip, keys, merge_receipts, 
 EXIT_MERGED, EXIT_REFUSED, EXIT_PARTIAL = 0, 3, 4
 
 
-def _git(repo: Path, *args: str, check: bool = True) -> str:
+def _git(repo: Path, *args: str, check: bool = True, raw: bool = False) -> str:
     proc = gitops.run(repo, *args, timeout=60, raise_timeout=True)  # an expiry raises, as it always did here
     if check:
         gitops._raise(proc, args, RuntimeError)
-    return proc.stdout.strip()
+    return proc.stdout if raw else proc.stdout.strip()
+
+
+def _ls_remote(repo: Path, remote: str, pattern: str) -> list[tuple[str, str]]:
+    """(oid, name) per advertised ref, split on "\n" from the raw output: str.splitlines and strip would cut a
+    name at U+2028 or U+0085."""
+    try:
+        return gitops.ls_remote_rows(_git(repo, "ls-remote", remote, pattern, raw=True))
+    except gitops.LsRemoteMalformed as exc:
+        raise RuntimeError(f"ls-remote {remote} {pattern}: {exc}") from None
 
 
 _plain_remote = gitops.plain_remote
@@ -93,7 +102,7 @@ def _capped(text: str, cap: int = 300) -> str:
 def _advertised(repo: Path, remote: str, ref: str) -> str | None:
     """The oid the remote advertises for EXACTLY ref; ls-remote patterns also match nested refs by tail."""
     _plain_remote(remote)
-    hits = [line.split("\t") for line in _git(repo, "ls-remote", remote, ref).splitlines()]
+    hits = _ls_remote(repo, remote, ref)
     exact = [oid for oid, name in hits if name == ref]
     if len(exact) > 1:
         raise RuntimeError(f"ls-remote: {ref} advertised more than once")
@@ -190,6 +199,10 @@ _REVIEW_REF_PREFIX = "refs/dev.synapt.grip/__reviews__/"
 _REVIEW_SCAN_CAP = 200  # reviews read per member remote; over it is a named refusal, never a silent partial read
 
 
+def _review_refs(repo: Path, remote: str) -> list[str]:
+    return [name for _, name in _ls_remote(repo, remote, f"{_REVIEW_REF_PREFIX}*") if name.startswith(_REVIEW_REF_PREFIX)]
+
+
 def _pin_tie(root: Path, declaration: declared_sets.Declaration, into: str):
     """The tie for the OTHER members of a declared set: `tie(member, pin)` returns None when that pin is merged into
     the member's target on its remote, or when a review published on that remote names the member at exactly that
@@ -208,8 +221,7 @@ def _pin_tie(root: Path, declaration: declared_sets.Declaration, into: str):
             tip = _remote_tip(repo, remote, into)
             if tip and gitops.run(repo, "merge-base", "--is-ancestor", pin, tip).returncode == 0:
                 return None
-            refs = [line.split("\t")[1] for line in _git(repo, "ls-remote", remote, f"{_REVIEW_REF_PREFIX}*").splitlines()
-                    if "\t" in line and line.split("\t")[1].startswith(_REVIEW_REF_PREFIX)]
+            refs = _review_refs(repo, remote)
             if len(refs) > _REVIEW_SCAN_CAP:
                 return (f"declared_set_pin_unmeasured: {name}'s remote advertises {len(refs)} reviews, over the "
                         f"{_REVIEW_SCAN_CAP} this gate reads; its pin {short} cannot be tied to a reviewed head")

@@ -3793,8 +3793,8 @@ def grip_init_cmd(
         "--mode",
         help=(
             'The workspace mode of a new store: "compat" (the default) or "full". Full writes '
-            '`mode = "full"` into grip.toml, so each member is recorded as a field-commit and a pin '
-            "need not be on a remote. A grip.toml that declares another mode, or an existing store in "
+            '`mode = "full"` into grip.toml, so each member is recorded by its own commit as the gitlink, its '
+            "fields sit in the .grip/fields sidecar, and a pin need not be on a remote. A grip.toml that declares another mode, or an existing store in "
             "another mode (no mode line is compat), is refused."
         ),
     ),

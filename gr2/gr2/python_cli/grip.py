@@ -179,7 +179,7 @@ def _carry_objects_from_range(workspace: Path, remote: str, base: str, range_pat
                 raise GripReviewRefused("at_base_unreachable", base, remote)
             raise GripCorruptError(f"base {base} not reachable on {remote} to derive review head-tree")
         # --at-base: the frozen base must be history the ref has passed through, not any commit the remote holds.
-        if at_base_of and _lg("merge-base", "--is-ancestor", base, at_base_of, allow_fail=True).returncode != 0:
+        if at_base_of and gitops.is_ancestor(lane, base, at_base_of) is not True:
             raise GripReviewRefused("at_base_not_ancestor", base, at_base_of)
         _lg("checkout", "--detach", base)
         try:

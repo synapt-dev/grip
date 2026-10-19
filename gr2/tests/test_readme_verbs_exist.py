@@ -227,14 +227,47 @@ def test_the_readme_commands_table_omits_no_live_verb() -> None:
     assert not missing, "the Commands table omits live verbs:\n  " + "\n  ".join(missing)
 
 
-def test_the_commands_table_is_one_unbroken_block():
-    # A non-table line between two rows ends the table for a Markdown renderer: every row after it prints as raw
-    # pipes in a paragraph, while a test that reads every line starting with `|` still passes.
+def test_the_commands_tables_are_each_one_unbroken_block():
+    # A non-table line between two rows ends the table for a Markdown renderer: every row after it
+    # prints as raw pipes in a paragraph, while a test that reads every line starting with `|` still
+    # passes. The section holds two tables on purpose (everyday and plumbing), so each run of rows
+    # must open with its own header and separator line: the rows cut off by a stray line have
+    # neither, and fail here.
     readme = (Path(__file__).resolve().parents[1] / "README.md").read_text().splitlines()
     start = readme.index("## Commands")
     end = next(i for i in range(start + 1, len(readme)) if readme[i].startswith("## "))
     section = readme[start + 1:end]
-    rows = [i for i, line in enumerate(section) if line.startswith("|")]
-    assert rows, "the Commands section has no table"
-    gap = [section[i] for i in range(rows[0], rows[-1] + 1) if not section[i].startswith("|")]
-    assert gap == [], f"the Commands table is split by: {gap}"
+    blocks: list[list[str]] = []
+    for prev, line in zip([""] + section, section):
+        if line.startswith("|"):
+            if not prev.startswith("|"):
+                blocks.append([])
+            blocks[-1].append(line)
+    assert len(blocks) == 2, f"expected the everyday and the plumbing tables, found {len(blocks)}"
+    for block in blocks:
+        headed = block[0].startswith("| Group |") and re.fullmatch(r"\|(-+\|)+", block[1])
+        assert len(block) >= 3 and headed, f"a Commands table is split or headless at: {block[:2]}"
+
+
+def _section(text: str, start: str, stop: str) -> str:
+    begin = text.index(start)
+    return text[begin: text.index(stop, begin + len(start))]
+
+
+def _paths(entries: list[tuple[str, str]]) -> set[str]:
+    return {verb if group == "(top level)" else f"{group} {verb}" for group, verb in entries}
+
+
+def test_the_everyday_table_is_exactly_what_gr2_help_shows() -> None:
+    # The first Commands table is the porcelain: every visible path, and nothing else, so a command
+    # that moves between porcelain and plumbing has to move between the two tables too.
+    everyday = _paths(_table_entries(_section(README.read_text(), "## Commands\n", "### Plumbing")))
+    visible = {p for p, _, hidden in surface.leaves(typer.main.get_command(app)) if not hidden}
+    assert everyday == visible, (sorted(everyday - visible), sorted(visible - everyday))
+
+
+def test_the_plumbing_table_names_only_what_gr2_help_a_lists() -> None:
+    plumbing = _paths(_table_entries(_section(README.read_text(), "### Plumbing\n", "\n## ")))
+    assert len(plumbing) >= 50, sorted(plumbing)
+    unlisted = sorted(p for p in plumbing if not _in_help_all(p))
+    assert not unlisted, unlisted

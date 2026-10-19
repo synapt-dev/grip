@@ -257,6 +257,7 @@ json  grip status .root.state  enum(clean,dirty)                      stable
 json  grip status .status  enum(status)                               stable
 verb  grip status (hidden:grip)                                       stable
 # help
+arg   help path <str> (hidden)                                        stable
 flag  help -a/--all (hidden)                                          stable
 verb  help (hidden)                                                   stable
 # hooks revoke

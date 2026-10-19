@@ -129,12 +129,38 @@ def _root(
 @app.command("help", hidden=True)
 def help_command(
     ctx: typer.Context,
+    path: Optional[List[str]] = typer.Argument(
+        None, help="A command path such as `review merge`: print that command's own --help."
+    ),
     all_commands: bool = typer.Option(
         False, "-a", "--all", help="Also list the plumbing commands hidden from gr2 --help."
     ),
 ) -> None:
-    """Show gr2's help; with -a, also every plumbing command, each of which runs by its full path."""
+    """Show gr2's help; with a path, that command's own --help (git's `git help <command>`);
+    with -a, also every plumbing command, each of which runs by its full path."""
     root = ctx.find_root()
+    if path:
+        if all_commands:
+            raise UsageError(
+                "-a lists every plumbing path and takes no path; run gr2 help -a alone", ctx
+            )
+        command = root.command
+        for depth, word in enumerate(path):
+            command = getattr(command, "commands", {}).get(word)
+            if command is None:
+                # Escaped, so a path the user typed cannot colour the terminal (click's own refusal does not either).
+                asked, missing = (next_steps._escaped(" ".join(p)) for p in (path, path[: depth + 1]))
+                raise UsageError(
+                    f"no gr2 command '{asked}' ('{missing}' is not one); gr2 --help lists the "
+                    "everyday commands and gr2 help -a adds the plumbing",
+                    ctx,
+                )
+        # The same parse `gr2 <path> --help` runs, so the two print the same thing.
+        code = root.command.main(
+            args=[*path, "--help"], prog_name=root.info_name, standalone_mode=False
+        )
+        _exit(code or 0)
+        return
     typer.echo(root.get_help())
     if all_commands:
         typer.echo("\nPlumbing (hidden from gr2 --help; each runs by its full path):")

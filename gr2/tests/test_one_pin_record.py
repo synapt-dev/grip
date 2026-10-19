@@ -55,7 +55,7 @@ def _advance(seed: Path, label: str) -> str:
 def _build_stale(tmp_path, monkeypatch, full: bool = False):
     """A native root whose spec pins alpha and beta at P1 while grip.toml and the gitlinks record P2. With ``full`` the
     root is switched to full mode after workspace init (which refuses a full-mode root), before the advance, so the
-    advance is recorded as field-commits."""
+    advance is recorded as gitlinks with a sidecar under .grip/fields/."""
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     monkeypatch.setenv("GIT_TERMINAL_PROMPT", "0")
     root, seeds = tmp_path / "ws", {}
@@ -89,7 +89,9 @@ def _build_stale(tmp_path, monkeypatch, full: bool = False):
     entry = git(root, "ls-tree", "HEAD", "alpha").split()[2]
     if full:
         assert tomllib.loads(git(root, "show", "HEAD:grip.toml")).get("mode") == "full"
-        assert entry not in (p1, p2["alpha"]), "in full mode the gitlink must be a field-commit, not the member's"
+        assert entry == p2["alpha"], "in full mode the gitlink holds the member's own commit"
+        assert git(root, "ls-tree", "-d", "--name-only", "HEAD", ".grip/fields/alpha") == ".grip/fields/alpha", (
+            "and its fields are in the sidecar")
     else:
         assert entry == p2["alpha"]
     return {"root": root, "p1": p1, "p2": p2["alpha"]}

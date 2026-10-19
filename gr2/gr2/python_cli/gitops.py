@@ -285,16 +285,39 @@ def _child_env(env: dict | None) -> dict | None:
     return child
 
 
+#: The git commands that talk to a remote, whose failure output can carry a URL with a credential in it.
+NETWORK = frozenset({"clone", "fetch", "ls-remote", "push", "pull", "remote", "submodule"})
+
+
+def _repo_dir(args, cwd: Path | None) -> Path | None:
+    """The repository a git call runs in: the value after `-C` or `--git-dir` in `args`, else `cwd`."""
+    for flag in ("-C", "--git-dir"):
+        if flag in args[:-1]:
+            return Path(args[args.index(flag) + 1])
+    return cwd
+
+
 def _spawn(argv: list[str], *, cwd: Path | None, input, binary: bool, env: dict | None,
            timeout: float | None, raise_timeout: bool) -> subprocess.CompletedProcess:
     """The one place gr2 starts git: an expiry is rc 124 with empty output unless the caller asks for the raise.
 
-    A clone is never bounded, whichever helper asked for it: its duration scales with the repository."""
-    if command_of(argv) == "clone":
+    A clone is never bounded, whichever helper asked for it: its duration scales with the repository.
+    A failed text call of a NETWORK command comes back with its stdout and stderr masked as shown_git_text masks
+    them, because callers put git's output in a message as it is (often `stderr or stdout`)."""
+    command = command_of(argv)
+    if command == "clone":
         timeout = None
     try:
-        return subprocess.run(argv, cwd=cwd, input=input, env=_child_env(env), capture_output=True, text=not binary,
+        proc = subprocess.run(argv, cwd=cwd, input=input, env=_child_env(env), capture_output=True, text=not binary,
                               check=False, timeout=timeout)
+        # `config` (which credential_values runs to read the remote urls) is not in NETWORK, so this cannot recurse.
+        if proc.returncode == 0 or binary or command not in NETWORK:
+            return proc
+        args = logical_argv(argv)[1:]
+        repo = _repo_dir(args, cwd)
+        return subprocess.CompletedProcess(proc.args, proc.returncode,
+                                           shown_git_text(args, proc.stdout, repo) if proc.stdout else proc.stdout,
+                                           shown_git_text(args, proc.stderr, repo) if proc.stderr else proc.stderr)
     except subprocess.TimeoutExpired:
         if raise_timeout:
             raise
@@ -351,13 +374,8 @@ def run_argv(argv: list[str], *, cwd: Path | None = None, input: str | bytes | N
 def clone(*args: str, cwd: Path | None = None, binary: bool = False, env: dict | None = None,
           timeout: float | None = None) -> subprocess.CompletedProcess:
     """`git clone <args>`: the one place gr2 clones. Unbounded by default, because a clone's
-    duration scales with the repository, not with anything gr2 controls. A failed text clone's stderr comes back
-    masked as shown_git_text masks it, because every caller puts it in a message as it is."""
-    proc = run_argv(["git", "clone", *args], cwd=cwd, binary=binary, env=env, timeout=timeout)
-    if proc.returncode == 0 or binary or not proc.stderr:
-        return proc
-    return subprocess.CompletedProcess(proc.args, proc.returncode, proc.stdout,
-                                       shown_git_text(("clone", *args), proc.stderr, cwd))
+    duration scales with the repository, not with anything gr2 controls."""
+    return run_argv(["git", "clone", *args], cwd=cwd, binary=binary, env=env, timeout=timeout)
 
 
 def logical_argv(argv) -> list[str]:

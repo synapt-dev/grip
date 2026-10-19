@@ -10,11 +10,16 @@ G1 an ls-remote refusal (grip._remote_ref_matches, _head_present_on_remote, _rem
    a token in its userinfo carries the token in neither its subject nor its detail;
 G2 a token that straddles the 120-character cut leaves no prefix in the detail (masking runs before the cut);
 G3 a plain remote name and git's plain stderr are shown unchanged.
-C1 a failed clone (run_argv stubbed, rc 128) comes back with git's echoed token masked, returncode and args unchanged;
+C1 a failed clone (git stubbed under _spawn, rc 128) comes back with git's echoed token masked, returncode and args unchanged;
 C2 a real failed clone of a URL with a query token shows no token in its stderr;
 C3 a clone that exits 0 comes back byte-identical;
 C4 a binary clone comes back untouched, even when it fails;
 C5 clone_repo's SystemExit shows no token in the stderr part of its message.
+N1 a real failed ls-remote of a URL with a query token shows no token in its stderr (_spawn masks every network verb);
+N2 a real failed fetch of a remote whose query token is only in the repo's config shows none (git echoes a query as is);
+N3 a real failed push to that remote shows none;
+N4 a failed LOCAL verb keeps its stderr byte-identical;
+N5 a successful ls-remote of a local bare repo keeps its stdout unchanged.
 """
 from __future__ import annotations
 
@@ -141,14 +146,19 @@ CLONE_URL = f"https://u:{TOKEN}@h/x.git"
 REFUSED_URL = f"https://127.0.0.1:9/x.git?access_token={TOKEN}"
 
 
-def stub_clone(monkeypatch, returncode: int, stderr):
-    calls = []
+def stub_clone(monkeypatch, returncode: int, stderr, stdout=None):
+    """Stub git itself (subprocess.run under _spawn) for a clone only, so _spawn's masking runs; any other git
+    call (credential_values' `config`) runs for real."""
+    calls, real = [], subprocess.run
 
     def ran(argv, **kwargs):
+        if gitops.command_of(argv) != "clone":
+            return real(argv, **kwargs)
         calls.append(kwargs)
-        return subprocess.CompletedProcess(argv, returncode, b"" if kwargs.get("binary") else "", stderr)
+        out = stdout if stdout is not None else ("" if kwargs.get("text") else b"")
+        return subprocess.CompletedProcess(argv, returncode, out, stderr)
 
-    monkeypatch.setattr(gitops, "run_argv", ran)
+    monkeypatch.setattr(gitops.subprocess, "run", ran)
     return calls
 
 
@@ -157,7 +167,7 @@ def test_c1_a_failed_clone_masks_the_echoed_token(monkeypatch, tmp_path):
     proc = gitops.clone(CLONE_URL, str(tmp_path))
     assert TOKEN not in proc.stderr
     assert proc.returncode == 128
-    assert proc.args == ["git", "clone", CLONE_URL, str(tmp_path)]
+    assert gitops.logical_argv(proc.args) == ["git", "clone", CLONE_URL, str(tmp_path)]
 
 
 def test_c2_a_real_failed_clone_shows_no_token(tmp_path):
@@ -185,6 +195,15 @@ def test_c5_clone_repo_shows_no_token_in_its_message(tmp_path):
         gitops.clone_repo(REFUSED_URL, tmp_path / "x")
     message = str(caught.value)
     assert "\n" in message
+    assert TOKEN not in message
+
+
+def test_c6_clone_repo_masks_a_token_echoed_on_stdout_when_stderr_is_empty(monkeypatch, tmp_path):
+    stub_clone(monkeypatch, 128, "", stdout=f"remote: {TOKEN}\n")
+    with pytest.raises(SystemExit) as caught:
+        gitops.clone_repo(REFUSED_URL, tmp_path / "x")
+    message = str(caught.value)
+    assert message.startswith("failed to clone ")
     assert TOKEN not in message
 
 
@@ -238,3 +257,53 @@ def test_s4_a_plain_url_is_named_in_full(monkeypatch, tmp_path):
     with pytest.raises(SystemExit) as caught:
         gitops.clone_repo(PLAIN_URL, tmp_path / "x")
     assert f"failed to clone {PLAIN_URL} -> " in str(caught.value)
+
+
+@pytest.fixture
+def token_origin(tmp_path):
+    """A repo with one commit whose `origin` carries the token only in its config, and refuses at once."""
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    git(repo, "commit", "-q", "--allow-empty", "-m", "base")
+    git(repo, "remote", "add", "origin", REFUSED_URL)
+    return repo
+
+
+def test_n1_a_real_failed_ls_remote_shows_no_token():
+    proc = gitops.run_argv(["git", "ls-remote", REFUSED_URL])
+    print("n1 masked stderr:", repr(proc.stderr))
+    assert proc.returncode != 0
+    assert TOKEN not in proc.stderr
+
+
+def test_n2_a_real_failed_fetch_shows_no_token_from_config(token_origin):
+    proc = gitops.run(token_origin, "fetch", "origin")
+    print("n2 masked stderr:", repr(proc.stderr))
+    assert proc.returncode != 0
+    assert TOKEN not in proc.stderr
+    assert TOKEN not in proc.stdout
+
+
+def test_n3_a_real_failed_push_shows_no_token_from_config(token_origin):
+    proc = gitops.run(token_origin, "push", "origin", "HEAD:refs/heads/x")
+    print("n3 masked stderr:", repr(proc.stderr))
+    assert proc.returncode != 0
+    assert TOKEN not in proc.stderr
+    assert TOKEN not in proc.stdout
+
+
+def test_n4_a_failed_local_verb_keeps_its_stderr(token_origin):
+    raw = subprocess.run(["git", "-C", str(token_origin), "rev-parse", "nope"], capture_output=True, text=True)
+    proc = gitops.run(token_origin, "rev-parse", "nope")
+    assert proc.returncode == raw.returncode != 0
+    assert proc.stderr == raw.stderr
+
+
+def test_n5_a_successful_ls_remote_keeps_its_stdout(tmp_path, world):
+    origin, base, _ = world
+    url = origin.as_uri()
+    raw = subprocess.run(["git", "ls-remote", url], capture_output=True, text=True, check=True)
+    proc = gitops.run_argv(["git", "ls-remote", url])
+    assert proc.returncode == 0
+    assert proc.stdout == raw.stdout
+    assert base in proc.stdout

@@ -512,3 +512,71 @@ def test_a_symlinked_key_at_the_lane_root_is_not_a_placed_clone(tmp_path: Path):
     result = runner.invoke(gr2_app.app, ["review", "close", str(lane), "--json"])
     assert result.exit_code != 0 and "work at the lane root" in _text(result), _text(result)
     assert (outside / "demo-api" / ".git").is_dir()
+
+
+@pytest.mark.parametrize("key", [".GIT", ".Git", "git~1", "GIT~1", ".git.", ".git ", ".git::$INDEX_ALLOCATION",
+                                 "\u200c.git", ".g\u200dit"])
+def test_a_key_git_reads_as_dotgit_is_not_a_placed_clone(tmp_path: Path, key: str):
+    """A recorded key fsck would refuse as a name for .git (any case, its NTFS forms, its HFS+ forms) is never the
+    review's, even as a real clone at its pin; on a filesystem that reads it as .git it would be the lane's own."""
+    runner = make_cli_runner()
+    lane = _multi_member_lane(tmp_path)
+    pin = _placed_clone(tmp_path, lane, key)
+    _run_receipt(lane, _selection({key: pin}))
+    result = runner.invoke(gr2_app.app, ["review", "close", str(lane), "--json"])
+    assert result.exit_code != 0 and "work at the lane root" in _text(result), _text(result)
+    assert (lane / key / ".git").is_dir()
+
+
+def test_a_key_named_dotgit_is_not_placed_at_the_lane_root(tmp_path: Path):
+    """A lane root with a `.git` never reaches the placed-member read through close, so the read is asked
+    directly: a clone at `.git` at its pin is not a placed member."""
+    lane = tmp_path / "lane"
+    lane.mkdir()
+    pin = _placed_clone(tmp_path, lane, ".git")
+    receipt = {"kind": "review-run", "downstream": _selection({".git": pin})}
+    assert open_gr_review._run_placed_members(lane, receipt, set()) == []
+    assert open_gr_review._run_placed_members(lane, {"kind": "review-run", "downstream": _selection(
+        {"demo-api": _placed_clone(tmp_path, lane, "demo-api")})}, set()) == ["demo-api"]
+
+
+def test_a_key_that_differs_from_a_member_only_in_case_is_not_placed(tmp_path: Path):
+    """A case-insensitive filesystem reads `Demo-core` as the member `demo-core`, so the key is never placed."""
+    runner = make_cli_runner()
+    lane = _multi_member_lane(tmp_path)
+    pin = _placed_clone(tmp_path, lane, "Demo-core")
+    _run_receipt(lane, _selection({"Demo-core": pin}))
+    result = runner.invoke(gr2_app.app, ["review", "close", str(lane), "--json"])
+    assert result.exit_code != 0 and "work at the lane root" in _text(result), _text(result)
+    assert "Demo-core" in _text(result), _text(result)
+    assert (lane / "Demo-core" / ".git").is_dir()
+    # Folded on both sides: a lowercase key beside a mixed-case member is refused the same way.
+    receipt = {"kind": "review-run", "downstream": _selection({"Demo-core": pin})}
+    assert open_gr_review._run_placed_members(lane, receipt, {"DEMO-CORE"}) == []
+    assert open_gr_review._run_placed_members(lane, receipt, {"demo-web"}) == ["Demo-core"]
+
+
+def test_two_keys_that_differ_only_in_case_are_neither_placed(tmp_path: Path):
+    """Two recorded keys a case-insensitive filesystem reads as one directory: neither is the review's."""
+    runner = make_cli_runner()
+    lane = _multi_member_lane(tmp_path)
+    pins = {key: _placed_clone(tmp_path, lane, key) for key in ("demo-api", "Demo-API")}
+    _run_receipt(lane, _selection(pins))
+    assert open_gr_review._run_placed_members(lane, json.loads(
+        (lane / review_run._RECEIPT_NAME).read_text()), {"demo-core", "demo-web"}) == []
+    result = runner.invoke(gr2_app.app, ["review", "close", str(lane), "--json"])
+    assert result.exit_code != 0 and "work at the lane root" in _text(result), _text(result)
+    assert (lane / "demo-api" / ".git").is_dir() and (lane / "Demo-API" / ".git").is_dir()
+
+
+def test_a_mixed_case_key_with_no_twin_is_still_placed(tmp_path: Path):
+    """Case alone refuses nothing: a mixed-case key, recorded once in each role, is the review's."""
+    runner = make_cli_runner()
+    lane = _multi_member_lane(tmp_path)
+    pin = _placed_clone(tmp_path, lane, "Demo-API")
+    selection = _selection({"Demo-API": pin})
+    selection["upstream"] = ["Demo-API"]
+    _run_receipt(lane, selection)
+    result = runner.invoke(gr2_app.app, ["review", "close", str(lane), "--json"])
+    assert result.exit_code == 0, _text(result)
+    assert not lane.exists()

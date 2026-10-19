@@ -26,6 +26,8 @@ class Choice(NamedTuple):
     # "name (reason)" for every member whose checkout moved but could not be measured. The caller refuses the whole
     # set on any of these: binding the others would mint one review for part of a change set.
     refused: tuple[str, ...] = ()
+    # names of the members whose base is the live remote head of their ref (the workspace records no pin for them)
+    live: frozenset[str] = frozenset()
 
 
 def _text(value: object) -> str | None:
@@ -109,7 +111,7 @@ def changed_member_rows(workspace_root: Path, only: list[str] | None = None) -> 
         # One review is one change set; with no pin to say which commits belong to it, the branch is the only claim.
         refused.append("members on different branches and no workspace pin: "
                        + ", ".join(f"{n} on {b}" for n, b in branches.items()))
-    return Choice(rows, skipped, tuple(refused))
+    return Choice(rows, skipped, tuple(refused), frozenset(branches))
 
 
 def _row(m: Member, ref: str, head: str, base: str, checkout: Path) -> dict:

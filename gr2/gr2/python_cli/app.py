@@ -5128,7 +5128,8 @@ def review_bind(
                 "first, or give the row with --repo/--remote/--base/--head or --rows-json"
             )
         for row in choice.rows:
-            typer.echo(f"gr2: pin {row['key']} {row['base'][:12]}..{row['head'][:12]} (its checkout is ahead of the workspace's pin)", err=True)
+            ahead = (f"the live head of {row['ref']}" if row['key'] in choice.live else "the workspace's pin")
+            typer.echo(f"gr2: pin {row['key']} {row['base'][:12]}..{row['head'][:12]} (its checkout is ahead of {ahead})", err=True)
         if choice.skipped:
             typer.echo(f"gr2: not pinned: {'; '.join(choice.skipped)}", err=True)
         rows = choice.rows

@@ -6,6 +6,8 @@ Written by the author of the change (not by an independent reader). Each row nam
   * a detached HEAD with no pin is pinned against the live head                      -> the detached row
   * members on different branches with no pin are pinned as one review               -> the branches row
   * a checkout the live head is not an ancestor of is pinned (or only skipped)       -> the behind row
+  * a live head the checkout has not fetched is pinned (`!= 0` -> `== 1`)          -> the unfetched row
+  * the success line names the wrong base on either path   -> the line row (no pin), test_review_a4 bare-bind row (pin)
 """
 from __future__ import annotations
 
@@ -119,3 +121,46 @@ def test_a_member_behind_its_live_head_refuses_rebase(two_member_ws: Path, tmp_p
     assert code == 2 and "Traceback" not in out, out
     assert "beta is behind refs/heads/main; rebase onto it" in text and "no review id was minted" in text, text
     assert _no_review_ref(ws)
+
+
+def _move_remote_main(ws: Path, tmp_path: Path, name: str) -> str:
+    other = tmp_path / f"{name}-other"
+    subprocess.run(["git", "clone", "-q", _remote_url(ws / name), str(other)], check=True, capture_output=True)
+    (other / "moved.txt").write_text("moved\n")
+    _git(other, "add", ".")
+    _git(other, "-c", "user.name=t", "-c", "user.email=t@e.invalid", "commit", "-q", "-m", "moved")
+    _git(other, "push", "-q", "origin", "main")
+    return _git_out(other, "rev-parse", "HEAD")
+
+
+def test_a_live_head_not_in_the_checkout_refuses_fetch(two_member_ws: Path, tmp_path: Path) -> None:
+    """The remote's main moved and the checkout did NOT fetch it: the live head is not an object in the checkout,
+    so ancestry cannot be read (git exits 128, not 1). Named and refused before any id is minted."""
+    ws = _spec_ws(two_member_ws)
+    _feature(ws / "alpha")
+    _feature(ws / "beta")
+    live = _move_remote_main(ws, tmp_path, "beta")
+    probe = subprocess.run(["git", "-C", str(ws / "beta"), "cat-file", "-e", live], capture_output=True)
+    assert probe.returncode != 0, "fixture: the live head must not be in the checkout"
+    code, out = _cli("review", "pin", str(ws))
+    text = _flat(out)
+    assert code == 2 and "Traceback" not in out, out
+    assert (f"beta (no workspace pin, and the live head of refs/heads/main {live[:12]} is not in its checkout; fetch it)"
+            in text and "no review id was minted" in text), text
+    assert "gr2: pin " not in text and "gr:" not in out, text
+    assert _no_review_ref(ws)
+
+
+def test_the_success_line_names_the_base_it_used(two_member_ws: Path) -> None:
+    """No pin: the line says ahead of the live head of the ref. A pinned member keeps 'the workspace's pin' (its
+    wording is read in tests/test_review_a4.py::test_a_bare_bind_binds_the_member_whose_checkout_is_not_at_its_pin)."""
+    ws = _spec_ws(two_member_ws)
+    heads = {n: _feature(ws / n) for n in ("alpha", "beta")}
+    code, out = _cli("review", "pin", str(ws))
+    assert code == 0, out
+    text = _flat(out)
+    for n in ("alpha", "beta"):
+        base = _ls_remote(_remote_url(ws / n), "refs/heads/main")
+        assert (f"gr2: pin {n} {base[:12]}..{heads[n][:12]} (its checkout is ahead of the live head of refs/heads/main)"
+                in text), text
+    assert "ahead of the workspace's pin" not in text, text

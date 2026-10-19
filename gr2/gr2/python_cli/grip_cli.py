@@ -1173,6 +1173,30 @@ def _store_root(root: Path | None, positional: Path | None = None) -> Path:
     return Path.cwd() if chosen is None else chosen.resolve()
 
 
+def _store_root_upward(root: Path | None) -> Path:
+    """The root for a verb that may run from inside a member: `--root/-C`, else the nearest workspace at or above the
+    current directory, by the review verbs' own walk (`app._resolve_workspace_root`). With no workspace up there it
+    refuses at 5 naming where it started, and does not send the caller to init a store inside a member."""
+    if root is not None:
+        return _store_root(root)
+    from .app import _is_workspace_root, _resolve_workspace_root
+
+    found = _resolve_workspace_root(None)
+    if not _is_workspace_root(found):
+        try:
+            _refuse_moved_workspace(found)  # a moved root has no grip.toml; it answers first, as from -C
+        except NativeStoreRefusal as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(code=exc.code)
+        typer.echo(
+            f"no workspace root at or above {found} (a store root's grip.toml, or .grip/workspace_spec.toml); "
+            "run this inside a workspace, or name its root with -C <root>",
+            err=True,
+        )
+        raise typer.Exit(code=5)
+    return found
+
+
 def _store_advice(root: Path | None, verb: str) -> str:
     """`gr2 store <verb>` as it must be typed from the current directory to act on `root`.
 
@@ -3674,7 +3698,7 @@ def grip_commit_cmd(
     commits its upstream lacks are carried as a layer in the member's record, so `store push` and a clone
     plus `store materialize` rebuild it on another machine without pushing the member.
     """
-    root = _store_root(root)
+    root = _store_root_upward(root)
     layered: list[str] = []
     try:
         committed = _native_store_commit(root, message, layered, allow_rewind=allow_rewind)
@@ -4085,7 +4109,7 @@ def grip_checkout_cmd(
     rather than leaving a silent partial tree) and defines no second materialization path. It
     delegates to the same helper materialize uses for exactly that reason.
     """
-    root = _store_root(root)
+    root = _store_root_upward(root)
     try:
         resolved, members = _native_store_checkout(root, ref)
     except NativeStoreRefusal as exc:

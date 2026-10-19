@@ -61,18 +61,22 @@ def ws(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return root
 
 
-def test_store_checkout_from_a_member_subdirectory_refuses_like_its_siblings(
+def test_store_checkout_from_a_member_subdirectory_acts_on_the_root_like_from_the_root(
     ws: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     sub = ws / "alpha" / "sub"
     alpha_head = _git(ws / "alpha", "rev-parse", "HEAD")
+    root_head = _git(ws, "rev-parse", "HEAD")
     monkeypatch.chdir(sub)
     rc, out = _cli("store", "status", "--json")
-    assert (rc, f"no grip.toml at {sub}" in out) == (5, True), out  # the sibling's refusal, the control
-    rc, out = _cli("store", "checkout", "HEAD", "--json")
-    assert rc == 5, out
-    assert f"no grip.toml at {sub}" in out, out
-    assert alpha_head not in out, out  # never resolved against the member repo
+    assert (rc, f"no grip.toml at {sub}" in out) == (5, True), out  # a sibling outside the scope keeps its refusal
+    rc, out_sub = _cli("store", "checkout", "HEAD", "--json")
+    assert rc == 0, out_sub
+    payload = json.loads(out_sub.splitlines()[0])
+    assert payload["root_commit"] == root_head, out_sub  # resolved in the root repo, never the member
+    monkeypatch.chdir(ws)
+    rc, out_root = _cli("store", "checkout", "HEAD", "--json")
+    assert (rc, out_root) == (0, out_sub)
     assert _git(ws / "alpha", "rev-parse", "HEAD") == alpha_head
 
 

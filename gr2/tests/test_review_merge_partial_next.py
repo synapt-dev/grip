@@ -48,10 +48,11 @@ def _staged_partial(s, mover=move):
     return {r["key"]: r for r in json.loads(ran.stdout)["members"]}
 
 
-def _run_next_as_printed(s, tmp_path, mover=move):
-    """Stage the partial, run beta's printed next (the operator's pull or target merge + commit, then the line as
-    printed), and return the rows and the last merge receipt."""
-    rows = _staged_partial(s, mover)
+def _run_next_as_printed(s, tmp_path, mover=move, rows=None):
+    """Stage the partial (or take rows already staged at push), run beta's printed next (the operator's pull or target
+    merge + commit, then the line as printed), and return the rows and the last merge receipt."""
+    code = "target_moved_at_push" if rows else "base_moved"
+    rows = rows or _staged_partial(s, mover)
     alpha, beta = s["members"]["alpha"], s["members"]["beta"]
     alpha_main = git(alpha["remote"], "rev-parse", "main")
     step = rows["beta"]["next"]
@@ -66,7 +67,7 @@ def _run_next_as_printed(s, tmp_path, mover=move):
         git(beta["repo"], "add", "fixed.txt")
         git(beta["repo"], "commit", "-m", "new head")
     else:
-        assert rows["beta"]["refused"].startswith("base_moved"), rows
+        assert rows["beta"]["refused"].startswith(code), rows
         assert step.startswith("next: alpha already merged and main moved on beta's remote"), step
         # The operator's half is the printed fetch and merge of the target, committed and not pushed.
         first = step[step.index("without pushing: ") + len("without pushing: "):step.index("; then, with")]
@@ -120,9 +121,8 @@ def test_a_partial_whose_target_moved_reaches_exit_0_as_printed(tmp_path, monkey
         git(gamma["remote"], "merge-base", "--is-ancestor", gamma["head"], "main")
 
 
-def test_a_partial_whose_target_moved_at_push_prints_the_target_merge(tmp_path, monkeypatch):
-    # The gate read beta's base, then main moved before the push: the same next as base_moved, on the main it saw.
-    s = make_slice(tmp_path, monkeypatch, ("alpha", "beta", "gamma"))
+def _staged_at_push(s, monkeypatch):
+    """alpha merged, then beta's main moved after the gate read it and before its push: a partial refused at push."""
     record_set(s)
     argv = ["review", "merge", "--approvals", "0", str(s["author"]), s["review"], "--from", "feat", "--into", "main"]
     beta = s["members"]["beta"]
@@ -140,10 +140,29 @@ def test_a_partial_whose_target_moved_at_push_prints_the_target_merge(tmp_path, 
     assert ran.exit_code == 4, ran.output
     rows = {r["key"]: r for r in json.loads(ran.stdout)["members"]}
     assert rows["beta"]["refused"].startswith("target_moved_at_push"), rows
+    return rows, moved["main"]
+
+
+def test_a_partial_whose_target_moved_at_push_prints_the_target_merge(tmp_path, monkeypatch):
+    # The gate read beta's base, then main moved before the push: the same next as base_moved, on the main it saw.
+    s = make_slice(tmp_path, monkeypatch, ("alpha", "beta", "gamma"))
+    rows, main = _staged_at_push(s, monkeypatch)
     step = rows["beta"]["next"]
     assert step.startswith("next: alpha already merged and main moved on beta's remote"), step
-    assert f"merge --no-edit {moved['main']}" in step and f"--base {moved['main']}" in step, step
+    assert f"merge --no-edit {main}" in step and f"--base {main}" in step, step
     assert step.count("--repo gamma ") == 1 and "gr2 review update" not in step, step
+
+
+def test_a_partial_whose_target_moved_at_push_reaches_exit_0_as_printed(tmp_path, monkeypatch):
+    # The same at-push partial, its printed next run as printed: beta merged on the main it saw, gamma alone after.
+    s = make_slice(tmp_path, monkeypatch, ("alpha", "beta", "gamma"))
+    staged, main = _staged_at_push(s, monkeypatch)
+    rows, merged = _run_next_as_printed(s, tmp_path, _move_target, rows=staged)
+    beta, gamma = s["members"]["beta"], s["members"]["gamma"]
+    git(beta["remote"], "merge-base", "--is-ancestor", main, "main")
+    assert git(gamma["remote"], "rev-parse", "main") != gamma["base"], "gamma was not merged by the printed next"
+    git(gamma["remote"], "merge-base", "--is-ancestor", gamma["head"], "main")
+    assert merged["exit"] == 0 and [m["key"] for m in merged["members"]] == ["gamma"], merged
 
 
 def test_two_moved_members_print_the_unpushed_member_once(tmp_path, monkeypatch):

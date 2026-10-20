@@ -69,6 +69,9 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Fixed
 
+- **gr2: `review open-project` on an unpublished head prints its refusal.** Run before the lane head was pushed, it
+  exited 1 with nothing printed; it now refuses with exit 2 and `open_refused: review mirror ... does not carry head
+  ...: publish the pinned head to the remote, or pass a local source that holds it` on stderr.
 - **gr2: `review pin`, `review publish` and `review blockers` read the entered lane's clone.** With a lane
   entered, `commit` writes to the lane's clone, but all three verbs read the shared checkout: `pin` found nothing
   to pin, `publish` refused `head_moved_since_pin`, and `blockers` resolved `--from` to the shared branch (and,

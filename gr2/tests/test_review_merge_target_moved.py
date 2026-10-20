@@ -287,6 +287,9 @@ def test_a_replace_ref_does_not_make_a_moved_target_read_head_already_on_target(
     # The real history says X does not hold the head, so the push failure is target_moved_at_push.
     set_policy(world, 0)
     when = {k: "1700000000 +0000" for k in ("GIT_AUTHOR_DATE", "GIT_COMMITTER_DATE")}
+    # Each repo's own user.name would otherwise make the two commits differ.
+    when.update(GIT_AUTHOR_NAME="Moved Writer", GIT_AUTHOR_EMAIL="moved@example.invalid",
+                GIT_COMMITTER_NAME="Moved Writer", GIT_COMMITTER_EMAIL="moved@example.invalid")
     moved = {}
 
     def commit(repo, parent):

@@ -202,3 +202,25 @@ def test_every_head_in_the_partial_next_is_quoted():
 def test_the_readme_names_why_the_check_set_next_does_not_recover_a_partial():
     text = " ".join((Path(__file__).resolve().parents[1] / "README.md").read_text().split())
     assert "never moves the pin" in text and "base_not_live_head" in text and "pin that member alone" in text
+
+
+def test_a_partial_whose_count_refuses_base_moved_with_no_measured_heads_refuses_and_does_not_crash(slice2, monkeypatch):
+    # alpha landed earlier; beta is ready but the approval count refuses base_moved and measures no heads, so there is
+    # no observed target to pin: the run refuses beta and exits 4 instead of raising KeyError on the missing heads.
+    from gr2.python_cli import approvals
+    s = slice2
+    record_set(s)
+    argv = ["review", "merge", "--approvals", "0", str(s["author"]), s["review"], "--from", "feat", "--into", "main"]
+    assert CliRunner().invoke(app, argv).exit_code == 0
+    beta = s["members"]["beta"]
+    git(beta["remote"], "update-ref", "refs/heads/main", beta["base"])
+
+    def refuse(*a, **kw):
+        raise approvals.ApprovalRefused("base_moved: the count read a moved base")
+    monkeypatch.setattr(approvals, "count_approvals", refuse)
+    ran = CliRunner().invoke(app, ["review", "merge", "--approvals", "1", *argv[4:]])
+    assert ran.exception is None or isinstance(ran.exception, SystemExit), repr(ran.exception)
+    assert ran.exit_code == 4, ran.output
+    rows = {r["key"]: r for r in json.loads(ran.stdout)["members"]}
+    assert rows["alpha"]["final"] == "merged" and rows["beta"]["final"] == "unmerged", rows
+    assert rows["beta"]["refused"].startswith("base_moved"), rows["beta"]

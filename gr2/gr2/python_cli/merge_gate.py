@@ -879,7 +879,8 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
     waiting_given = False
     for r, m in zip(rows, view["members"]):
         refused = r["refused"] or ""
-        target_moved = refused.startswith(("base_moved", "target_moved_at_push"))
+        # A base_moved with no measured heads has no new target to pin.
+        target_moved = refused.startswith(("base_moved", "target_moved_at_push")) and r.get("_heads") is not None
         if landed and (refused.startswith("feature_moved") or target_moved) and r.get("final") == "unmerged":
             r["next"] = next_steps._partial_moved_row(
                 workspace=str(root), key=m["key"], member_path=m["path"], path=str((workspace / m["path"]).resolve()),

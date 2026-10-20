@@ -379,3 +379,49 @@ def test_since_my_stamp_on_a_rebased_head_ignores_a_local_graft_onto_the_stamped
     assert {k: m[k] for k in ("stamped_head", "current_head", "range", "commits", "paths")} == {
         "stamped_head": world["head"], "current_head": head, "range": None, "commits": [],
         "paths": ["payload", "rebased"]}
+
+
+def plant_unreadable_bind(world):
+    """A commit under the review prefix whose tree is not a pinned review: listed by the store, unreadable as a bind."""
+    ws = world["workspace"]
+    tree = approvals._git(ws, "mktree", data="")
+    bad = approvals._git(ws, "commit-tree", tree, "-m", "not a bind", data="").strip()
+    git(ws, "update-ref", "refs/dev.synapt.grip/__reviews__/" + bad, bad)
+    return bad
+
+
+def test_since_my_stamp_skips_and_names_an_unreadable_bind(world):
+    """Two reviews in the store, one unreadable: the good one is still read, and the bad one is named, not fatal."""
+    assert approve_as(world, "Approver B").exit_code == 0
+    bad = plant_unreadable_bind(world)
+    git(world["workspace"], "config", "user.name", "Approver B")
+    out = approvals.since_my_stamp(world["workspace"], "gr:" + world["rid"])
+    assert out["stamped_review"] == out["review_id"] == "gr:" + world["rid"] and out["changed"] is False
+    assert [s["review_id"] for s in out["skipped"]] == ["gr:" + bad] and out["skipped"][0]["reason"]
+    assert out["since_may_be_older"] is True
+    assert out["since_may_be_older_reason"] == "an unreadable bind may hold a newer stamp of yours"
+
+
+def test_since_my_stamp_on_a_clean_store_carries_no_doubt(world):
+    assert approve_as(world, "Approver B").exit_code == 0
+    git(world["workspace"], "config", "user.name", "Approver B")
+    out = approvals.since_my_stamp(world["workspace"], "gr:" + world["rid"])
+    assert out["stamped_review"] == "gr:" + world["rid"]
+    assert not {"skipped", "since_may_be_older", "since_may_be_older_reason"} & set(out)
+
+
+def test_since_my_stamp_on_the_unreadable_bind_itself_still_refuses(world):
+    from gr2.python_cli import grip
+    assert approve_as(world, "Approver B").exit_code == 0
+    bad = plant_unreadable_bind(world)
+    git(world["workspace"], "config", "user.name", "Approver B")
+    with pytest.raises(grip.GripCorruptError):
+        approvals.since_my_stamp(world["workspace"], "gr:" + bad)
+
+
+def test_since_my_stamp_refused_still_carries_the_doubt(world):
+    plant_unreadable_bind(world)
+    git(world["workspace"], "config", "user.name", "Nobody Stamped")
+    out = approvals.since_my_stamp(world["workspace"], "gr:" + world["rid"])
+    assert out["refused"].startswith("no_stamp")
+    assert out["since_may_be_older"] is True and out["skipped"]

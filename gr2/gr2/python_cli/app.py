@@ -6664,9 +6664,18 @@ def pr_merge(
     subject_targets = None
     if owner_unit is None:
         target, members = resolve_review_subject(workspace_root, review)
-        group_path, group = _find_review_pr_group(workspace_root, target)
-        owner_unit, resolved_lane = str(group.get("owner_unit")), str(group.get("lane_name"))
         on_host = _review_members_on_host(workspace_root, members)
+        if pr_ops.review_pr_groups(workspace_root, target):
+            group_path, group = _find_review_pr_group(workspace_root, target)
+        else:  # PRs opened outside gr2: adopt each one by its reviewed head commit
+            try:
+                group_path, group = pr_ops.adopt_review_pr_group(
+                    workspace_root, target, platform_ops.get_platform_adapter("github"),
+                    {slug: (m["remote"], m["commit"]) for slug, (m, _) in on_host.items()},
+                )
+            except platform_ops.AdapterError as exc:
+                raise SystemExit(f"no PR group for review {target}, and none could be adopted: {exc}") from exc
+        owner_unit, resolved_lane = str(group.get("owner_unit")), str(group.get("lane_name"))
         subject_targets = {slug: MergeVerificationTarget(repo_root=checkout, remote=m["remote"])
                            for slug, (m, checkout) in on_host.items()}
         if not match_head_commit:

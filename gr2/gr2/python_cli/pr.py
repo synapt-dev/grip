@@ -291,6 +291,37 @@ def review_pr_groups(workspace_root: Path, review_target: str) -> list[tuple[Pat
     return found
 
 
+def adopt_review_pr_group(
+    workspace_root: Path, review_target: str, adapter: PlatformAdapter, heads: Mapping[str, tuple[str, str]]
+) -> tuple[Path, dict]:
+    """Record a group for PRs this review did not open (opened with gh, say), so merge can land them.
+
+    `heads` maps each member's repo slug to (remote, reviewed commit). A PR is adopted only when it is
+    the ONE open PR whose head is that commit; none or several is a refusal naming the repo, never a
+    guess. The merge still pins every member to the reviewed commit, so an adopted PR whose branch
+    moves after this lands nothing.
+    """
+    require_adapter_capability(adapter, "pr_for_head")
+    prs: list[dict] = []
+    for repo, (remote, commit) in heads.items():
+        found = adapter.pr_for_head(repo, commit)  # type: ignore[attr-defined]
+        if len(found) != 1:
+            raise AdapterError(
+                f"{repo}: {len(found)} open PRs have head {commit[:12]}; "
+                "open one with `gr2 pr create`, or close all but one"
+            )
+        prs.append({"repo": repo, "pr_number": found[0]["number"], "remote": remote, "adopted": True})
+    group = {
+        "pr_group_id": _generate_group_id(),
+        "owner_unit": "review",
+        "lane_name": review_target,
+        "platform": getattr(adapter, "name", "github"),
+        "prs": prs,
+        "review_target": review_target,
+    }
+    return _save_group(workspace_root, group), group
+
+
 def _generate_group_id() -> str:
     return "pg_" + os.urandom(4).hex()
 

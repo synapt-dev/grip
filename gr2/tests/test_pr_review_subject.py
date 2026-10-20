@@ -149,6 +149,36 @@ def test_bare_pr_merge_pins_the_reviewed_heads(reviewed, monkeypatch):
     assert seen["expected_heads"] == {reviewed["repos"][k]: reviewed["heads"][k] for k in KEYS}
 
 
+def _open_prs_by_head(reviewed, copies=1):
+    """PRs opened outside gr2: the host lists `copies` open PRs at each reviewed head, none elsewhere."""
+    numbers = {reviewed["repos"][k]: 40 + i for i, k in enumerate(KEYS)}
+    heads = {reviewed["repos"][k]: reviewed["heads"][k] for k in KEYS}
+    return lambda repo, sha: [{"number": numbers[repo], "state": "open", "head": sha}] * copies if heads.get(repo) == sha else []
+
+
+def test_merge_adopts_prs_it_did_not_open_by_their_reviewed_heads(reviewed, monkeypatch):
+    reviewed["adapter"].pr_for_head = _open_prs_by_head(reviewed)
+    seen = {}
+    monkeypatch.setattr(pr_ops, "merge_pr_group", lambda **kw: seen.update(kw) or {"pr_group_id": kw["pr_group_id"], "completed": []})
+    merged = gr2(reviewed["author"], monkeypatch, "pr", "merge", "--json")
+    assert merged.exit_code == 0, merged.output
+    assert seen["expected_heads"] == {reviewed["repos"][k]: reviewed["heads"][k] for k in KEYS}
+    groups = [json.loads(p.read_text()) for p in (reviewed["author"] / ".grip" / "pr_groups").glob("*.json")]
+    assert len(groups) == 1 and groups[0]["review_target"] == reviewed["target"]
+    assert {p["repo"]: p["pr_number"] for p in groups[0]["prs"]} == {reviewed["repos"][k]: 40 + i for i, k in enumerate(KEYS)}
+    assert reviewed["adapter"].created == []
+
+
+@pytest.mark.parametrize("copies", [0, 2])
+def test_merge_refuses_to_adopt_unless_one_open_pr_has_the_reviewed_head(reviewed, monkeypatch, copies):
+    reviewed["adapter"].pr_for_head = _open_prs_by_head(reviewed, copies)
+    monkeypatch.setattr(pr_ops, "merge_pr_group", lambda **kw: pytest.fail("merged without one adopted PR per member"))
+    merged = gr2(reviewed["author"], monkeypatch, "pr", "merge", "--json")
+    assert merged.exit_code != 0
+    assert f"{copies} open PRs have head" in str(merged.exception) + merged.output
+    assert not list((reviewed["author"] / ".grip").glob("pr_groups/*.json"))
+
+
 def test_create_refuses_a_member_whose_checkout_moved_after_the_review(reviewed, monkeypatch):
     member = reviewed["author"] / "alpha"
     (member / "p.txt").write_text("unreviewed\n")

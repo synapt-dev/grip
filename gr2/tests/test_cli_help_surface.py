@@ -57,6 +57,7 @@ PORCELAIN = frozenset({
     "status",
     "store check",
     "store commit",
+    "store add",
     "store init",
     "store materialize",
     "store push",

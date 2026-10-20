@@ -102,7 +102,7 @@ The everyday commands, what `gr2 --help` shows. `gr2 help <command>` prints any 
 |---|---|
 | (top level) | branch, add, commit, push, status, update |
 | `lane` | create, enter, exit, list, push, remove |
-| `store` | init, commit, check, push, status, materialize |
+| `store` | init, add, commit, check, push, status, materialize |
 | `review` | open, run, pin, publish, receive, show, stamp, merge, update, close |
 | `pr` | create, status, merge, view |
 | `check` | run, show, set |

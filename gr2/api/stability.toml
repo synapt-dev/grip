@@ -63,6 +63,10 @@ may-change = [
   "flag review read-pr --dir <str>",
   "flag review read-pr --url <str>",
   "flag store check --json",
+  # store add is one release old; its argument and --ref may still change.
+  "verb store add",
+  "arg store add value <str>",
+  "flag store add --ref <str>",
   "verb store checkout",
   "flag store checkout --json",
   "arg store checkout ref <str>",

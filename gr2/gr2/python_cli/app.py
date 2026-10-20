@@ -5113,6 +5113,9 @@ def review_bind(
             )
         except (lane_downstream.MembersUnreadable, lane_downstream.PinConflict) as exc:
             raise typer.BadParameter(f"{exc}; fix the file, or name the row with --repo/--remote/--base/--head or --rows-json")
+        except commit_ops.LaneAmbiguous as exc:  # one plain line, as _refuse_text prints: a usage panel wraps it
+            typer.echo(f"{exc.refusal}: {exc}", err=True)
+            raise typer.Exit(code=2)
         if choice.refused:
             raise typer.BadParameter(
                 f"cannot pin: {'; '.join(choice.refused)}. A member named here may carry part of this change (or, with no "
@@ -5823,8 +5826,9 @@ def review_verify(
 def _resolve_merge_defaults(ws: Path, review_id: Optional[str], into: Optional[str],
                             feature: Optional[str]) -> tuple[str, str, str]:
     """Fill the review id, --from and --into from the workspace when not given; say on stderr what was resolved.
-    With a lane entered, each member is read from the lane's clone, the one commit wrote to."""
-    roots = commit_ops.entered_member_roots(ws)
+    With a lane entered, each member is read from the lane's clone, the one commit wrote to. The lanes are read only
+    when the review id or --from has to be found: with both given, entered lanes do not refuse (LaneAmbiguous)."""
+    roots = commit_ops.entered_member_roots(ws) if not review_id or not feature else {}
 
     def members(bind: str) -> list[tuple[Path, str]]:
         return [(roots.get(m["key"], ws / m["path"]).resolve(), m["head"])

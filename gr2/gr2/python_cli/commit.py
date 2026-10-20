@@ -12,6 +12,7 @@ from pathlib import Path
 
 from gr2.prototypes import lane_workspace_prototype as lane_proto
 
+from .defaults import Unresolved
 from .gitops import GitMissingError, git
 from .review_records import lane_paths_for_repo, read_review_records_for_guard, review_record_pointer_path
 from .spec_apply import MaterializationPlanError, unit_member_path, unit_root
@@ -177,11 +178,17 @@ def _lane_repo_targets(
     return [(repo, lane_proto.lane_repo_root(workspace_root, owner_unit, lane_name, repo)) for repo in repos]
 
 
+class LaneAmbiguous(Unresolved):
+    """Several units have a lane entered, so which lane's clones a review reads cannot be chosen; refusal `lane_ambiguous`."""
+
+    refusal = "lane_ambiguous"
+
+
 def entered_member_roots(workspace_root: Path) -> dict[str, Path]:
     """{repo_key: checkout} for the lane that is entered, so the review verbs read the same clones commit wrote.
 
     With no unit in a lane this is empty and every caller reads the shared checkout, as before. With exactly one
-    unit in a lane it maps that lane's repos (the same targets `commit` uses). With several it refuses by name:
+    unit in a lane it maps that lane's repos (the same targets `commit` uses). With several it raises LaneAmbiguous:
     which lane a review means cannot be guessed, and a wrong guess reads the wrong clone without a word.
     """
     workspace_root = Path(workspace_root).resolve()
@@ -197,7 +204,7 @@ def entered_member_roots(workspace_root: Path) -> dict[str, Path]:
         return {}
     if len(entered) > 1:
         names = ", ".join(f"{unit}/{lane}" for unit, lane in entered)
-        raise SystemExit(
+        raise LaneAmbiguous(
             f"several units have a lane entered ({names}); a review reads one lane's clones. "
             "Run `gr2 lane exit <workspace> <unit>` for every unit but the one under review, then run this again."
         )

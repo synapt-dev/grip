@@ -322,6 +322,35 @@ def adopt_review_pr_group(
     return _save_group(workspace_root, group), group
 
 
+def refresh_adopted_review_pr_group(
+    group_path: Path, group: dict, adapter: PlatformAdapter, heads: Mapping[str, tuple[str, str]]
+) -> dict:
+    """Re-adopt an adopted member whose recorded PR is no longer open, by its reviewed head commit.
+
+    A PR closed after adoption and reopened as a new PR at the same head would otherwise be merged by
+    its old number forever. Only a member whose PR is not open is re-queried, and only the ONE open PR
+    at its reviewed commit replaces it; none or several leaves the record as it was, and so does a
+    platform error during the re-check, which the merge then meets under its own handling.
+    """
+    changed = False
+    for pr in group.get("prs", []):
+        repo = pr.get("repo")
+        if not pr.get("adopted") or repo not in heads:
+            continue
+        try:
+            if str(adapter.pr_status(repo, pr["pr_number"]).state).upper() == "OPEN":
+                continue
+            found = adapter.pr_for_head(repo, heads[repo][1])  # type: ignore[attr-defined]
+        except AdapterError:
+            continue
+        if len(found) == 1 and found[0]["number"] != pr["pr_number"]:
+            pr["pr_number"] = found[0]["number"]
+            changed = True
+    if changed:
+        group_path.write_text(json.dumps(group, indent=2) + "\n")
+    return group
+
+
 def _generate_group_id() -> str:
     return "pg_" + os.urandom(4).hex()
 

@@ -186,6 +186,31 @@ def test_two_moved_members_print_the_unpushed_member_once(tmp_path, monkeypatch)
     assert "gamma" not in rows["delta"]["next"], rows["delta"]["next"]
 
 
+def test_a_member_refused_for_a_conflict_after_a_land_gets_no_moved_next(slice2, monkeypatch):
+    # alpha landed, beta's merge undone on its remote and its merge build now conflicts: beta is refused
+    # merge_conflict, its feature and target where the pin left them, so its next never says the feature moved and
+    # never pins it again.
+    s = slice2
+    record_set(s)
+    argv = ["review", "merge", "--approvals", "0", str(s["author"]), s["review"], "--from", "feat", "--into", "main"]
+    assert CliRunner().invoke(app, argv).exit_code == 0
+    beta = s["members"]["beta"]
+    git(beta["remote"], "update-ref", "refs/heads/main", beta["base"])
+    real = gitops.real_history_run
+
+    def conflict_on_beta(cwd, *args, **kw):
+        if "merge-tree" in args and Path(cwd).resolve().name == "beta":
+            return subprocess.CompletedProcess(args, 1, "", "")
+        return real(cwd, *args, **kw)
+
+    monkeypatch.setattr(gitops, "real_history_run", conflict_on_beta)
+    ran = CliRunner().invoke(app, argv)
+    rows = {r["key"]: r for r in json.loads(ran.stdout)["members"]}
+    assert rows["alpha"]["final"] == "merged" and rows["beta"]["refused"] == "merge_conflict", rows
+    step = rows["beta"].get("next") or ""
+    assert "feature branch moved" not in step and "gr2 review pin" not in step, step
+
+
 def test_every_head_in_the_partial_next_is_quoted():
     # A waiting member's head comes from the record, not from git, so it is quoted like every other value.
     head = "$(touch pwned)"

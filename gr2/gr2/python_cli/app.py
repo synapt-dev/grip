@@ -364,9 +364,57 @@ def _start_lane_branch(repo_name: str, repo: Path, branch: str, ref: str | None,
     return head, start
 
 
+def _lane_source_repo_root(workspace_root: Path, owner_unit: str, repo_name: str) -> Path:
+    repo_spec = _workspace_repo_spec(workspace_root, repo_name)
+    source_repo_root = (workspace_root / str(repo_spec["path"])).resolve()
+    # The state helper decides what the declared path holds, because
+    # asking only `.exists()` was the read-through's fifth site: on an
+    # adopted superproject the declared path is the EMPTY placeholder,
+    # so `materialize_lane_clone` asked the PLACEHOLDER for its origin,
+    # git answered for the workspace root, and the provenance check
+    # refused the lane ("seeded from <root>, not the declared
+    # upstream"). The three answers decide here: a repo root is used
+    # as-is; a placeholder is replaced by the unit's materialized copy
+    # of that member (the clone materialize placed at its pin); a
+    # present path that is neither is refused with the verb that fixes
+    # it.
+    state = gitops.repo_path_state(source_repo_root)
+    if state == "empty_placeholder":
+        unit = lane_proto.find_unit_spec(workspace_root, owner_unit)
+        # The member's SPEC PATH (section 6c item 3), through the one
+        # resolver, so this site cannot disagree with the planner or the
+        # store member map. It needs the whole spec to know the path.
+        unit_member = spec_apply.unit_member_path(
+            workspace_root,
+            lane_proto.load_workspace_spec(workspace_root),
+            unit,
+            repo_name,
+        )
+        if gitops.repo_path_state(unit_member) != "repo_root":
+            raise SystemExit(
+                f"run gr2 workspace materialize first: the unit's copy of {repo_name} "
+                f"is not a repository at {unit_member}"
+            )
+        source_repo_root = unit_member
+    elif state == "neither":
+        raise SystemExit(f"run gr2 workspace materialize first: {source_repo_root} is not a repository")
+    return source_repo_root
+
+
 def _materialize_lane_repos(workspace_root: Path, owner_unit: str, lane_name: str, *, manual_hooks: bool = False, created_checkout_roots: list | None = None, created_lane_file: list | None = None, workspace_commit: str | None = None, at_pin: bool = False, say_start: bool = False) -> None:
     lane_doc = lane_proto.load_lane_doc(workspace_root, owner_unit, lane_name)
     branch_map = dict(lane_doc.get("branch_map", {}))
+    if workspace_commit is None:
+        # A lane clone needs the member's whole history, and a shallow member fails deep in the
+        # clone with an internal error; refuse it here, by name, over EVERY member before any
+        # lane clone is written, so a shallow second member leaves no first-member clone behind.
+        for repo_name in lane_doc.get("repos", []):
+            source_repo_root = _lane_source_repo_root(workspace_root, owner_unit, repo_name)
+            if git(source_repo_root, "rev-parse", "--is-shallow-repository").stdout.strip() == "true":
+                _refuse(f"shallow_member: {repo_name} at {next_steps._shown(str(source_repo_root))} is a shallow "
+                        f"clone, and a lane needs its full history; run "
+                        f"`git -C {next_steps._shown(str(source_repo_root))} fetch --unshallow`, then "
+                        "create the lane again")
     lane_root = lane_proto.lane_checkout_root(workspace_root, owner_unit, lane_name)
     if lane_doc.get("checkout_root") is not None and not lane_root.exists():
         lane_root.mkdir(parents=True, exist_ok=False)
@@ -410,38 +458,7 @@ def _materialize_lane_repos(workspace_root: Path, owner_unit: str, lane_name: st
                 integration_ref, seed_is_work = member.get("ref") or None, False
             else:
                 repo_spec = _workspace_repo_spec(workspace_root, repo_name)
-                source_repo_root = (workspace_root / str(repo_spec["path"])).resolve()
-                # The state helper decides what the declared path holds, because
-                # asking only `.exists()` was the read-through's fifth site: on an
-                # adopted superproject the declared path is the EMPTY placeholder,
-                # so `materialize_lane_clone` asked the PLACEHOLDER for its origin,
-                # git answered for the workspace root, and the provenance check
-                # refused the lane ("seeded from <root>, not the declared
-                # upstream"). The three answers decide here: a repo root is used
-                # as-is; a placeholder is replaced by the unit's materialized copy
-                # of that member (the clone materialize placed at its pin); a
-                # present path that is neither is refused with the verb that fixes
-                # it.
-                state = gitops.repo_path_state(source_repo_root)
-                if state == "empty_placeholder":
-                    unit = lane_proto.find_unit_spec(workspace_root, owner_unit)
-                    # The member's SPEC PATH (section 6c item 3), through the one
-                    # resolver, so this site cannot disagree with the planner or the
-                    # store member map. It needs the whole spec to know the path.
-                    unit_member = spec_apply.unit_member_path(
-                        workspace_root,
-                        lane_proto.load_workspace_spec(workspace_root),
-                        unit,
-                        repo_name,
-                    )
-                    if gitops.repo_path_state(unit_member) != "repo_root":
-                        raise SystemExit(
-                            f"run gr2 workspace materialize first: the unit's copy of {repo_name} "
-                            f"is not a repository at {unit_member}"
-                        )
-                    source_repo_root = unit_member
-                elif state == "neither":
-                    raise SystemExit(f"run gr2 workspace materialize first: {source_repo_root} is not a repository")
+                source_repo_root = _lane_source_repo_root(workspace_root, owner_unit, repo_name)
                 target_repo_root = _lane_repo_root(workspace_root, owner_unit, lane_name, repo_name)
                 # Keyed by the member's spec NAME, the key materialize and sync write; the directory
                 # basename differs for a renamed or nested member and collides for two `*/home` members.

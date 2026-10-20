@@ -620,6 +620,16 @@ def test_missing_approver_refuses_before_remote_measurement(monkeypatch):
         approvals.approve(Path.cwd(), root["review_id"])
 
 
+def test_invalid_approver_name_refuses_before_remote_measurement(monkeypatch):
+    root, _ = _sample_link()
+    monkeypatch.setattr(approvals, "_context", lambda *args: (root, {"Author A"}))
+    monkeypatch.setattr(approvals, "_git", lambda *args, **kwargs: "Approver\x1bB")
+    monkeypatch.setattr(approvals, "_remote_tips", lambda *args: pytest.fail("invalid identity reached remote measurement"))
+    monkeypatch.setattr(approvals, "_reconcile", lambda *args: pytest.fail("invalid identity reached reconcile"))
+    with pytest.raises(approvals.ApprovalRefused, match="^approval_identity_invalid"):
+        approvals.approve(Path.cwd(), root["review_id"])
+
+
 def test_reconcile_lease_keeps_a_racing_remote_link(multi, monkeypatch):
     made = approve_as(multi, "Approver B")
     assert made.exit_code == 0, made.output

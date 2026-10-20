@@ -1996,8 +1996,10 @@ def _refuse_visibility_mismatch(states: dict[str, dict[str, str]], destination: 
     undeclared = sorted(key for key, f in states.items() if not f.get("visibility"))
     if undeclared and len(states) > 1:
         raise GripReviewRefused("visibility_mismatch", undeclared[0],
-                                f"{undeclared[0]!r} declares no visibility and reads public; declare the "
-                                f"'visibility' field (public or private) for {', '.join(map(repr, undeclared))}")
+                                f"{undeclared[0]!r} declares no visibility and reads public; to declare "
+                                f"{', '.join(map(repr, undeclared))}, pin again with "
+                                + " ".join(f"--visibility {k}=public|private" for k in undeclared)
+                                + " (gr2 review pin), or give the row's 'visibility' field in --rows-json")
     target = identity(destination)
     owners = [f for f in states.values() if identity(f["remote"]) == target]
     if owners:

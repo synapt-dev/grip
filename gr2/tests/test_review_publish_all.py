@@ -403,7 +403,7 @@ def test_v4_a_record_without_visibility_and_more_than_one_member_now_refuses(tmp
     out = publish(w["review"])
     assert all(untouched(m) for m in w["members"].values()), out.output
     assert out.exit_code == 2, out.output
-    assert "declare the 'visibility' field" in out.output and "'alpha', 'beta'" in out.output
+    assert "--visibility alpha=public|private" in out.output and "'alpha', 'beta'" in out.output
 
 
 def test_vo_a_pre_field_bind_record_refuses_the_bare_publish_naming_the_field_and_both_members(tmp_path, monkeypatch):

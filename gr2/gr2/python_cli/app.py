@@ -5074,6 +5074,45 @@ def _pin_rows(workspace_root: Optional[Path], rows: list[dict], ratified: Option
     return commit
 
 
+def _parse_visibility_flags(values: list[str]) -> dict[str, str]:
+    """``--visibility NAME=public|private`` values as {name: visibility}; refuses a malformed, repeated or unknown value."""
+    declared: dict[str, str] = {}
+    for value in values:
+        name, sep, vis = value.partition("=")
+        name, vis = name.strip(), vis.strip()
+        if not sep or not name:
+            raise typer.BadParameter(f"--visibility {value!r}: expected NAME=public or NAME=private")
+        if vis not in ("public", "private"):
+            raise typer.BadParameter(f"--visibility {value!r}: visibility must be public or private, got {vis!r}")
+        if name in declared:
+            raise typer.BadParameter(f"--visibility names {name!r} more than once")
+        declared[name] = vis
+    return declared
+
+
+def _apply_visibility_flags(rows: list[dict], declared: dict[str, str]) -> None:
+    """Set each declared member's visibility on its row, before anything is pinned. Refuses a name that is not a row
+    being pinned, and a --rows-json row that already carries its own visibility: two declarations for one member
+    would leave one of them silently ignored."""
+    keys = {str(r.get("key")) for r in rows}
+    unknown = sorted(n for n in declared if n not in keys)
+    if unknown:
+        raise typer.BadParameter(
+            f"--visibility names {', '.join(map(repr, unknown))}, which is not a member being pinned "
+            f"(pinning: {', '.join(map(repr, sorted(keys)))}); no review id was minted"
+        )
+    for row in rows:
+        vis = declared.get(str(row.get("key")))
+        if vis is None:
+            continue
+        if row.get("visibility"):
+            raise typer.BadParameter(
+                f"--visibility {row['key']}={vis} and the row's own \"visibility\" both declare {row['key']!r}; "
+                "give it in one place; no review id was minted"
+            )
+        row["visibility"] = vis
+
+
 @review_app.command("pin")
 def review_bind(
     ctx: typer.Context,
@@ -5092,6 +5131,7 @@ def review_bind(
     rows_json: Optional[Path] = typer.Option(None, "--rows-json", help="A JSON file with a list of row objects (key/remote/base/head, optional path/ref/title/body; source or range is optional on a single row but required on every row when the file holds more than one); pins ALL rows into ONE gr commit. Exclusive with the single-row flags."),
     ratified: Optional[str] = typer.Option(None, "--ratified", help="gr:<id> of an earlier pin of this same head that was stamped: the one way to pin a --head already on the remote; recorded in the review"),
     members: Optional[str] = typer.Option(None, "--members", help="With no rows given: pin only these members (comma-separated names)"),
+    visibility: Optional[list[str]] = typer.Option(None, "--visibility", help="NAME=public|private, repeatable: declare a pinned member's visibility (publish refuses a review of several members unless each one declares it); a --rows-json row that carries its own \"visibility\" refuses this flag for that member"),
 ) -> None:
     """Pin a review gr commit for one or more repository rows; print ``gr:<commit>``.
 
@@ -5105,6 +5145,7 @@ def review_bind(
     """
     single = any(v is not None for v in (key, remote, base, head))
     nothing_given = rows_json is None and not single and source is None and from_range is None
+    declared = _parse_visibility_flags(visibility or [])
     if at_base and from_range is None:
         raise typer.BadParameter("--at-base requires --from-range")
     if members is not None and not nothing_given:
@@ -5186,6 +5227,7 @@ def review_bind(
             if at_base:
                 row["at_base"] = True
         rows = [row]
+    _apply_visibility_flags(rows, declared)
     if len(rows) > 1:
         # A review over several members merges only on a `set` record, and `check set` needs every member's objects;
         # a row with neither a source nor a range would mint an id that can never be set-checked or merged.

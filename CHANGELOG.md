@@ -69,6 +69,9 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Fixed
 
+- **gr2: `review open-project` on an unpublished head prints its refusal.** Run before the lane head was pushed, it
+  exited 1 with nothing printed; it now refuses with exit 2 and `open_refused: review mirror ... does not carry head
+  ...: publish the pinned head to the remote, or pass a local source that holds it` on stderr.
 - **gr2: `review merge` reads an approval chain still being stamped as incomplete, not divergent.** A stamp writes
   the chain to each member remote in turn; a merge that read it in that window, with the chain on some members and
   none on the rest, refused `approval_chain_divergent` with no tips in its detail. A later stamp, whose new link

@@ -249,3 +249,45 @@ def test_a_partial_whose_count_refuses_base_moved_with_no_measured_heads_refuses
     rows = {r["key"]: r for r in json.loads(ran.stdout)["members"]}
     assert rows["alpha"]["final"] == "merged" and rows["beta"]["final"] == "unmerged", rows
     assert rows["beta"]["refused"].startswith("base_moved"), rows["beta"]
+
+
+def test_a_base_moved_refusal_that_names_no_branch_names_the_merge_target(slice2, monkeypatch):
+    # The approval count's base_moved names no remote branch, so the next names the target this merge measured.
+    from gr2.python_cli import approvals
+    s = slice2
+    record_set(s)
+    argv = ["review", "merge", "--approvals", "0", str(s["author"]), s["review"], "--from", "feat", "--into", "main"]
+    assert CliRunner().invoke(app, argv).exit_code == 0
+    git(s["members"]["beta"]["remote"], "update-ref", "refs/heads/main", s["members"]["beta"]["base"])
+
+    def refuse(*a, **kw):
+        raise approvals.ApprovalRefused("base_moved: beta: no branch on its remote is at the reviewed base 0123456789ab")
+    monkeypatch.setattr(approvals, "count_approvals", refuse)
+    ran = CliRunner().invoke(app, ["review", "merge", "--approvals", "1", *argv[4:]])
+    assert ran.exit_code == 4, ran.output
+    step = {r["key"]: r for r in json.loads(ran.stdout)["members"]}["beta"]["next"]
+    assert "--into main" in step and "<branch>" not in step, step
+
+
+def test_a_dry_run_base_moved_refusal_that_names_no_branch_names_the_merge_target(slice2, monkeypatch):
+    # The dry run (`review blockers`) writes its own next; it names the merge target too.
+    from gr2.python_cli import approvals, merge_gate
+    s = slice2
+    record_set(s)
+    argv = ["review", "merge", "--approvals", "0", str(s["author"]), s["review"], "--from", "feat", "--into", "main"]
+    assert CliRunner().invoke(app, argv).exit_code == 0
+    git(s["members"]["beta"]["remote"], "update-ref", "refs/heads/main", s["members"]["beta"]["base"])
+
+    def refuse(*a, **kw):
+        raise approvals.ApprovalRefused("base_moved: beta: no branch on its remote is at the reviewed base 0123456789ab")
+    monkeypatch.setattr(approvals, "count_approvals", refuse)
+    _, receipt = merge_gate.review_merge(s["author"], s["review"], into="main", feature="feat",
+                                         required_approvals=1, dry_run=True)
+    step = {r["key"]: r for r in receipt["members"]}["beta"]["next"]
+    assert "--into main" in step and "<branch>" not in step, step
+
+
+def test_a_base_moved_refusal_that_names_its_branch_keeps_that_branch():
+    line = next_steps.merge_row("base_moved: remote refs/heads/release is abc, reviewed base def", workspace="/ws",
+                                review="gr:abc", remote="/r.git", path="/ws/m", head="h", checks=(), into="main")
+    assert line.endswith("--into release"), line

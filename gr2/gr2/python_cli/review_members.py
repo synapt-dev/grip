@@ -50,7 +50,10 @@ def changed_member_rows(workspace_root: Path, only: list[str] | None = None) -> 
     whose ancestry cannot be read (the pin is not in the checkout, say) is named in ``refused``: it may carry a change
     this function cannot measure, so the caller must not bind the rest without it. ``only`` narrows to the named members and
     names any that the workspace does not declare."""
+    from .commit import entered_member_roots
+
     members = workspace_members(workspace_root)
+    roots = entered_member_roots(workspace_root)
     declared = {m.name for m in members}
     rows: list[dict] = []
     refused: list[str] = []
@@ -60,7 +63,7 @@ def changed_member_rows(workspace_root: Path, only: list[str] | None = None) -> 
         if only is not None and m.name not in only:
             skipped.append(f"{m.name} (excluded by --members)")
             continue
-        checkout = workspace_root / m.path
+        checkout = roots.get(m.name, workspace_root / m.path)
         if m.url is None:
             skipped.append(f"{m.name} (no remote url recorded)")
             continue

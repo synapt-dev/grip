@@ -1892,11 +1892,17 @@ def _member_preflight(workspace: Path, full: str, *, for_push: bool) -> list[dic
     `member_clone_missing`, `no_branch` (detached HEAD) and `head_moved_since_pin` (the clone's HEAD is not the pin);
     without it an absent clone is skipped, as publishing the review ref alone does not need it. Paths resolve from the
     workspace root, never from cwd."""
+    from .commit import LaneAmbiguous, entered_member_roots
+
     root = Path(workspace).resolve()
+    try:
+        roots = entered_member_roots(root)
+    except LaneAmbiguous as exc:
+        raise GripReviewRefused(exc.refusal, "one entered lane", str(exc)) from None
     rows: list[dict[str, object]] = []
     for key, fields in sorted(_read_repo_state(workspace, full, bind=True).items()):
         _refuse_remote_credentials(key, fields["remote"])
-        clone = (root / fields["path"]).resolve()
+        clone = roots.get(key, root / fields["path"]).resolve()
         row: dict[str, object] = {"key": key, "path": fields["path"], "remote": fields["remote"],
                                   "head": fields["commit"], "clone": clone}
         present = clone.is_relative_to(root) and (clone / ".git").exists()

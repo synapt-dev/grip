@@ -72,6 +72,14 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 - **gr2: `review open-project` on an unpublished head prints its refusal.** Run before the lane head was pushed, it
   exited 1 with nothing printed; it now refuses with exit 2 and `open_refused: review mirror ... does not carry head
   ...: publish the pinned head to the remote, or pass a local source that holds it` on stderr.
+- **gr2: `review pin`, `review publish` and `review blockers` read the entered lane's clone.** With a lane
+  entered, `commit` writes to the lane's clone, but all three verbs read the shared checkout: `pin` found nothing
+  to pin, `publish` refused `head_moved_since_pin`, and `blockers` resolved `--from` to the shared branch (and,
+  with no review id, matched no pin). They now read the same clone `commit` wrote to, and say so with one stderr
+  line, `gr2: reading lane <unit>/<lane> (entered)`. With no lane entered they read the shared checkout as
+  before; with several units in a lane they refuse, naming each `unit/lane`, rather than guess (`pin` and
+  `publish` as `lane_ambiguous`, exit 2; `merge` and `blockers` through their JSON receipts, and only when the
+  review id or `--from` has to be found).
 - **gr2: `review merge` reads an approval chain still being stamped as incomplete, not divergent.** A stamp writes
   the chain to each member remote in turn; a merge that read it in that window, with the chain on some members and
   none on the rest, refused `approval_chain_divergent` with no tips in its detail. A later stamp, whose new link

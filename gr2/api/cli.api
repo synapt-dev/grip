@@ -111,6 +111,11 @@ flag  exec status --json (hidden:exec)                                stable
 flag  exec status --repos <str> (hidden:exec)                         stable
 flag  exec status --root/-C <str> (hidden:exec)                       stable
 verb  exec status (hidden:exec)                                       stable
+# grip add
+arg   grip add value <str> (hidden:grip)                              stable
+flag  grip add --ref <str> (hidden:grip)                              stable
+flag  grip add --root/-C <str> (hidden:grip)                          stable
+verb  grip add (hidden:grip)                                          stable
 # grip check
 flag  grip check --json (hidden:grip)                                 stable
 flag  grip check --root/-C <str> (hidden:grip)                        stable
@@ -768,6 +773,11 @@ exit  store 2 usage                                                   stable
 exit  store 3 refused-coverage                                        stable
 exit  store 4 refused-inconsistent                                    stable
 exit  store 5 cannot-measure prefix:"cannot complete this store verb: " stable
+# store add
+arg   store add value <str>                                           may-change
+flag  store add --ref <str>                                           may-change
+flag  store add --root/-C <str>                                       stable
+verb  store add                                                       may-change
 # store check
 flag  store check --json                                              may-change
 flag  store check --root/-C <str>                                     stable

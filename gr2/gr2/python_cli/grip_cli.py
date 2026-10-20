@@ -1519,6 +1519,67 @@ def _native_store_init(root: Path, member_paths: list[str] | None = None,
     return store_hooks.install_store_hooks(root)
 
 
+@_refuses_moved_workspace
+def _native_store_add(root: Path, name: str, url: str, ref: str | None = None) -> dict[str, str]:
+    """Clone one member at `<root>/<name>` into an existing store and record it: its entry and pin in grip.toml, its
+    path in `.gitinclude`, its line in `.gitmodules`. A name already recorded, or a path already on disk, refuses at 4
+    before anything is cloned. The root commit is left to `store commit`, as after `store init`."""
+    if not ((root / ".git").exists() and (root / "grip.toml").exists()):
+        raise NativeStoreRefusal(f"{root} is not a store; run store init first", 4)
+    url = _clone_url(url)
+    if _url_has_credentials(url):
+        raise _credential_refusal(name)
+    members = _native_members(root)
+    taken = [m["name"] for m in members if keys.member_path_key(name) in
+             {keys.member_path_key(str(m["name"])), keys.member_path_key(str(m["path"]))}]
+    if taken:
+        raise NativeStoreRefusal(f"{name} is already a member of this store ({taken[0]}); store add does not replace it", 4)
+    path = root / name
+    if path.exists() or path.is_symlink():
+        raise NativeStoreRefusal(f"{name}: {path} already exists; store add clones only into a new path", 4)
+    branch = ["-b", ref] if ref else []
+    # What the record steps below may rewrite, as bytes (None: absent), so a failure after the clone puts it back.
+    index = root / _store_git(root, "rev-parse", "--git-path", "index").stdout.strip()
+    saved = {p: (p.read_bytes() if p.is_file() else None)
+             for p in (root / "grip.toml", root / ".gitinclude", root / ".gitignore", root / ".gitmodules", index)}
+    result = gitops.clone(*branch, "--", url, str(path))
+    if result.returncode:
+        raise NativeStoreRefusal(f"{STORE_INCOMPLETE_PREFIX}{name} could not be cloned ({_git_detail(result)}); "
+                                 f"nothing was recorded", 5)
+    try:
+        member = _member_from_path(root, name, name)
+        members.append(member)
+        _write_native_members(root, members)
+        declaration = root / ".gitinclude"
+        if declaration.is_file() and not declaration.is_symlink():
+            text = declaration.read_text(encoding="utf-8")
+            declaration.write_text(text + ("" if text.endswith("\n") or not text else "\n") + f"{name}\n",
+                                   encoding="utf-8")
+        _regenerate_workspace_gitignore(root)
+        _store_git(root, "add", "grip.toml")
+        if _workspace_mode(_grip_document(root)) != "full" and not has_foreign_gitmodules(root):
+            (root / ".gitmodules").write_text(render_gitmodules(members), encoding="utf-8")
+            _store_git(root, "add", "-f", ".gitmodules")
+    except BaseException as exc:
+        from .clone_exec import IncompleteRemoval, rmtree_or_refuse
+        try:
+            rmtree_or_refuse(path)
+            removed = "the clone was removed"
+        except IncompleteRemoval as left:
+            removed = f"the clone was not fully removed ({left})"
+        for saved_path, data in saved.items():
+            if data is None:
+                saved_path.unlink(missing_ok=True)
+            else:
+                saved_path.write_bytes(data)
+        if not isinstance(exc, Exception):
+            raise
+        raise NativeStoreRefusal(f"{STORE_INCOMPLETE_PREFIX}{name} could not be recorded ({exc}); {removed} "
+                                 f"and grip.toml, .gitinclude, .gitignore, .gitmodules and the index "
+                                 f"were put back", 5) from exc
+    return member
+
+
 def _git_detail(proc: subprocess.CompletedProcess[str]) -> str:
     """git's own stderr as one line.
 
@@ -3830,6 +3891,31 @@ def grip_init_cmd(
         typer.echo(slot_problem, err=True)
     for line in store_hooks.hook_problems(root, hook_states):
         typer.echo(line, err=True)
+    for line in store_hooks.gitmodules_problems(root):
+        typer.echo(line, err=True)
+    return
+
+
+@grip_app.command("add")
+def grip_add_cmd(
+    value: str = typer.Argument(..., help="NAME=URL: clone URL at <root>/NAME and record it as a member."),
+    ref: Optional[str] = typer.Option(None, "--ref", help="The branch to clone and record (default: the remote's HEAD)."),
+    root: Optional[Path] = STORE_ROOT_OPTION,
+) -> None:
+    """Add one member to an existing store; `store commit` then records it in the root."""
+    root = _store_root_upward(root)
+    try:
+        if ref is not None:
+            name_rules.git_ref(ref, "--ref")
+        ((name, url),) = _parse_clone_values([value])
+        member = _native_store_add(root, name, url, ref)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2)
+    except NativeStoreRefusal as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=exc.code)
+    typer.echo(f"Added {member['name']} at {member['pin']} ({member['ref']}); run store commit to record it")
     for line in store_hooks.gitmodules_problems(root):
         typer.echo(line, err=True)
     return

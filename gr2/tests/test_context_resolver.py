@@ -182,6 +182,23 @@ def test_lane_exit_with_no_actor_refuses_with_exit_4_and_changes_nothing(tmp_pat
     assert lane_proto.current_lane_file(root, "default").read_text() == before
 
 
+def test_the_no_actor_rows_still_refuse_when_the_runner_exports_gr2_actor() -> None:
+    import os
+    import subprocess
+    import sys
+
+    rows = [
+        f"{__file__}::test_lane_exit_with_no_actor_refuses_with_exit_4_and_changes_nothing",
+        f"{__file__}::test_the_hidden_exit_gr_no_longer_defaults_its_actor_to_agent_cli",
+    ]
+    env = {**os.environ, "GR2_ACTOR": "agent:runner"}
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "-q", *rows],
+        env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL,
+    )
+    assert result.returncode == 0 and "2 passed" in result.stdout, result.stdout + result.stderr
+
+
 def test_a_typed_actor_still_wins_and_adds_no_source_line(tmp_path: Path) -> None:
     root, inside = _entered_workspace(tmp_path)
     _lane_toml(root)

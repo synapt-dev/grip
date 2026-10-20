@@ -176,6 +176,17 @@ def _no_seat_quiet_context(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _no_seat_actor(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Drop the seat's GR2_ACTOR so no gr2 test reads who launched the runner.
+
+    `resolve_actor` reads GR2_ACTOR from the environment, so a seat that exports
+    it turns every no-actor row into a named actor and those rows stop refusing.
+    A test that wants an actor sets it itself; its own setenv runs after this.
+    """
+    monkeypatch.delenv("GR2_ACTOR", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _isolated_git_config(tmp_path_factory, monkeypatch):
     """Every gr2 test runs against an isolated Git identity and no host options.
 

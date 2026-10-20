@@ -2710,7 +2710,7 @@ def _atomic_push(root: Path, refspecs: list[tuple[str, str]], verify: bool = Tru
         held = {}  # an unreadable answer proves nothing landed: the refusal below names the push's own rejection
     if listed.returncode == 0 and all(held.get(ref) == sha for sha, ref in refspecs):
         return True
-    rejected = [line.split("\t") for line in proc.stdout.splitlines() if line.startswith("!")]
+    rejected = [line.split("\t") for line in gitops.for_each_ref_rows(proc.stdout) if line.startswith("!")]
     named = "; ".join(f"{parts[1].split(':', 1)[1]} {parts[2]}" for parts in rejected if len(parts) >= 3)
     remote = " | ".join(line.strip() for line in proc.stderr.splitlines() if line.startswith("remote:"))
     raise RuntimeError(f"atomic push refused, no ref moved on origin: {named or proc.stderr.strip()[:300]}"

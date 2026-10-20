@@ -93,7 +93,7 @@ def probe_url(url: str) -> tuple[str, str]:
     )
     if result.returncode == 0:
         head_ref = ""
-        for line in result.stdout.splitlines():
+        for line in result.stdout.split("\n"):
             match = re.match(r"ref: refs/heads/(.+)\s+HEAD", line)
             if match:
                 head_ref = match.group(1)

@@ -49,6 +49,17 @@ def test_blockers_with_no_review_id_prints_exit_5_json_naming_both_lanes(ws_at_p
     assert "north/feature" in receipt["refused"] and "south/feature" in receipt["refused"], receipt
 
 
+def test_merge_with_no_review_id_refuses_exit_3_json_naming_both_lanes(ws_at_pin) -> None:
+    ws, remote, base, _head = ws_at_pin
+    clone, lane_head = _two_lanes(ws)
+    _pin_row(ws, remote, base, lane_head, clone)
+    merge = _invoke("review", "merge", str(ws))
+    assert merge.exit_code == 3, merge.stdout + merge.stderr
+    receipt = json.loads(merge.stdout.strip().splitlines()[-1])
+    assert SEVERAL in receipt["refused"], receipt
+    assert "north/feature" in receipt["refused"] and "south/feature" in receipt["refused"], receipt
+
+
 def test_publish_and_pin_refuse_lane_ambiguous_exit_2(ws_at_pin) -> None:
     ws, remote, base, _head = ws_at_pin
     clone, lane_head = _two_lanes(ws)

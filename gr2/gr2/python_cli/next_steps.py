@@ -69,6 +69,13 @@ def _stamp_base_moved(branch: str, review: str) -> str:
             f"gr2 review update <their workspace> {_shown(review)} and ask for a stamp on the review it prints")
 
 
+def _stamp_remote_unreadable(remote: str | None, review: str) -> str:
+    # Private, like _stamp_base_moved. `remote` is None when it holds a credential: the line then never prints it.
+    target = f"git ls-remote -- {_shown(remote)}" if remote is not None else "git ls-remote on the member's remote"
+    return (f"next: no stamp was written; the member's remote could not be read. Check that {target} succeeds "
+            f"from this machine, then stamp {_shown(review)} again")
+
+
 def _update_lines(workspace: str, receipt: dict) -> list[str]:
     # Private: `review update` prints its refusal inside its JSON receipt, not as a `refused: <code>` line.
     lines, rid, new = [], receipt.get("review") or "<review>", receipt.get("new_review")

@@ -1042,6 +1042,30 @@ def test_stamp_succeeds_while_another_branch_still_sits_at_the_base(world):
     assert result.exit_code == 0, result.output
 
 
+def test_stamp_with_an_unreadable_member_remote_refuses_by_name_and_writes_nothing(world):
+    """The base check's ls-remote fails (the remote is gone): a refusal naming the member and a next line, not
+    git's raw message, and no approval pushed."""
+    gone = world["remote"].with_name("gone.git")
+    world["remote"].rename(gone)
+    result = approve_as(world, "Approver B")
+    gone.rename(world["remote"])
+    assert result.exit_code == 2, result.output
+    lines = result.output.splitlines()
+    assert lines[0] == "approval_remote_unreadable: member", result.output
+    assert lines[1].startswith("next: no stamp was written;") and str(world["remote"]) in lines[1], result.output
+    assert "does not appear" not in result.output, result.output
+    assert _approval_refs(world["remote"]) == ""
+
+
+def test_unreadable_remote_with_a_credential_is_never_printed(tmp_path):
+    remote = "https://user:sekret@127.0.0.1:1/x.git"
+    with pytest.raises(approvals.ApprovalRefused) as caught:
+        approvals._refuse_moved_base(tmp_path, "member", remote, "0" * 40, "gr:r")
+    shown = f"{caught.value}\n{caught.value.next_step}"
+    assert str(caught.value) == "approval_remote_unreadable: member" and "sekret" not in shown, shown
+    assert shown.splitlines()[1].startswith("next: no stamp was written;"), shown
+
+
 @pytest.mark.parametrize("moved, still", [("beta", "member"), ("member", "beta")])
 def test_stamp_names_only_the_member_whose_target_moved(multi, moved, still):
     """Both orders: beta sorts first and member last, so a check of the first member alone fails one of them."""

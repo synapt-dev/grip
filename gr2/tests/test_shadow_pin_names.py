@@ -58,6 +58,22 @@ def test_a_pin_is_written_by_its_literal_name(world, pin):
     assert [n for n in listed if n] == [f"{sh.PINS}/{pin}"]
 
 
+@pytest.mark.parametrize("name", ['".git"', '"\\056git"', '"a"'])
+def test_a_record_top_level_name_is_kept_literal(world, name):
+    """The record's top-level entries are written back beside the pins tree; in text mode mktree would C-unquote
+    a name that starts with a quote ('".git"' would become .git), so the top tree is written NUL-terminated too."""
+    repo, base, member = world
+    blob = _git(repo, "hash-object", "-w", "--stdin", data=b"y").strip()
+    record = _git(repo, "mktree", "-z", data=f"100644 blob {blob}\t{name}\0".encode()).strip()
+    tree = sh._tree_with_pins(repo, record, {"m": member})
+    _git(repo, "update-ref", "refs/heads/t", _git(repo, "commit-tree", tree, "-m", "s").strip())
+    fsck = subprocess.run(["git", "-C", str(repo), "fsck", "--strict", "--no-dangling"], capture_output=True,
+                          text=True)
+    assert fsck.returncode == 0, fsck.stderr
+    listed = _git(repo, "ls-tree", "-z", "--name-only", tree).split("\0")
+    assert sorted(n for n in listed if n) == sorted([name, sh.PINS])
+
+
 @pytest.mark.parametrize("pin", ["/x", "a/", "a//b", ""])
 def test_a_pin_with_an_empty_entry_is_refused(world, pin):
     message = _refused(world, [pin])

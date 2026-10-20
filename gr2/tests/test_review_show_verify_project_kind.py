@@ -7,6 +7,8 @@ reads), so verify has no integrity check to run on it and must not call it valid
 commit of neither kind is still corrupt from both verbs."""
 
 import json
+import re
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -114,3 +116,26 @@ def test_bound_commit_of_neither_kind_is_corrupt_from_show_and_verify(tmp_path: 
         result = runner.invoke(app, ["review", verb, str(ws), neither])
         assert result.exit_code == 2, (verb, result.output)
         assert "corrupt: not a gr2 pinned review commit" in result.output, (verb, result.output)
+
+
+def _run_printed_open_project(ws: Path, output: str) -> None:
+    """The printed open-project line, its placeholders filled from the fixture, gets past click's usage check."""
+    found = re.search(r"gr2 review (open-project .*? --enter)", " ".join(output.split()))
+    assert found, output
+    fill = {"<workspace>": str(ws), "<owner_unit>": "default", "<lane>": "review2"}
+    args = ["review"] + [fill.get(a, a) for a in shlex.split(found.group(1))]
+    assert not [a for a in args if a.startswith("<")], args
+    ran = runner.invoke(app, args, env={"COLUMNS": "200"})
+    assert not (ran.exit_code == 2 and "Missing argument" in ran.output), ran.output
+    assert "Usage:" not in ran.output, ran.output
+
+
+def test_printed_open_project_lines_run_past_usage(tmp_path: Path) -> None:
+    ws, _ = _workspace(tmp_path, lane_commit=False)
+    gr = _create_project(ws)
+    for args in (["review", "show", str(ws), gr, "--diff"], ["review", "verify", str(ws), gr]):
+        refused = runner.invoke(app, args, env={"COLUMNS": "200"})
+        assert refused.exit_code == 2, refused.output
+        assert f"open-project '<workspace>' {gr} '<owner_unit>' '<lane>' --enter" in refused.output
+        assert "own remote first" in refused.output
+        _run_printed_open_project(ws, refused.output)

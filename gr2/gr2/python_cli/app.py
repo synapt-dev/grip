@@ -5709,7 +5709,7 @@ def _show_project_review(workspace: Path, project: str, *, json_output: bool, me
     gr = f"gr:{project}"
     if with_diff:
         typer.echo(f"gr2: {gr} is a project review (kind {grip._PROJECT_REVIEW_SCHEMA}); --diff and --stat read a "
-                   "pinned review's range. Open it with `gr2 review open-project` and diff in the lane", err=True)
+                   f"pinned review's range. {_open_project_line(project)}, and diff in the lane", err=True)
         raise typer.Exit(code=2)
     members = [{"key": r["key"], "remote": r["repo"], "path": r["path"], "base": r["base"], "head": r["head"]}
                for r in _review_call(grip.read_project_review_commit, workspace, project)]
@@ -5727,6 +5727,15 @@ def _show_project_review(workspace: Path, project: str, *, json_output: bool, me
         typer.echo(f"{next_steps._shown(m['key'])}: {m['base'][:12]}..{m['head'][:12]}  {next_steps._shown(m['remote'])}")
 
 
+def _open_project_line(project: str) -> str:
+    """The open-project command a project-review refusal points at: the id filled in, every other value a quoted
+    placeholder, and the head on its remote first, since open-project reads the head from there."""
+    shown = next_steps._shown
+    return (f"Open it with: gr2 review open-project {shown('<workspace>')} {shown('gr:' + project)} "
+            f"{shown('<owner_unit>')} {shown('<lane>')} --enter (push each member's reviewed head to its own remote "
+            "first, or open-project cannot read it)")
+
+
 def _refuse_project_review_verify(workspace: Path, commit: str) -> None:
     """`review verify` recomputes a pinned review's tree; a project review's record is fields only (its reader
     checks the schema and each member's fields, not the tree), so it is refused by kind, never called corrupt."""
@@ -5734,7 +5743,7 @@ def _refuse_project_review_verify(workspace: Path, commit: str) -> None:
     if project is not None:
         raise grip.GripReviewRefused(
             "project_review_not_verified",
-            "a pinned review; verify recomputes a pinned review's tree. Read this one with `gr2 review open-project`",
+            f"a pinned review; verify recomputes a pinned review's tree. {_open_project_line(project)}",
             f"gr:{project}, kind {grip._PROJECT_REVIEW_SCHEMA}")
 
 

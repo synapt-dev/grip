@@ -255,7 +255,16 @@ def _refuse_moved_base(workspace: Path, key: str, remote: str, base: str, review
     if remote.startswith("-") or any(ord(c) < 32 or ord(c) == 127 for c in remote):
         raise ApprovalRefused("approval_remote_invalid")
     default, at_base, tips = None, False, {}
-    for line in _git(workspace, "ls-remote", "--symref", "--", remote, "HEAD", "refs/heads/*", raw=True).split("\n"):
+    try:
+        listing = _git(workspace, "ls-remote", "--symref", "--", remote, "HEAD", "refs/heads/*", raw=True)
+    except ApprovalRefused:
+        # git's own message can carry the remote as written (a path or scp-style address is echoed unredacted),
+        # so the refusal names the member and the next line shows the remote only when it holds no credential.
+        from . import next_steps
+        shown = None if grip.url_has_credentials(remote) else remote
+        raise ApprovalRefused(f"approval_remote_unreadable: {key}",
+                              next_steps._stamp_remote_unreadable(shown, review)) from None
+    for line in listing.split("\n"):
         left, _, ref = line.partition("\t")
         if left.startswith("ref: refs/heads/") and ref == "HEAD":
             default = left.removeprefix("ref: refs/heads/")

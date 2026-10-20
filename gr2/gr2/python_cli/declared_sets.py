@@ -143,13 +143,11 @@ def gitlinks(root: Path, revision: str, declaration: Declaration, dset: Declared
 def mode_refusal(declaration: Declaration) -> str | None:
     """The named refusal for a workspace whose grip.toml says `mode = "full"`, else None.
 
-    A full-mode grip tree keeps a mode-160000 entry per member, but it points at a FIELD-COMMIT, not a member commit.
-    Every reader here takes a 160000 entry for the member's pin, so on a full-mode tree it would compare a field-commit
-    id against a review head and refuse for the wrong reason (or pass a record over ids that are not pins). It refuses
-    by name until a reader that knows the field-tree exists."""
+    Declared sets are judged in compat mode only. Whether the readers here can judge a full-mode tree is not yet
+    measured, so a full-mode workspace refuses by name rather than being judged by a reader that was never checked
+    against it."""
     if declaration.mode == "full":
-        return ('declared_set_mode_full: grip.toml says mode = "full", where a member entry is a field-commit and not '
-                "a member commit; declared sets are judged in compat mode only")
+        return 'declared_set_mode_full: grip.toml says mode = "full"; declared sets are judged in compat mode only'
     return None
 
 

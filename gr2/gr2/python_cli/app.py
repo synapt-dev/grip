@@ -43,6 +43,7 @@ from . import merge_gate, merge_receipts
 from . import names as name_rules
 from . import pr as pr_ops
 from .platform import AdapterError
+from .open_gr_review import OpenGrReviewError
 from . import prune as prune_ops
 from . import target as target_ops
 from . import project_review
@@ -4759,7 +4760,9 @@ def review_create_project(
             committers = {}
             for p in pins:
                 lane_repo = _lane_repo_root(ws, owner_unit, lane_name, p.key)
-                cap = git(lane_repo, "format-patch", f"{p.base}..{p.head}", "--stdout")
+                # Both range reads go through the real history, so a replace ref in the lane cannot change
+                # what the review records.
+                cap = gitops.real_history_run(lane_repo, "format-patch", f"{p.base}..{p.head}", "--stdout")
                 if cap.returncode != 0 or not cap.stdout.strip():
                     raise ValueError(f"cannot capture range for {p.key} from {lane_repo}: {cap.stderr.strip() or 'empty range'}")
                 ranges[p.key] = cap.stdout
@@ -4767,7 +4770,7 @@ def review_create_project(
                 # first, the order format-patch/mailsplit use) so reconstruction can
                 # re-stamp and reproduce the pinned head SHA, not merely its tree. The
                 # lane repo holds the pre-push head; the remote does not.
-                cm = git(lane_repo, "log", "--reverse", "--format=%cn%x09%ce%x09%cI", f"{p.base}..{p.head}")
+                cm = gitops.real_history_run(lane_repo, "log", "--reverse", "--format=%cn%x09%ce%x09%cI", f"{p.base}..{p.head}")
                 if cm.returncode != 0:
                     raise ValueError(f"cannot capture committer metadata for {p.key} from {lane_repo}: {cm.stderr.strip()}")
                 committers[p.key] = cm.stdout
@@ -4980,6 +4983,13 @@ def _review_call(fn, *args, **kwargs):
         if _JSON_REFUSALS.get():
             raise  # the --json command class prints it as one object
         _refuse_text(exc)
+    except OpenGrReviewError as exc:
+        # open-project's engine refuses with its own error (e.g. a pinned head that was
+        # never published); left uncaught it exits 1 with nothing printed.
+        if _JSON_REFUSALS.get():
+            _refuse_json("open_refused", str(exc), 2)
+        typer.echo(f"open_refused: {exc}", err=True)
+        raise typer.Exit(code=2)
 
 
 def _refuse_text(exc: BaseException) -> NoReturn:
@@ -5113,6 +5123,9 @@ def review_bind(
             )
         except (lane_downstream.MembersUnreadable, lane_downstream.PinConflict) as exc:
             raise typer.BadParameter(f"{exc}; fix the file, or name the row with --repo/--remote/--base/--head or --rows-json")
+        except commit_ops.LaneAmbiguous as exc:  # one plain line, as _refuse_text prints: a usage panel wraps it
+            typer.echo(f"{exc.refusal}: {exc}", err=True)
+            raise typer.Exit(code=2)
         if choice.refused:
             raise typer.BadParameter(
                 f"cannot pin: {'; '.join(choice.refused)}. A member named here may carry part of this change (or, with no "
@@ -5822,9 +5835,14 @@ def review_verify(
 
 def _resolve_merge_defaults(ws: Path, review_id: Optional[str], into: Optional[str],
                             feature: Optional[str]) -> tuple[str, str, str]:
-    """Fill the review id, --from and --into from the workspace when not given; say on stderr what was resolved."""
+    """Fill the review id, --from and --into from the workspace when not given; say on stderr what was resolved.
+    With a lane entered, each member is read from the lane's clone, the one commit wrote to. The lanes are read only
+    when the review id or --from has to be found: with both given, entered lanes do not refuse (LaneAmbiguous)."""
+    roots = commit_ops.entered_member_roots(ws) if not review_id or not feature else {}
+
     def members(bind: str) -> list[tuple[Path, str]]:
-        return [((ws / m["path"]).resolve(), m["head"]) for m in grip.show_review_commit(ws, bind)["members"]]
+        return [(roots.get(m["key"], ws / m["path"]).resolve(), m["head"])
+                for m in grip.show_review_commit(ws, bind)["members"]]
 
     rsrc = "given"
     if not review_id:
@@ -5837,7 +5855,7 @@ def _resolve_merge_defaults(ws: Path, review_id: Optional[str], into: Optional[s
             raise
         # A named bind that cannot be read is the merge gate's to report: its receipt says bind_unreadable.
         return review_id, into or "", feature or ""
-    paths = [(ws / m["path"]).resolve() for m in view["members"]]
+    paths = [roots.get(m["key"], ws / m["path"]).resolve() for m in view["members"]]
     feature, fsrc = defaults.branch(paths, feature)
     pinned = None if into else defaults.pinned_target(view["members"])
     into, isrc = pinned or defaults.target_branch(

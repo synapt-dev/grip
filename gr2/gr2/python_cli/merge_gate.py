@@ -717,8 +717,10 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
                 continue
             repo = (workspace / m["path"]).resolve()
             try:
-                proc = gitops.run(repo, "merge-tree", "--write-tree", m["base"], m["head"], timeout=60,
-                                 raise_timeout=True)  # an expiry is a build failure, not a conflict
+                # The merge base comes from the real history (real_history_run): a replace ref or graft would
+                # otherwise give merge-tree parents the head does not have.
+                proc = gitops.real_history_run(repo, "merge-tree", "--write-tree", m["base"], m["head"], timeout=60,
+                                               raise_timeout=True)  # an expiry is a build failure, not a conflict
                 if proc.returncode:
                     r["refused"] = "merge_conflict"
                     continue

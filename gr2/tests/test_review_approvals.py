@@ -10,7 +10,7 @@ import pytest
 
 from typer.testing import CliRunner
 
-from gr2.python_cli import approvals, check_records, merge_gate, set_check
+from gr2.python_cli import approvals, check_records, merge_gate, next_steps, set_check
 from gr2.python_cli.app import app
 
 runner = CliRunner()
@@ -1026,6 +1026,65 @@ def test_stamp_after_the_target_moved_refuses_base_moved_and_writes_nothing(worl
     assert _approval_refs(world["remote"]) == "", "no approval may be pushed for a review that cannot merge"
 
 
+@pytest.mark.parametrize("past", [False, True], ids=["tip_is_head", "one_past_head"])
+def test_stamp_after_the_target_fast_forwarded_to_the_head_refuses_head_already_on_target(world, past):
+    """A writer moved main to the reviewed head (or one past it) with no merge commit. base_moved's line sent the
+    stamper to update, which pins the same head and refuses head_already_on_remote: merge's answer instead."""
+    tip = world["head"]
+    if past:
+        tip = git(world["remote"], "commit-tree", git(world["remote"], "rev-parse", f"{tip}^{{tree}}"), "-p", tip,
+                  "-m", "past")
+    git(world["remote"], "update-ref", "refs/heads/main", tip)
+    if past:
+        git(world["member"], "fetch", "-q", world["remote"], "main")  # the tip object is held here
+    result = approve_as(world, "Approver B")
+    assert result.exit_code == 2, result.output
+    assert (f"head_already_on_target: member: the reviewed head {world['head']} is already in main at {tip}"
+            in result.output.splitlines()), result.output
+    advice = next(x for x in result.output.splitlines() if x.startswith("next: "))
+    assert advice == next_steps._nothing_to_merge() and "review update" not in advice, advice
+    assert "base_moved" not in result.output, result.output
+    assert _approval_refs(world["remote"]) == "", "no approval may be pushed for a review already on its target"
+
+
+def test_stamp_with_a_past_tip_not_held_here_keeps_base_moved(world):
+    """The ancestry read needs the tip object; one not fetched cannot be proved to hold the head."""
+    tip = git(world["remote"], "commit-tree", git(world["remote"], "rev-parse", f"{world['head']}^{{tree}}"), "-p",
+              world["head"], "-m", "past")
+    git(world["remote"], "update-ref", "refs/heads/main", tip)
+    result = approve_as(world, "Approver B")
+    assert result.exit_code == 2 and "base_moved: member:" in result.output, result.output
+    assert "head_already_on_target" not in result.output, result.output
+
+
+def test_stamp_after_a_real_base_move_keeps_base_moved_when_ancestry_says_no(world, monkeypatch):
+    """A tip held here that does not hold the head: the ancestry read answers False, and the stamp stays base_moved."""
+    moved = _advance(world["member"], world["remote"], world["base"])
+    answers = []
+    real = approvals.gitops.is_ancestor
+    monkeypatch.setattr(approvals.gitops, "is_ancestor", lambda *a, **k: answers.append(real(*a, **k)) or answers[-1])
+    result = approve_as(world, "Approver B")
+    assert answers == [False], answers
+    assert result.exit_code == 2 and "base_moved: member:" in result.output, result.output
+    assert moved[:12] in result.output and "head_already_on_target" not in result.output, result.output
+    assert _approval_refs(world["remote"]) == "", "no approval may be pushed for a review that cannot merge"
+
+
+def test_stamp_when_the_ancestry_read_fails_keeps_base_moved(world, monkeypatch):
+    """A tip that does hold the head, but git could not tell (None): only a proved yes reads head_already_on_target."""
+    tip = git(world["remote"], "commit-tree", git(world["remote"], "rev-parse", f"{world['head']}^{{tree}}"), "-p",
+              world["head"], "-m", "past")
+    git(world["remote"], "update-ref", "refs/heads/main", tip)
+    git(world["member"], "fetch", "-q", world["remote"], "main")
+    calls = []
+    monkeypatch.setattr(approvals.gitops, "is_ancestor", lambda *a, **k: calls.append(a) or None)
+    result = approve_as(world, "Approver B")
+    assert len(calls) == 1, calls
+    assert result.exit_code == 2 and "base_moved: member:" in result.output, result.output
+    assert "head_already_on_target" not in result.output, result.output
+    assert _approval_refs(world["remote"]) == "", "no approval may be pushed for a review that cannot merge"
+
+
 def test_control_stamp_with_the_target_at_the_base_succeeds(world):
     result = approve_as(world, "Approver B")
     assert result.exit_code == 0, result.output
@@ -1060,7 +1119,7 @@ def test_stamp_with_an_unreadable_member_remote_refuses_by_name_and_writes_nothi
 def test_unreadable_remote_with_a_credential_is_never_printed(tmp_path):
     remote = "https://user:sekret@127.0.0.1:1/x.git"
     with pytest.raises(approvals.ApprovalRefused) as caught:
-        approvals._refuse_moved_base(tmp_path, "member", remote, "0" * 40, "gr:r")
+        approvals._refuse_moved_base(tmp_path, "member", remote, "0" * 40, "gr:r", tmp_path, "1" * 40)
     shown = f"{caught.value}\n{caught.value.next_step}"
     assert str(caught.value) == "approval_remote_unreadable: member" and "sekret" not in shown, shown
     assert shown.splitlines()[1].startswith("next: no stamp was written;"), shown

@@ -202,7 +202,7 @@ def _context(workspace: Path, review_id: str, member_dirs: dict[str, Path] | Non
     # Older binds have no author field; their immutable Git author is the fallback.
     author = view.get("author") or _git(workspace, "show", "-s", "--format=%an", rid)
     authors = {author}
-    members = []
+    members, repos = [], {}
     root = workspace.resolve()
     for m in view["members"]:
         if member_dirs is not None:
@@ -241,13 +241,14 @@ def _context(workspace: Path, review_id: str, member_dirs: dict[str, Path] | Non
             raise ApprovalRefused(f"approval_head_tree_unmeasurable: {m['key']}")
         authors.update(_git(repo, "log", "--format=%an", f"{m['base']}..{m['head']}").splitlines())
         members.append({"key": m["key"], "remote": m["remote"], "head_commit": m["head"], "head_tree": tree})
+        repos[m["key"]] = repo
     # Every local refusal comes first; then one remote read per member, before any approval is pushed.
     for m in view["members"]:
-        _refuse_moved_base(workspace, m["key"], m["remote"], m["base"], "gr:" + rid)
+        _refuse_moved_base(workspace, m["key"], m["remote"], m["base"], "gr:" + rid, repos[m["key"]], m["head"])
     return {"review_id": "gr:" + rid, "author": author, "members": members}, authors
 
 
-def _refuse_moved_base(workspace: Path, key: str, remote: str, base: str, review: str) -> None:
+def _refuse_moved_base(workspace: Path, key: str, remote: str, base: str, review: str, repo: Path, head: str) -> None:
     """Refuse a stamp the merge could never count: a merge needs its target at the reviewed base, so when no branch
     on the member's remote still sits at that base, the target has moved and the review needs a new pin. Read
     before any approval is pushed. Any branch at the base passes (a review may target a branch other than the
@@ -276,6 +277,13 @@ def _refuse_moved_base(workspace: Path, key: str, remote: str, base: str, review
     from . import next_steps
     branch = default or "<target branch>"
     now = f" ({branch} is now {tips[branch][:12]})" if branch in tips else ""
+    # A writer moved the target to the reviewed head or past it with no merge commit: the work is already in, and
+    # update would pin this same head again and refuse head_already_on_remote. Only a tip held here and proved to
+    # hold the head reads so; a failed read or a tip not fetched (is_ancestor None) keeps base_moved.
+    tip = tips.get(branch)
+    if tip and (tip == head or gitops.is_ancestor(repo, head, tip) is True):
+        raise ApprovalRefused(f"head_already_on_target: {key}: the reviewed head {head} is already in {branch} at {tip}",
+                              next_steps._nothing_to_merge())
     raise ApprovalRefused(f"base_moved: {key}: no branch on its remote is at the reviewed base {base[:12]}{now}",
                           next_steps._stamp_base_moved(branch, review))
 

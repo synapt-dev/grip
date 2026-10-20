@@ -125,12 +125,9 @@ def test_merge_under_a_forged_replace_ref_reads_the_real_fork_point(world):
     assert probe.returncode == 1 and not probe.stdout  # the probe is real: plain git finds no fork point
     merged = runner.invoke(app, ["review", "merge"])
     [row] = json.loads(merged.stdout)["members"]
-    # The gate's own merge-tree (merge_gate:558) still reads the forge and refuses merge_conflict, a follow-on; the
-    # ancestry read at :403 is what this row pins, so the refusal is neither of the two that read would give.
-    # The None in the tuple holds that merge_conflict in place: when :558 moves this row must change
-    # to assert the merge.
-    assert row["state"] == "ready" and row["refused"] not in ("base_not_ancestor_of_head", None), merged.output
-    assert not row["refused"].startswith("remote_unmeasurable"), merged.output
+    # The ancestry read at :403 and the gate's merge-tree both read the real history, so the forge refuses
+    # nothing: the head merges.
+    assert row["state"] == "merged" and row["refused"] is None, merged.output
 
 
 def test_approve_under_a_forged_replace_ref_reads_the_real_authors(world):

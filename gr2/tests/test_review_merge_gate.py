@@ -92,6 +92,19 @@ def test_merges_the_reviewed_head_and_a_rerun_is_idempotent(world):
     assert git(world["remote"], "rev-parse", "main") == tip, "a rerun must not merge twice"
 
 
+def test_a_replace_ref_on_the_head_does_not_turn_a_clean_merge_into_a_conflict(world):
+    # A replace ref swapping the head for a parentless commit leaves merge-tree no merge base, so a clean
+    # merge would be refused merge_conflict; the build reads the real history.
+    check(world)
+    m = world["member"]
+    root = git(m, "commit-tree", world["head"] + "^{tree}", "-m", "parentless")
+    git(m, "replace", world["head"], root)
+    code, receipt = merge(world)
+    assert code == merge_gate.EXIT_MERGED, receipt
+    tip = git(world["remote"], "rev-parse", "main")
+    assert git(world["remote"], "rev-list", "--parents", "-n", "1", tip).split()[1:] == [world["base"], world["head"]]
+
+
 def test_refuses_a_head_moved_after_review(world):
     check(world)
     (world["member"] / "moved.txt").write_text("after review\n")

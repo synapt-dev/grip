@@ -43,6 +43,7 @@ from . import merge_gate, merge_receipts
 from . import names as name_rules
 from . import pr as pr_ops
 from .platform import AdapterError
+from .open_gr_review import OpenGrReviewError
 from . import prune as prune_ops
 from . import target as target_ops
 from . import project_review
@@ -4980,6 +4981,13 @@ def _review_call(fn, *args, **kwargs):
         if _JSON_REFUSALS.get():
             raise  # the --json command class prints it as one object
         _refuse_text(exc)
+    except OpenGrReviewError as exc:
+        # open-project's engine refuses with its own error (e.g. a pinned head that was
+        # never published); left uncaught it exits 1 with nothing printed.
+        if _JSON_REFUSALS.get():
+            _refuse_json("open_refused", str(exc), 2)
+        typer.echo(f"open_refused: {exc}", err=True)
+        raise typer.Exit(code=2)
 
 
 def _refuse_text(exc: BaseException) -> NoReturn:

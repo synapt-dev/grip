@@ -454,6 +454,10 @@ def approve(workspace: Path, review_id: str | None = None, member_dirs: dict[str
     name = _git(workspace, "config", "user.name")
     if not name.strip():
         raise ApprovalRefused("approval_identity_missing")
+    try:
+        check_approver_name(name)
+    except ApprovalRefused:
+        raise ApprovalRefused("approval_identity_invalid: invalid approver name") from None
     _refuse_self_approval(name, authors)
     tips = _remote_tips(workspace, root)
     tip = _reconcile(workspace, root, authors, tips)

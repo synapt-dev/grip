@@ -8,6 +8,7 @@ Git calls are counted with a PATH shim, per member.
 
 from __future__ import annotations
 
+import errno
 import os
 import shutil
 import signal
@@ -604,9 +605,22 @@ def _rename(members: list[Path], i: int, name: str) -> None:
     members[i] = named
 
 
+def _needs_non_utf8_names(at: Path) -> None:
+    # APFS refuses a name that is not UTF-8 (EILSEQ), so the fixture cannot be built there.
+    probe = os.path.join(os.fsencode(at), b"probe\xff")
+    try:
+        os.mkdir(probe)
+    except OSError as e:
+        if e.errno == errno.EILSEQ:
+            pytest.skip("the file system refuses a name that is not UTF-8")
+        raise
+    os.rmdir(probe)
+
+
 def test_c3_member_path_not_utf8_refuses_before_any_git_call(members: list[Path], git_log: Path) -> None:
     # Read as text, the \xff in m3's top raised UnicodeDecodeError; read as bytes alone, m1 and m2 committed and the
     # print of m3's name then raised. The path refuses up front, printed escaped.
+    _needs_non_utf8_names(members[0].parent)
     _rename(members, 2, os.fsdecode(b"m\xff3"))
     before = [_state(p) for p in members]
     git_log.write_text("")
@@ -622,6 +636,7 @@ def test_c3_member_path_not_utf8_refuses_before_any_git_call(members: list[Path]
 
 def test_c3_member_holding_a_file_not_utf8_refuses(members: list[Path], git_log: Path) -> None:
     # The member path is UTF-8; the name git prints from status is not.
+    _needs_non_utf8_names(members[0].parent)
     (Path(os.fsdecode(bytes(members[2]) + b"/f\xff"))).write_text("x\n")
     before = [_state(p) for p in members]
     git_log.write_text("")

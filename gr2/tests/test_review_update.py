@@ -35,7 +35,7 @@ def _env(monkeypatch):
         monkeypatch.setenv(k, v)
 
 
-def build(tmp_path, monkeypatch, names):
+def build(tmp_path, monkeypatch, names, vis=None):
     """Members pinned as ONE review (each with its source), feature pushed, review published on every remote."""
     author = tmp_path / "au thor"
     author.mkdir()
@@ -60,7 +60,7 @@ def build(tmp_path, monkeypatch, names):
         git(m["repo"], "commit", "-am", "reviewed")
         m["head"] = git(m["repo"], "rev-parse", "HEAD")
         rows.append({"key": name, "path": name, "remote": str(m["remote"]), "base": m["base"], "head": m["head"],
-                     "ref": "refs/heads/main", "source": str(m["repo"]), "visibility": "public"})
+                     "ref": "refs/heads/main", "source": str(m["repo"]), "visibility": (vis or {}).get(name, "public")})
     (tmp_path / "rows.json").write_text(json.dumps(rows))
     monkeypatch.chdir(author)
     made = runner.invoke(app, ["review", "pin", str(author), "--rows-json", str(tmp_path / "rows.json")])
@@ -68,6 +68,8 @@ def build(tmp_path, monkeypatch, names):
     w["review"] = made.stdout.strip().splitlines()[-1]
     for m in w["members"].values():
         git(m["repo"], "push", m["remote"], "feat")
+        if vis:  # publish refuses a private member onto a public remote; the visibility row needs no publish
+            continue
         out = runner.invoke(app, ["review", "publish", str(author), w["review"], "--remote", str(m["remote"])])
         assert out.exit_code == 0, out.output
     return w
@@ -613,3 +615,15 @@ def test_u25_control_a_content_conflict_on_beta_is_still_a_conflict(two):
     assert out.exit_code == 3 and r["refused"] is None, r
     assert (r["members"][1]["state"], r["members"][1]["conflicts"]) == ("conflict", ["shared.txt"]), r
     assert (repo / ".git" / "MERGE_HEAD").exists(), "a conflict is left for the author to resolve"
+
+
+def test_u31_an_update_keeps_each_members_declared_visibility_in_the_new_review(tmp_path, monkeypatch):
+    from gr2.python_cli import grip
+    w = build(tmp_path, monkeypatch, ["alpha", "beta"], vis={"alpha": "private", "beta": "public"})
+    move_main(w, "alpha")
+    out = update(w)
+    assert out.exit_code == 0, out.output
+    new = receipt(out)["new_review"]
+    assert new.startswith("gr:") and new != w["review"], new
+    state = grip._read_repo_state(w["author"], new.removeprefix("gr:"), bind=True)
+    assert {k: state[k].get("visibility") for k in ("alpha", "beta")} == {"alpha": "private", "beta": "public"}, state

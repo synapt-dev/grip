@@ -198,6 +198,11 @@ def update(workspace: Path, review_id: str | None = None, into: str | None = Non
     rows = [{"key": m["key"], "remote": m["remote"], "path": m["path"], "base": r["base"], "head": r["head"],
              "ref": f"refs/heads/{r['into']}", "title": m.get("title", ""), "body": m.get("body", ""),
              "source": str(m["repo"])} for r, m in zip(receipt["members"], members)]
+    # The new review keeps each member's declared visibility; without it every updated review reads undeclared.
+    recorded = grip._read_repo_state(ws, view["id"].removeprefix("gr:"), bind=True)
+    for row in rows:
+        if recorded.get(row["key"], {}).get("visibility"):
+            row["visibility"] = recorded[row["key"]]["visibility"]
     try:
         receipt["new_review"] = "gr:" + grip.create_review_bind_commit(ws, rows)
     except (grip.GripReviewRefused, grip.GripCorruptError, grip.GripInitError) as exc:

@@ -76,6 +76,7 @@ def test_pin_with_no_rows_reads_the_entered_lane(ws_at_pin) -> None:
     assert pin.exit_code == 0, pin.stdout + pin.stderr
     assert f"alpha {base[:4]}" in pin.stdout + pin.stderr or base in pin.stdout + pin.stderr
     assert lane_head[:4] in pin.stdout + pin.stderr
+    assert pin.stderr.count("gr2: reading lane north/feature (entered)") == 1, pin.stderr
 
 
 def test_publish_preflight_reads_the_entered_lane(ws_at_pin) -> None:
@@ -97,6 +98,19 @@ def test_blockers_resolves_from_the_entered_lane_branch(ws_at_pin) -> None:
     blk = _invoke("review", "blockers", str(ws), gr_id)
     out = blk.stdout + blk.stderr
     assert "from=feat (" in out, out
+    assert blk.stderr.count("gr2: reading lane north/feature (entered)") == 1, blk.stderr
+
+
+def test_blockers_with_no_review_id_finds_the_pin_by_the_lane_head(ws_at_pin) -> None:
+    ws, remote, base, _head = ws_at_pin
+    clone = _lane(ws, "north")
+    lane_head = _commit_in_lane(ws, clone)
+    gr_id = _pin_row(ws, remote, base, lane_head, clone)
+    blk = _invoke("review", "blockers", str(ws))
+    out = blk.stdout + blk.stderr
+    assert "review_ambiguous" not in out, out  # the shared checkout's HEAD matches no pin; the lane's does
+    assert f"review={gr_id} (pinned review at the current heads)" in out, out
+    assert "from=feat (" in out, out
 
 
 def test_several_units_in_a_lane_refuse_by_name(ws_at_pin) -> None:
@@ -115,6 +129,7 @@ def test_control_no_lane_entered_reads_the_shared_checkout(ws_at_pin) -> None:
     _lane(ws, "north", enter=False)
     pin = _invoke("review", "pin", str(ws))
     assert pin.exit_code != 0 or base not in pin.stdout  # the shared checkout sits at the pin: nothing to pin
+    assert "reading lane" not in pin.stderr, pin.stderr
     _g(shared, "checkout", "-q", "-b", "shared-feat")
     (shared / "shared.txt").write_text("shared\n")
     _g(shared, "add", "shared.txt")
@@ -126,3 +141,4 @@ def test_control_no_lane_entered_reads_the_shared_checkout(ws_at_pin) -> None:
     assert f"head=shared-feat@{shared_head[:7]} (pushed)" in pub.stdout + pub.stderr
     blk = _invoke("review", "blockers", str(ws), gr_id)
     assert "from=shared-feat (" in blk.stdout + blk.stderr
+    assert "reading lane" not in pub.stderr + blk.stderr, pub.stderr + blk.stderr

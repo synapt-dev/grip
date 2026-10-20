@@ -6,6 +6,7 @@ when a workspace + owner unit are supplied (impedance B).
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -202,6 +203,7 @@ def entered_member_roots(workspace_root: Path) -> dict[str, Path]:
         )
     unit, lane_name = entered[0]
     doc = lane_proto.load_lane_doc(workspace_root, unit, lane_name)
+    print(f"gr2: reading lane {unit}/{lane_name} (entered)", file=sys.stderr)
     return dict(_lane_repo_targets(workspace_root, unit, lane_name, doc))
 
 

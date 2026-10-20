@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import signal
 import subprocess
 from pathlib import Path
 
@@ -25,6 +26,15 @@ READS = ("status", "rev-parse")
 
 def _git(path: Path, *args: str) -> str:
     return subprocess.run(["git", *args], cwd=path, check=True, capture_output=True, text=True).stdout
+
+
+def _default_sigint() -> None:
+    """preexec_fn for a gr2 child a row signals: SIGINT back to the default handler.
+
+    A launcher that starts the suite with SIGINT ignored (a detached or non-interactive run) hands that
+    ignore down to every child, and gr2 keeps an inherited ignore, so the row's SIGINT would never land.
+    """
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
 
 
 def _member(path: Path) -> None:
@@ -450,7 +460,9 @@ def test_c5_signal_mid_write_undoes_every_member_touched(members: list[Path], tm
     for path in members:
         args += ["--repo-path", str(path)]
     env = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1])}
-    proc = subprocess.Popen(args, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    proc = subprocess.Popen(
+        args, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, preexec_fn=_default_sigint
+    )
     out, err = proc.communicate(timeout=60)
     assert told.read_text().strip() == str(proc.pid)
     assert proc.returncode == code, (out, err)
@@ -487,7 +499,7 @@ def test_c8_second_signal_during_the_undo_does_not_cut_it_short(
         "PYTHONPATH": str(Path(__file__).resolve().parents[1]),
         "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}",
     }
-    proc = subprocess.run(args, env=env, capture_output=True, text=True, timeout=60)
+    proc = subprocess.run(args, env=env, capture_output=True, text=True, timeout=60, preexec_fn=_default_sigint)
     assert second.exists()
     # The tree first, so a red names the half-restored member rather than the stderr text.
     after = [_state(p) for p in members]
@@ -521,7 +533,7 @@ def test_c9_second_sigint_during_the_failure_undo_does_not_cut_it_short(members:
         "PYTHONPATH": str(Path(__file__).resolve().parents[1]),
         "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}",
     }
-    proc = subprocess.run(args, env=env, capture_output=True, text=True, timeout=60)
+    proc = subprocess.run(args, env=env, capture_output=True, text=True, timeout=60, preexec_fn=_default_sigint)
     assert sent.exists()
     after = [_state(p) for p in members]
     assert after == before, [(p.name, a) for p, a, b in zip(members, after, before) if a != b]

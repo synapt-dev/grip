@@ -430,3 +430,27 @@ def test_a_member_that_moves_after_a_half_land_is_refused_with_a_next_line_and_t
     assert rows["beta"]["refused"].startswith("feature_moved"), rows["beta"]
     assert rows["beta"]["next"].startswith("next: "), rows["beta"]
     assert mains(slice2)["beta"] == beta["base"], "the moved member's target did not move"
+
+
+def test_a_moved_member_after_a_half_land_gets_its_new_pin_and_the_waiting_members_in_its_next(tmp_path, monkeypatch):
+    # The moved member's next is the new pin for that member (by --path), and the members the refusal left unpushed
+    # ride on it, each named in the "(then ..., not pushed after the refusal" clause.
+    s = make_slice(tmp_path, monkeypatch, ("alpha", "beta", "gamma"))
+    record_set(s)
+    beta = s["members"]["beta"]
+    hook = beta["remote"] / "hooks" / "pre-receive"
+    hook.write_text("#!/bin/sh\necho 'main is closed for now' >&2\nexit 1\n")
+    hook.chmod(0o755)
+    argv = ["review", "merge", s["review"], "--from", "feat", "--into", "main", "--approvals", "0"]
+    first = runner.invoke(app, argv)
+    assert first.exit_code == merge_gate.EXIT_PARTIAL, first.output
+    hook.unlink()
+    move(beta)
+    again = runner.invoke(app, argv)
+    print(f"$ gr2 {' '.join(argv)}\n{again.output}exit {again.exit_code}")
+    assert again.exit_code == merge_gate.EXIT_PARTIAL, again.output
+    rows = {m["key"]: m for m in json.loads(next(l for l in again.output.splitlines() if l.startswith("{")))["members"]}
+    assert rows["beta"]["refused"].startswith("feature_moved"), rows["beta"]
+    step = rows["beta"].get("next", "")
+    assert "gr2 review pin" in step and "--path beta" in step, step
+    assert "(then gamma, not pushed after the refusal" in step, step

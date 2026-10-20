@@ -4760,7 +4760,9 @@ def review_create_project(
             committers = {}
             for p in pins:
                 lane_repo = _lane_repo_root(ws, owner_unit, lane_name, p.key)
-                cap = git(lane_repo, "format-patch", f"{p.base}..{p.head}", "--stdout")
+                # Both range reads go through the real history, so a replace ref in the lane cannot change
+                # what the review records.
+                cap = gitops.real_history_run(lane_repo, "format-patch", f"{p.base}..{p.head}", "--stdout")
                 if cap.returncode != 0 or not cap.stdout.strip():
                     raise ValueError(f"cannot capture range for {p.key} from {lane_repo}: {cap.stderr.strip() or 'empty range'}")
                 ranges[p.key] = cap.stdout
@@ -4768,7 +4770,7 @@ def review_create_project(
                 # first, the order format-patch/mailsplit use) so reconstruction can
                 # re-stamp and reproduce the pinned head SHA, not merely its tree. The
                 # lane repo holds the pre-push head; the remote does not.
-                cm = git(lane_repo, "log", "--reverse", "--format=%cn%x09%ce%x09%cI", f"{p.base}..{p.head}")
+                cm = gitops.real_history_run(lane_repo, "log", "--reverse", "--format=%cn%x09%ce%x09%cI", f"{p.base}..{p.head}")
                 if cm.returncode != 0:
                     raise ValueError(f"cannot capture committer metadata for {p.key} from {lane_repo}: {cm.stderr.strip()}")
                 committers[p.key] = cm.stdout

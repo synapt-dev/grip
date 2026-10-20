@@ -77,12 +77,7 @@ def test_a_legacy_bind_with_two_spellings_of_one_directory_is_refused(record_wor
         grip._read_repo_state(record_world["author"], bad, bind=True)
 
 
-LEGACY_DISTINCT = DISTINCT[:2] + [pytest.param(*DISTINCT[2].values, id="non-ascii-case", marks=pytest.mark.xfail(
-    strict=True, raises=grip.GripCorruptError,
-    reason="legacy reader parses ls-tree without -z: core.quotePath quotes a non-ASCII name, which is then refused"))]
-
-
-@pytest.mark.parametrize("first,second", LEGACY_DISTINCT)
+@pytest.mark.parametrize("first,second", DISTINCT)
 def test_a_legacy_bind_with_two_directories_reads_both(record_world, first, second):
     bad = _legacy_bind_two(record_world, first, second)
     assert sorted(grip._read_repo_state(record_world["author"], bad, bind=True)) == sorted([first, second])

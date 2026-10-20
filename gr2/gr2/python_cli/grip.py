@@ -2835,14 +2835,10 @@ def grip_log(workspace: Path, *, max_count: int = 10) -> list[GripCommitInfo]:
 
 
 def _read_repo_names(workspace: Path, commit_sha: str) -> list[str]:
-    proc = _grip_git(workspace, "ls-tree", f"{commit_sha}:repos")
+    proc = _grip_git(workspace, "ls-tree", "-z", f"{commit_sha}:repos")
     if proc.returncode != 0:
         return []
-    return [
-        line.split("\t")[-1]
-        for line in proc.stdout.strip().splitlines()
-        if line.strip()
-    ]
+    return [name for *_, name in gitops.ls_tree_rows(proc.stdout)]
 
 
 def grip_diff(workspace: Path, ref_a: str, ref_b: str) -> GripDiff:
@@ -2877,23 +2873,17 @@ def _read_repo_state(workspace: Path, ref: str, *, bind: bool = False) -> dict[s
     if bind and _is_field_tree_bind(workspace, ref):
         return {key: dict(m["repo"]) for key, m in _field_tree_view(workspace, ref)["members"].items()}
     _g = _bind_git if bind else _grip_git
-    proc = _g(workspace, "ls-tree", f"{ref}:repos")
+    proc = _g(workspace, "ls-tree", "-z", f"{ref}:repos")
     if proc.returncode != 0:
         return {}
 
     repos: dict[str, dict[str, str]] = {}
     folded: set[str] = set()
-    for line in proc.stdout.strip().splitlines():
-        if not line.strip():
-            continue
-        name = line.split("\t")[-1]
+    for *_, name in gitops.ls_tree_rows(proc.stdout):
         state: dict[str, str] = {}
-        fields = _g(workspace, "ls-tree", f"{ref}:repos/{name}")
+        fields = _g(workspace, "ls-tree", "-z", f"{ref}:repos/{name}")
         if fields.returncode == 0:
-            for fline in fields.stdout.strip().splitlines():
-                if not fline.strip():
-                    continue
-                fname = fline.split("\t")[-1]
+            for *_, fname in gitops.ls_tree_rows(fields.stdout):
                 blob = _g(workspace, "show", f"{ref}:repos/{name}/{fname}")
                 if blob.returncode == 0:
                     state[fname] = blob.stdout.strip()

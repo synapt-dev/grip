@@ -486,6 +486,23 @@ def ls_remote_rows(listing: str, symref: bool = False) -> list[tuple[str, str]]:
     return rows
 
 
+def ls_tree_rows(listing: str) -> list[tuple[str, str, str, str]]:
+    """(mode, type, oid, name) per entry of ``git ls-tree -z`` output, split on NUL. Without -z git C-quotes a name
+    that holds a tab, newline, quote or backslash (and, under core.quotePath, any non-ASCII byte), so the quoted text
+    would be read as the name; str.splitlines also cuts at U+2028 and U+0085, which a name may hold. A non-empty entry
+    without a tab or without three meta fields raises ValueError rather than be dropped."""
+    rows = []
+    for entry in listing.split("\0"):
+        if not entry:
+            continue
+        meta, tab, name = entry.partition("\t")
+        fields = meta.split(" ")
+        if not tab or len(fields) != 3:
+            raise ValueError(f"ls-tree answered an entry that is not a row: {entry[:80]!r}")
+        rows.append((fields[0], fields[1], fields[2], name))
+    return rows
+
+
 def ls_remote_oid(listing: str, ref: str) -> str | None:
     """The oid of the one ls-remote row whose name is exactly ``ref``, or None when no row names it. ls-remote matches
     its pattern by tail, so refs/heads/a/<ref> answers too and may sort first: the first row is an order, not the asked

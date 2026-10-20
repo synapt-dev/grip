@@ -66,6 +66,25 @@ def test_store_add_refuses_a_duplicate_before_cloning(tmp_path: Path) -> None:
                           capture_output=True, text=True).stdout.strip() != str(other)
 
 
+
+def test_store_add_refusal_names_its_own_argument(tmp_path: Path) -> None:
+    # store add takes a positional NAME=URL, not --clone; the refusal names what was typed
+    root = _store(tmp_path)
+    before = (root / "grip.toml").read_text()
+    code, out = _cli("store", "add", "-C", str(root), "no-equals-sign")
+    assert code == 2, out
+    assert "store add NAME=URL" in out
+    assert "is not NAME=URL" in out
+    assert "--clone" not in out
+    assert (root / "grip.toml").read_text() == before
+
+
+def test_store_init_clone_refusal_still_names_clone(tmp_path: Path) -> None:
+    code, out = _cli("store", "init", str(tmp_path / "ws"), "--clone", "no-equals-sign")
+    assert code == 2, out
+    assert "cannot use these --clone values" in out
+    assert "is not NAME=URL" in out
+
 @pytest.mark.parametrize("step", ["_write_native_members", "render_gitmodules"])
 def test_store_add_failed_record_removes_the_clone_and_restores_files(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch, step: str) -> None:

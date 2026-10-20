@@ -1303,7 +1303,7 @@ def _write_gitignore(root: Path, members: list[dict[str, str]]) -> None:
     _regenerate_workspace_gitignore(root)
 
 
-def _parse_clone_values(values: list[str]) -> list[tuple[str, str]]:
+def _parse_clone_values(values: list[str], label: str = "--clone values") -> list[tuple[str, str]]:
     """(name, url) for each `--clone NAME=URL`, or a usage error naming every bad value.
 
     A NAME is one path segment, because the member is cloned at `<root>/<NAME>` and recorded with
@@ -1336,7 +1336,7 @@ def _parse_clone_values(values: list[str]) -> list[tuple[str, str]]:
         seen.add(name)
         parsed.append((name, url))
     if problems:
-        raise NativeStoreRefusal("cannot use these --clone values: " + "; ".join(problems), 2)
+        raise NativeStoreRefusal(f"cannot use these {label}: " + "; ".join(problems), 2)
     return parsed
 
 
@@ -3907,7 +3907,7 @@ def grip_add_cmd(
     try:
         if ref is not None:
             name_rules.git_ref(ref, "--ref")
-        ((name, url),) = _parse_clone_values([value])
+        ((name, url),) = _parse_clone_values([value], label="store add NAME=URL values")
         member = _native_store_add(root, name, url, ref)
     except ValueError as exc:
         typer.echo(str(exc), err=True)

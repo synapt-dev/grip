@@ -33,6 +33,29 @@ def test_since_my_stamp_on_a_shallow_clone_refuses_approval_unmeasurable(world):
     assert f"next: git -C {world['member'].resolve()} fetch --unshallow" in out.output, out.output
 
 
+def test_since_my_stamp_unshallow_line_quotes_a_repo_path_with_a_space(tmp_path, monkeypatch):
+    # approvals:509: the printed fetch --unshallow line runs as printed when the member path holds a space and a ';'.
+    from gr2.python_cli import approvals
+    workspace = tmp_path / "work space;x"
+    workspace.mkdir()
+    pinned = {"members": [{"key": "m", "path": "m", "head": "a" * 40, "files": []}]}
+    current = {"members": [{"key": "m", "path": "m", "head": "b" * 40, "files": []}]}
+    monkeypatch.setattr(approvals, "_git", lambda *a, **kw: "Approver B")
+    monkeypatch.setattr(approvals.grip, "show_review_commit", lambda ws, rid: pinned if rid == "pin" else current)
+    monkeypatch.setattr(approvals.grip, "list_review_binds", lambda ws: [("pin", None)])
+    monkeypatch.setattr(approvals, "count_approvals", lambda ws, pin: {"links": [{"approver": "Approver B", "commit": "c"}]})
+    monkeypatch.setattr(approvals, "_read_link", lambda ws, c: {"created_at": "2026-10-20T00:00:00Z"})
+    monkeypatch.setattr(approvals.gitops, "is_ancestor", lambda *a, **kw: None)
+    try:
+        approvals.since_my_stamp(workspace, "gr:" + "c" * 40)
+    except approvals.ApprovalRefused as refused:
+        message = str(refused)
+    else:
+        raise AssertionError("no refusal")
+    repo = str((workspace / "m").resolve())
+    assert f"next: git -C '{repo}' fetch --unshallow" in message, message
+
+
 def test_landed_check_on_a_shallow_clone_refuses_ancestry_unmeasurable(world, monkeypatch):
     # merge_gate:816: main moves one commit past the reviewed head at the push; the shallow clone cannot tell landed.
     set_policy(world, 0)

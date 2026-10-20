@@ -507,7 +507,7 @@ def since_my_stamp(workspace: Path, review_id: str) -> dict:
             ancestry = gitops.is_ancestor(repo, then, now)
             if ancestry is None:  # a shallow clone (or a missing object) cannot tell a rebase from a range
                 raise ApprovalRefused(f"approval_unmeasurable: {key}: cannot tell whether {then} is an ancestor of "
-                                      f"{now}; next: git -C {repo} fetch --unshallow")
+                                      f"{now}; next: git -C {_shown(str(repo))} fetch --unshallow")
             if ancestry:
                 row["range"] = f"{then}..{now}"
                 row["commits"] = _git(repo, "rev-list", "--reverse", row["range"]).splitlines()

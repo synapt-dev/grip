@@ -36,8 +36,6 @@ ALLOWLIST: dict[tuple[str, str], str] = {
         'user-typed: the person passed this value in the command that prints it (app.py:518)',
     ('gr2/python_cli/app.py', 'f"another branch belongs in a new lane: gr2 lane create <workspace> {next_steps._shown(unit)} <lane>{repos} "'):
         "repos is built quoted: ' --repos ' + next_steps._shown(key), app.py:2090",
-    ('gr2/python_cli/app.py', 'f"--branch {name}",'):
-        'user-typed: the person passed this value in the command that prints it (app.py:2134)',
     ('gr2/python_cli/app.py', 'f"  continue with it: gr2 review create-project {workspace_root} {owner_unit} {lane_name}\\n"'):
         'user-typed: the person passed this value in the command that prints it (app.py:3387)',
     ('gr2/python_cli/app.py', 'stash_if_dirty(path, f"gr2 exit {owner_unit}/{lane_name}")'):

@@ -439,3 +439,20 @@ def test_the_member_key_in_the_refusal_is_quoted_when_the_lane_record_holds_shel
     ran = subprocess.run(["bash", "-c", "gr2() { :; }\n" + printed], cwd=tmp_path, capture_output=True, text=True)
     assert ran.returncode == 0, ran.stderr
     assert list(tmp_path.glob("MARK*")) == [], printed
+
+
+def test_the_branch_named_in_the_refusal_is_quoted_when_it_holds_shell_text(tmp_path: Path) -> None:
+    # Rule: the branch is the name the person typed; git accepts $, ( and { in a ref, so the printed lane create
+    # quotes it: shlex.split gives it back as one argument, and the line run by a shell (gr2 stubbed) starts nothing.
+    import subprocess
+
+    ws, repos = _lane(tmp_path)
+    name = "x$(touch${IFS}MARKB)"
+    moved = _branch(repos["beta"], name)
+    assert moved.exit_code == 2, moved.output
+    printed = moved.output.split("new lane: ", 1)[1].strip().replace("<workspace>", str(ws)).replace("<lane>", "next")
+    argv = shlex.split(printed)
+    assert argv[-2:] == ["--branch", name], printed
+    ran = subprocess.run(["bash", "-c", "gr2() { :; }\n" + printed], cwd=tmp_path, capture_output=True, text=True)
+    assert ran.returncode == 0, ran.stderr
+    assert list(tmp_path.glob("MARK*")) == [], printed

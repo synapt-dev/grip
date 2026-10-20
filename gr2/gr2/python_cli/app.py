@@ -2221,7 +2221,7 @@ def _refuse_branching_a_lane_member(target: Path, name: str) -> None:
         f"Error: {key} is a repo of lane {next_steps._shown(f'{unit}/{lane_name}')}, whose branch for it is '{lane_branch}'; "
         f"'{name}' was not created or switched to. The lane records its branch and fork base, so work on "
         f"another branch belongs in a new lane: gr2 lane create <workspace> {next_steps._shown(unit)} <lane>{repos} "
-        f"--branch {name}",
+        f"--branch {next_steps._shown(name)}",
         err=True,
     )
     raise typer.Exit(code=2)

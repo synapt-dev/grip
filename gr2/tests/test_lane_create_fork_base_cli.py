@@ -259,3 +259,36 @@ def test_cli_carry_range_reconstructs_the_exact_pinned_sha(tmp_path: Path) -> No
     result = grip.reconstruct_project_review_lane(ws, sha, "app", tmp_path / "recon" / "app")
     assert result["reconstructed_head"] == pinned_head  # SHA-faithful, not merely tree-equal
     assert result["bound_head"] == pinned_head
+
+
+def test_cli_carry_range_reads_past_a_replace_ref(tmp_path: Path) -> None:
+    # A replace ref in the lane swaps the head commit for a copy with another author and committer. The
+    # carried range and committer metadata must come from the real commit, or reconstruction rebuilds
+    # the wrong identity and a different sha than the one pinned.
+    ws, _tips = _workspace(tmp_path, ["app"])
+    assert runner.invoke(gr2_app.app, ["lane", "create", str(ws), "atlas", "feature",
+                                       "--repos", "app", "--branch", "feat/lane"]).exit_code == 0
+    lane_repo = lanes.lane_repo_root(ws, "atlas", "feature", "app")
+    _git(lane_repo, "config", "user.email", "dev@layne.pro")
+    _git(lane_repo, "config", "user.name", "Layne Penney")
+    (lane_repo / "change.txt").write_text("lane change\n")
+    _git(lane_repo, "add", ".")
+    _git(lane_repo, "commit", "-q", "-m", "lane change")
+    pinned_head = _git(lane_repo, "rev-parse", "HEAD")
+    body = _git(lane_repo, "cat-file", "commit", pinned_head) + "\n"
+    forged_body = body.replace("Layne Penney <dev@layne.pro>", "Mallory <m@e.invalid>")  # author and committer
+    assert forged_body != body
+    forged = subprocess.run(["git", "hash-object", "-t", "commit", "-w", "--stdin"], cwd=lane_repo,
+                            input=forged_body, text=True, capture_output=True, check=True).stdout.strip()
+    _git(lane_repo, "replace", pinned_head, forged)
+    assert "Mallory" in _git(lane_repo, "log", "-1", "--format=%cn", pinned_head)  # the replace ref is live
+
+    res = runner.invoke(gr2_app.app, ["review", "create-project", str(ws), "atlas", "feature", "--carry-range"])
+    assert res.exit_code == 0, res.output
+    sha = next(l for l in res.output.splitlines() if l.startswith("gr:"))[3:].strip()
+    carried = grip._bind_git(ws, "cat-file", "-p", f"{sha}:objects/app/committers").stdout
+    assert "Mallory" not in carried
+    assert "Layne Penney" in carried
+
+    result = grip.reconstruct_project_review_lane(ws, sha, "app", tmp_path / "recon" / "app")
+    assert result["reconstructed_head"] == pinned_head

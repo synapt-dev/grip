@@ -81,14 +81,16 @@ def update(workspace: Path, review_id: str | None = None, into: str | None = Non
     # The checks `review publish` makes too (grip._member_preflight, one copy): a credential in a recorded remote, or
     # a member clone already mid-merge (`unresolved_merge`; resolve and commit, or abort, then run update again).
     try:
-        grip._member_preflight(ws, view["id"].removeprefix("gr:"), for_push=False)
+        checked = grip._member_preflight(ws, view["id"].removeprefix("gr:"), for_push=False)
     except grip.GripReviewRefused as exc:
         if exc.refusal == "unresolved_merge":
             # The member that blocked, so the next line can name its clone (the receipt is all next_steps reads).
             receipt["members"] = [{"key": m["key"], "path": m["path"], "state": "unresolved_merge"}
                                   for m in view["members"] if m["key"] == exc.expected]
         return done(EXIT_REFUSED, f"{exc.refusal}: {exc.expected}: {exc.observed}")
-    members = [dict(m, repo=(ws / m["path"]).resolve()) for m in view["members"]]
+    # Merge in the clone the preflight read: with a lane entered that is the lane's clone, where commit wrote.
+    clones = {row["key"]: row["clone"] for row in checked}
+    members = [dict(m, repo=clones[m["key"]]) for m in view["members"]]
 
     # Every refusal that moves nothing comes before the first merge, across ALL members.
     dirty, branches = [], {}

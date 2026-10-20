@@ -1621,7 +1621,7 @@ def _coverage_of(path: Path, pin: str, upstream: str) -> str:
 def _remote_branches_holding(path: Path, sha: str) -> list[str]:
     """The remote-tracking branches of a member clone that contain ``sha``, as `origin/feat/x`."""
     held = _store_git(path, "for-each-ref", "--contains", sha, "--format=%(refname:short)", "refs/remotes", check=False)
-    return [name for name in held.stdout.split() if held.returncode == 0 and not name.endswith("/HEAD")]
+    return [name for name in gitops.for_each_ref_rows(held.stdout) if held.returncode == 0 and not name.endswith("/HEAD")]
 
 
 def _unpushed_steps(root: Path, path: Path, sha: str, upstream: str) -> str:

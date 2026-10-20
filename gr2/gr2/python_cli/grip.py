@@ -5,6 +5,7 @@ workspace state as content-addressable objects in a dedicated .grip/ repo.
 """
 from __future__ import annotations
 
+import os
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -962,16 +963,31 @@ def _receipt_covers(workspace: Path, receipt: tuple[str, dict[str, object]], key
 
 
 def _review_bind_author(workspace: Path) -> str:
-    """The binder's configured Git name, shared with the unsigned approval identity.
-    Never infer it from member commit authors or from the commit-tree fallback."""
-    proc = _bind_git(workspace, "config", "--get", "user.name")
-    name = proc.stdout.strip()
-    if proc.returncode != 0 or not name or any(ord(c) < 32 or ord(c) == 127 for c in name):
+    """The binder's Git author name: GIT_AUTHOR_NAME when set, else
+    the configured user.name, the order git itself uses. Never infer it from member commit authors, from the
+    commit-tree fallback, or from git's own guess (the login and host name)."""
+    name = review_author_name(workspace)
+    if not name or any(ord(c) < 32 or ord(c) == 127 for c in name):
         raise GripReviewRefused(
-            "bind_author_unavailable", "a Git user.name in the workspace root",
-            f"none set in {workspace}; run git config user.name 'Your Name' there (GIT_AUTHOR_NAME is not read), "
+            "bind_author_unavailable", "a Git user.name in the workspace root, or GIT_AUTHOR_NAME",
+            f"none set in {workspace}; run git config user.name 'Your Name' there (or set GIT_AUTHOR_NAME), "
             "then retry")
     return name
+
+
+def review_author_name(workspace: Path) -> str:
+    """The one review identity, read the same way by the pin author, approve and since_my_stamp: GIT_AUTHOR_NAME
+    when set, else the workspace root's user.name; empty when neither is set (never git's guessed name)."""
+    name = env_author_name()
+    if name:
+        return name
+    proc = _bind_git(workspace, "config", "--get", "user.name")
+    return proc.stdout.strip() if proc.returncode == 0 else ""
+
+
+def env_author_name() -> str:
+    """GIT_AUTHOR_NAME, which git reads before any config; empty when unset."""
+    return os.environ.get("GIT_AUTHOR_NAME", "").strip()
 
 
 def verify_review_commit(workspace: Path, commit: str) -> dict[str, object]:

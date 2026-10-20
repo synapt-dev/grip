@@ -3,6 +3,7 @@ valid for the pin), and each member says whether its branch left the pin, as blo
 from __future__ import annotations
 
 import json
+import os
 
 from typer.testing import CliRunner
 
@@ -15,7 +16,10 @@ runner = CliRunner()
 
 
 def stamp(s):
+    # The approver is read as GIT_AUTHOR_NAME first, else user.name; the fixture sets the variable for gr2's own
+    # commits, so the reviewer changes in both (the fixture's monkeypatch restores the variable at teardown).
     git(s["author"], "config", "user.name", "Approver B")
+    os.environ["GIT_AUTHOR_NAME"] = "Approver B"
     assert runner.invoke(app, ["review", "approve", s["review"]]).exit_code == 0
 
 

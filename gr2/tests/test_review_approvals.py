@@ -57,6 +57,10 @@ def world(tmp_path, monkeypatch):
     published = runner.invoke(app, ["review", "publish", "gr:" + rid, "--remote", str(remote)])
     assert published.exit_code == 0, published.output
     git(member, "push", remote, "feature")
+    # Reviewers change by config user.name, so the env name (which review_author_name reads first) is dropped after
+    # setup; the member keeps Author A as its commit author through config.
+    git(member, "config", "user.name", "Author A")
+    monkeypatch.delenv("GIT_AUTHOR_NAME")
     return dict(workspace=workspace, member=member, remote=remote, base=base, head=head, rid=rid)
 
 
@@ -419,7 +423,7 @@ def test_bind_verification_failure_stops_before_any_remote(monkeypatch, tmp_path
 def test_author_is_refused_before_remote_measurement(monkeypatch):
     root, _ = _sample_link()
     monkeypatch.setattr(approvals, "_context", lambda *args: (root, {"Author A"}))
-    monkeypatch.setattr(approvals, "_git", lambda *args, **kwargs: "Author A")
+    monkeypatch.setattr(approvals.grip, "review_author_name", lambda *args: "Author A")
     monkeypatch.setattr(approvals, "_remote_tips", lambda *args: pytest.fail("author reached remote measurement"))
     with pytest.raises(approvals.ApprovalRefused, match="self_approval"):
         approvals.approve(Path.cwd(), root["review_id"])
@@ -614,7 +618,7 @@ def test_reconcile_refuses_a_changed_post_publish_measurement(monkeypatch):
 def test_missing_approver_refuses_before_remote_measurement(monkeypatch):
     root, _ = _sample_link()
     monkeypatch.setattr(approvals, "_context", lambda *args: (root, {"Author A"}))
-    monkeypatch.setattr(approvals, "_git", lambda *args, **kwargs: "")
+    monkeypatch.setattr(approvals.grip, "review_author_name", lambda *args: "")
     monkeypatch.setattr(approvals, "_remote_tips", lambda *args: pytest.fail("missing identity reached remote measurement"))
     with pytest.raises(approvals.ApprovalRefused, match="approval_identity_missing"):
         approvals.approve(Path.cwd(), root["review_id"])
@@ -623,6 +627,8 @@ def test_missing_approver_refuses_before_remote_measurement(monkeypatch):
 def test_invalid_approver_name_refuses_before_remote_measurement(monkeypatch):
     root, _ = _sample_link()
     monkeypatch.setattr(approvals, "_context", lambda *args: (root, {"Author A"}))
+    # approve reads the identity through grip.review_author_name, GIT_AUTHOR_NAME first, so the bad name is set there.
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "Approver\x1bB")
     monkeypatch.setattr(approvals, "_git", lambda *args, **kwargs: "Approver\x1bB")
     monkeypatch.setattr(approvals, "_remote_tips", lambda *args: pytest.fail("invalid identity reached remote measurement"))
     monkeypatch.setattr(approvals, "_reconcile", lambda *args: pytest.fail("invalid identity reached reconcile"))
@@ -728,6 +734,27 @@ def test_approve_uses_workspace_identity_from_a_member_cwd(world, monkeypatch):
     assert receipt["links"][0]["approver"] == "Workspace B"
     record = json.loads(git(world["remote"], "show", receipt["tip"] + ":approval.json"))
     assert record["approver"]["name"] == "Workspace B"
+
+
+def test_one_person_with_env_and_config_names_apart_cannot_pin_then_approve(world, monkeypatch):
+    workspace, member, remote, base = (world[k] for k in ("workspace", "member", "remote", "base"))
+    (member / "payload").write_text("second\n")
+    git(member, "commit", "-am", "second")
+    head = git(member, "rev-parse", "HEAD")
+    git(member, "push", remote, "feature")
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "Env X")
+    git(workspace, "config", "user.name", "Config Y")
+    bound = runner.invoke(app, ["review", "bind", "--repo", "member", "--remote", str(remote),
+                               "--base", base, "--head", head, "--ref", "refs/heads/main", "--source", str(member)])
+    assert bound.exit_code == 0, bound.output
+    rid = approvals.current_review(workspace)
+    assert rid != world["rid"]
+    assert approvals._context(workspace, rid, None)[0]["author"] == "Env X"
+    published = runner.invoke(app, ["review", "publish", "gr:" + rid, "--remote", str(remote)])
+    assert published.exit_code == 0, published.output
+    with pytest.raises(approvals.ApprovalRefused, match="self_approval"):
+        approvals.approve(workspace, rid)
+    assert git(remote, "for-each-ref", approvals.PREFIX + rid) == ""
 
 
 @pytest.mark.parametrize("given", [-1, True, "2"])

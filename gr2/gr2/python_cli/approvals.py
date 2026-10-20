@@ -39,7 +39,7 @@ class ApprovalRefused(RuntimeError):
 #: outside it: the `cat-file -e` presence check (a replace object there can at most cause an extra fetch, and the
 #: head is then read through _git); the `fetch` it gates (a transfer, which reads no chain link); the lane's
 #: `rev-parse HEAD` (it resolves a ref and peels nothing, and a replace object never changes a ref); and the
-#: lane's `config user.name` (an identity, not history).
+#: lane's approver name, read by grip.review_author_name (an identity, not history).
 _TRUE_HISTORY = {"GIT_NO_REPLACE_OBJECTS": "1", "GIT_GRAFT_FILE": os.devnull}
 
 
@@ -460,9 +460,9 @@ def approve(workspace: Path, review_id: str | None = None, member_dirs: dict[str
     workspace = workspace.resolve()
     rid = review_id.removeprefix("gr:") if review_id else current_review(workspace)
     root, authors = _context(workspace, rid, member_dirs)
-    name = _git(workspace, "config", "user.name")
+    name = grip.review_author_name(workspace)
     if not name.strip():
-        raise ApprovalRefused("approval_identity_missing")
+        raise ApprovalRefused("approval_identity_missing: neither GIT_AUTHOR_NAME nor the workspace user.name is set")
     try:
         check_approver_name(name)
     except ApprovalRefused:
@@ -488,12 +488,12 @@ def approve(workspace: Path, review_id: str | None = None, member_dirs: dict[str
 
 
 def since_my_stamp(workspace: Path, review_id: str) -> dict:
-    """What moved since this reviewer's newest stamp: the reviewer is the workspace's Git user.name (the identity
+    """What moved since this reviewer's newest stamp: the reviewer is grip.review_author_name (the identity
     `approve` writes), the stamp the newest by created_at on any pin sharing a member key with this one. Per member:
     the stamped and current heads, the commits and the changed paths between them. Reads; writes no ref."""
     workspace = workspace.resolve()
     rid = review_id.removeprefix("gr:")
-    name = _git(workspace, "config", "user.name")
+    name = grip.review_author_name(workspace)
     current = {m["key"]: m for m in grip.show_review_commit(workspace, rid)["members"]}
     stamps, skipped = [], []
     for pin, _ in grip.list_review_binds(workspace):
@@ -543,8 +543,8 @@ def since_my_stamp(workspace: Path, review_id: str) -> dict:
 # The approval is a commit chain under PREFIX + "pr/<head>" in the WORKSPACE'S OWN CLONE of the reviewed repo (the
 # member checkout the PR was fetched into): local, never pushed, and it outlives the lane, which `review close`
 # drops. A workspace a checkout-pr lane lives in need not have a root store, so the member clone is the store.
-# As for bind approvals, the approver is the self-declared Git user.name, and the PR head's author or any commit
-# author in base..head may not stamp it. Nothing in the merge gate reads this chain: it never counts toward a merge.
+# The approver is read as every other stamp reads it, by grip.review_author_name: GIT_AUTHOR_NAME when set, else the
+# lane's Git user.name. The PR head's author or any commit author in base..head may not stamp it. Nothing in the merge gate reads this chain: it never counts toward a merge.
 
 PR_LANE_SCHEMA = "gr2.pr-lane-approval.v1"
 PR_PREFIX = PREFIX + "pr/"
@@ -630,7 +630,8 @@ def pr_lane_approvals(lane: Path) -> dict:
 
 
 def approve_pr_lane(lane: Path) -> dict:
-    """Stamp a PR-head review: an unsigned approval as git user.name, bound to the lane record's (repo, head).
+    """Stamp a PR-head review: an unsigned approval as GIT_AUTHOR_NAME, else the lane's git user.name, bound to the
+    lane record's (repo, head).
     A lane whose HEAD is not the recorded head is refused, so an approval never lands on bytes nobody read."""
     lane = Path(lane).resolve()
     record = pr_lane_record(lane)
@@ -643,7 +644,7 @@ def approve_pr_lane(lane: Path) -> dict:
             f"approval_head_moved: lane {lane} is at {actual or '(unreadable)'!s}, the review record's head is "
             f"{record['head']}; nothing was stamped",
             next_step="close this lane with `gr2 review close` and check the PR out again, then stamp the new head")
-    name = gitops.git(lane, "config", "user.name").stdout.strip()
+    name = grip.review_author_name(lane)
     if not name:
         raise ApprovalRefused("approval_identity_missing")
     check_approver_name(name)

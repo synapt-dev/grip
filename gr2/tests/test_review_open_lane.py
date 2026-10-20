@@ -1096,11 +1096,16 @@ def test_pr_lane_option_shaped_base_in_the_record_is_a_revision_not_an_option(re
     assert approvals.pr_head_approvals(world["source"], "any", world["head_sha"])["tip"] is None
 
 
-# The pinned lane's name rule (approvals.check_approver_name) refuses C0 controls and DEL; a line or paragraph
-# separator or a zero-width space inside the name passes it, so the checkout-pr stamp passes them too.
+# The pinned lane's name rule (approvals.check_approver_name) is gitops.unsafe_in_name: it refuses C0, DEL, the
+# C1 controls (U+009B is a one-character CSI on terminals that honour 8-bit controls), the bidi controls such as
+# U+202E, the line and paragraph separators and the zero-width space; ZWNJ and ZWJ, a no-break space and a plain
+# accented letter inside the name pass it, so the checkout-pr stamp applies the same rule.
 @pytest.mark.parametrize("char, refused", [
-    (chr(9), True), (chr(127), True), (chr(1), True), (chr(10), True), (chr(0x2028), False), (chr(0x200B), False),
-], ids=["tab", "del", "x01", "newline", "u2028", "u200b"])
+    (chr(9), True), (chr(127), True), (chr(1), True), (chr(10), True), (chr(0x2028), True), (chr(0x200B), True),
+    (chr(0x9B), True), (chr(0x85), True), (chr(0x80), True), (chr(0x9F), True), (chr(0xA0), False), (chr(0xEB), False),
+    (chr(0x202E), True), (chr(0x200D), False), (chr(0x200C), False),
+], ids=["tab", "del", "x01", "newline", "u2028", "u200b", "csi", "nel", "u0080", "u009f", "nbsp", "e_diaeresis",
+        "rlo", "zwj", "zwnj"])
 def test_stamp_on_a_checkout_pr_lane_applies_the_pinned_lane_name_rule(review_world, monkeypatch, char, refused):
     from typer.testing import CliRunner
     from gr2.python_cli import approvals
@@ -1137,7 +1142,7 @@ def _plant_pr_lane_stamp(store, link, parent):
 # A pinned link whose approver name breaks the rule makes _walk refuse the whole chain; a checkout-pr stamp
 # read back from the member clone is refused the same way, even beside a good stamp.
 @pytest.mark.parametrize("char, refused", [
-    (chr(9), True), (chr(127), True), (chr(1), True), (chr(10), True), (chr(0x2028), False),
+    (chr(9), True), (chr(127), True), (chr(1), True), (chr(10), True), (chr(0x2028), True),
 ], ids=["tab", "del", "x01", "newline", "u2028"])
 def test_reading_a_checkout_pr_stamp_applies_the_pinned_lane_name_rule(review_world, monkeypatch, char, refused):
     from typer.testing import CliRunner

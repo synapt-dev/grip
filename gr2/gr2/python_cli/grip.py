@@ -2890,6 +2890,10 @@ def _read_repo_state(workspace: Path, ref: str, *, bind: bool = False) -> dict[s
         if bind and (not plain_member_key(name) or member_key_fold(name) in folded):
             raise GripCorruptError(f"invalid review repository tree: member key {name!r}")
         folded.add(member_key_fold(name))
+        # The stored remote is read back into git commands, so the field tree reader's rule holds here too.
+        remote = state.get("remote", "")
+        if bind and (remote.startswith("-") or any(ord(c) < 32 or ord(c) == 127 for c in remote)):
+            raise GripCorruptError(f"invalid review repository tree: {name} remote is not a remote")
         repos[name] = state
 
     return repos

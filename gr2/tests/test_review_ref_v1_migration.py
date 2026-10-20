@@ -329,13 +329,17 @@ def _v1_refs(root: Path) -> dict[str, str]:
 
 @pytest.mark.parametrize("bad", ["dash-remote", "non-hex-commit"])
 def test_migrate_refuses_a_twin_the_field_tree_readers_would_refuse(handoff, tmp_path, monkeypatch, bad):
-    """The legacy bind verifies as written, but its twin breaks a reader rule: refused, never published."""
+    """A legacy bind whose twin breaks a reader rule is refused, never published."""
     _, _, remote, _, base, head = handoff
     root = native_root(tmp_path / "reader-rules")
     row = dict(key="member", path="member", remote=str(remote), base=base, head=head, title="t", body="b")
     row.update({"dash-remote": {"remote": "-uploadpack=x"}, "non-hex-commit": {"head": "not-a-commit-id"}}[bad])
     old = _legacy(root, row)
-    assert grip._verify_review_commit_in_store(root, old)["tree_matches"]  # control: legacy verify passes
+    if bad == "dash-remote":  # the legacy reader holds the remote rule too, so the bind itself is refused
+        with pytest.raises(grip.GripCorruptError, match="member remote is not a remote"):
+            grip._verify_review_commit_in_store(root, old)
+    else:
+        assert grip._verify_review_commit_in_store(root, old)["tree_matches"]  # control: legacy verify passes
     result, rows = _run(root, monkeypatch)
     assert result.exit_code == 4, result.output
     assert rows[old]["status"] == "refused" and "invalid review repository tree" in rows[old]["reason"]

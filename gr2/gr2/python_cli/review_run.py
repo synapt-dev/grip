@@ -1135,7 +1135,8 @@ def _resolve_member_order(keys: list[str], order: list[str] | None) -> list[str]
     """The order members install and run in: the marker's row order (sorted by key at bind)
     unless `--order` names one. A member installs after the ones it depends on, which the run
     cannot infer, so an explicit order must name every member exactly once."""
-    if len(set(keys)) != len(keys):
+    from .grip import member_key_fold
+    if len({member_key_fold(k) for k in keys}) != len(keys):
         raise ReviewRunRefused("bad_marker", f"the lane marker lists a member key twice: {keys}")
     if order is None:
         return list(keys)

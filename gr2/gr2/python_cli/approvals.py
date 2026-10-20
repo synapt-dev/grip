@@ -320,7 +320,7 @@ def _read_link(workspace: Path, commit: str) -> dict:
 
 def check_approver_name(name) -> None:
     """The one approver-name rule: a pinned link and a checkout-pr stamp refuse the same names, the same way."""
-    if not isinstance(name, str) or not name or name != name.strip() or any(ord(c) < 32 or ord(c) == 127 for c in name):
+    if not isinstance(name, str) or not name or name != name.strip() or gitops.unsafe_in_name(name):
         raise ApprovalRefused("approval_chain_broken: invalid approver name")
 
 

@@ -17,6 +17,8 @@ from typing import Any
 
 import toml
 
+from . import gitops
+
 
 # ---------------------------------------------------------------------------
 # Exceptions
@@ -242,22 +244,14 @@ def config_restore(workspace: Path, ref: str, overlay_dir: Path) -> dict:
     """Restore overlay files from a grip commit's config/ subtree."""
     from gr2.python_cli.grip import _grip_git
 
-    proc = _grip_git(workspace, "ls-tree", f"{ref}:config")
+    proc = _grip_git(workspace, "ls-tree", "-z", f"{ref}:config")
     if proc.returncode != 0:
         return {}
 
     overlay_dir.mkdir(parents=True, exist_ok=True)
     restored: dict[str, str] = {}
 
-    for line in proc.stdout.strip().splitlines():
-        if not line.strip():
-            continue
-        parts = line.split("\t")
-        if len(parts) < 2:
-            continue
-        meta, name = parts[0], parts[1]
-        obj_type = meta.split()[1]
-
+    for _mode, obj_type, _oid, name in gitops.ls_tree_rows(proc.stdout):
         if obj_type == "blob":
             blob = _grip_git(workspace, "show", f"{ref}:config/{name}")
             if blob.returncode == 0:
@@ -275,17 +269,11 @@ def _restore_prompts(workspace: Path, ref: str, overlay_dir: Path) -> None:
     prompts_dir = overlay_dir / "prompts"
     prompts_dir.mkdir(parents=True, exist_ok=True)
 
-    proc = _grip_git(workspace, "ls-tree", f"{ref}:config/prompts")
+    proc = _grip_git(workspace, "ls-tree", "-z", f"{ref}:config/prompts")
     if proc.returncode != 0:
         return
 
-    for line in proc.stdout.strip().splitlines():
-        if not line.strip():
-            continue
-        parts = line.split("\t")
-        if len(parts) < 2:
-            continue
-        name = parts[1]
+    for *_, name in gitops.ls_tree_rows(proc.stdout):
         blob = _grip_git(workspace, "show", f"{ref}:config/prompts/{name}")
         if blob.returncode == 0:
             (prompts_dir / name).write_text(blob.stdout)

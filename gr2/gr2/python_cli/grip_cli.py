@@ -2095,8 +2095,8 @@ def _sidecar_read(root: Path, member: dict[str, str], revision: str, pin: str) -
             raise NativeStoreRefusal(f"{member['name']} layer for {pin[:12]} is not a git bundle", 4)
     records_tree = f"{base}/records/{pin}"
     listed = _sidecar_git(root, "ls-tree", records_tree,
-                          lambda env: _store_git(root, "ls-tree", records_tree, check=False, env=env)).stdout.splitlines()
-    records = [line.split()[2] for line in listed if line.split()[1:2] == ["tree"]]
+                          lambda env: _store_git(root, "ls-tree", "-z", records_tree, check=False, env=env)).stdout
+    records = [oid for _mode, kind, oid, _name in gitops.ls_tree_rows(listed) if kind == "tree"]
     branch = member["upstream"].partition("/")[2]
     record = dict(schema=mft.PACKAGE, kind=mft.KIND_REPO, pin=pin, url="", ref=member.get("ref", ""),
                   covered_by="" if layers else f"refs/heads/{branch}", layers=layers, records=records,

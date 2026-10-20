@@ -47,6 +47,15 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Changed
 
+- **`gr2`: a full-mode store commit records each member's own commit as its gitlink.** Plain `git status` at
+  the root now agrees with `gr2 store status`. What the gitlink and `grip.toml` do not already say (the schema,
+  the kind, the layer for an unpushed pin and the records about the pin) is kept under `.grip/fields/<name>/`,
+  and the grip commit carries no extra parents. gr2 adds `!/.grip/fields/` to the root's sparse-checkout
+  without replacing the patterns already there, and `materialize` now appends its patterns the same way instead
+  of replacing them. A root written in the older field-commit shape is still read as before. A member moved and
+  then committed with plain git is named in `status` and `check`, with the `gr2 store commit` that records it,
+  and an unpushed pin with no layer reads "unpushed pin, no layer" in the status table.
+
 - **With only gr1 installed, `gr` runs gr1.** Outside any workspace with gr2 not installed, the `gr` in the
   gr1 binary runs gr1 and prints one line naming the gr2 install; a gr2 workspace with gr2 missing still
   refuses with exit 69. `gr --which` reports what a plain run would run.

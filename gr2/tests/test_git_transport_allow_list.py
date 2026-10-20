@@ -182,14 +182,16 @@ def _record_root(tmp_path: Path, url: str) -> Path:
 
 
 @pytest.mark.parametrize("layer2", ["on", "off"])
-def test_row2_full_mode_record_url_is_refused_at_the_read(
+def test_row2_a_forged_legacy_record_in_a_sidecar_gitlink_is_never_read_as_a_url(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, layer2: str
 ) -> None:
-    """Row 2. A record url `pwn::x` (full mode): materialize refuses by name and the helper never runs, with layer 2
-    on, and with layer 2 off (the read alone)."""
-    from tests.test_store_git_native_smoke import gr2
+    """Row 2. A legacy record with url `pwn::x` as alpha's gitlink: materialize fails, the helper never runs, and
+    alpha's clone holds nothing from the forged commit, with layer 2 on and off (the read alone).
+    In sidecar mode grip.toml is the url's only home, so the record's url is never read (row 2b covers grip.toml)."""
+    from tests.test_store_git_native_smoke import git, gr2
 
     victim = _record_root(tmp_path, "pwn::x")
+    forged = git(victim, "rev-parse", "HEAD:alpha").stdout.strip()
     marker = _stand_in_helper(tmp_path, monkeypatch)
     if layer2 == "off":
         monkeypatch.setenv("GIT_ALLOW_PROTOCOL", _LAYER2_OFF)
@@ -199,7 +201,41 @@ def test_row2_full_mode_record_url_is_refused_at_the_read(
     out = f"{made.stdout}\n{made.stderr}"
     assert not marker.exists(), f"git ran git-remote-pwn for a record url (layer 2 {layer2}). {out[-300:]}"
     assert made.returncode != 0, out
-    assert "url uses the 'pwn' transport" in out, out
+    assert "Traceback" not in out, out
+    alpha = victim / "alpha"
+    assert (alpha / ".git").exists(), f"alpha's clone is missing (layer 2 {layer2}), so the checks below would see nothing"
+    has = subprocess.run(["git", "-C", str(alpha), "cat-file", "-e", forged], capture_output=True)
+    assert has.returncode != 0, f"alpha's clone holds the forged commit {forged}"
+    refs = git(alpha, "for-each-ref", "--points-at", forged).stdout.strip()
+    assert refs == "", f"alpha's clone has refs at the forged commit: {refs}"
+
+
+@pytest.mark.parametrize("layer2", ["on", "off"])
+def test_row2b_full_mode_grip_toml_url_is_refused_at_the_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, layer2: str
+) -> None:
+    """Row 2b. A `pwn::x` origin for alpha in a full-mode root's grip.toml: materialize refuses by name and the
+    helper never runs, with layer 2 on, and with layer 2 off (the read alone)."""
+    from tests.test_store_full_mode_carrier import _full_store
+    from tests.test_store_git_native_smoke import git, gr2
+
+    root = _full_store(tmp_path)
+    manifest = root / "grip.toml"
+    manifest.write_text(_set_member_remote(manifest.read_text(), "alpha", "origin", "pwn::x"))
+    assert 'origin = "pwn::x"' in manifest.read_text()
+    git(root, "-c", "user.name=x", "-c", "user.email=x@example.invalid", "commit", "-q", "-am", "pwn origin")
+    git(tmp_path, "clone", "-q", str(root), "victim")
+    victim = tmp_path / "victim"
+    marker = _stand_in_helper(tmp_path, monkeypatch)
+    if layer2 == "off":
+        monkeypatch.setenv("GIT_ALLOW_PROTOCOL", _LAYER2_OFF)
+
+    made = gr2(victim, "materialize", check=False)
+
+    out = f"{made.stdout}\n{made.stderr}"
+    assert not marker.exists(), f"git ran git-remote-pwn for a grip.toml url (layer 2 {layer2}). {out[-300:]}"
+    assert made.returncode == 4, out
+    assert "uses the 'pwn' transport" in out, out
     assert "Traceback" not in out, out
 
 

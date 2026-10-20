@@ -817,7 +817,7 @@ def _restore_tracking_refs(staging_path: Path, owner_root: Path, *, keep_origin:
     and none are left.
     """
     listed = run_git(staging_path, "for-each-ref", "--format=%(refname)", "refs/remotes/origin")
-    for ref in listed.stdout.split():
+    for ref in gitops.for_each_ref_rows(listed.stdout):
         run_git(staging_path, "update-ref", "--no-deref", "-d", ref)
     if not keep_origin:
         return

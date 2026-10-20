@@ -238,12 +238,16 @@ def _plumbing_names() -> set[str]:
         if m:
             row = m.group(1).strip()
             paths.setdefault(m.group(2) or row.split()[-1], set()).add(row)
-    # A row under a registered alias GROUP (surface.COMPAT_GROUPS, e.g. `grip`) is accounted by that group's own
-    # registry entry, so it does not make its last segment an unregistered alias; the group itself must be registered.
+    # A row under a registered alias GROUP at any depth (surface.COMPAT_GROUPS, e.g. `grip`) is
+    # accounted by that group's own registry entry, so it does not make its last segment an
+    # unregistered alias; the group itself must be registered.
     registered = {k.split()[1] for k in tomllib.loads(REGISTRY.read_text(encoding="utf-8"))["removed-at"]
                   if k.startswith("alias ")}
+    # The registry keys an alias by its LAST word, so two alias groups sharing a last word at two depths
+    # would both match here; surface.under_compat_group matches the full path. Only `grip` is registered today.
     under_alias = {row for rows in paths.values() for row in rows
-                   if row.split()[0] in surface.COMPAT_GROUPS and row.split()[0] in registered}
+                   if any((row + " ").startswith(g + " ") and g.split()[-1] in registered
+                          for g in surface.COMPAT_GROUPS)}
     return {name for name, rows in paths.items() if rows <= listed | under_alias}
 
 
@@ -255,12 +259,23 @@ def test_every_registered_alias_group_is_listed_nowhere() -> None:
     from gr2.python_cli import surface
     from gr2.python_cli.app import app
 
-    groups = {name for name, cmd in typer.main.get_command(app).commands.items() if hasattr(cmd, "commands")}
+    # Every group at every depth, by full path: an alias group registered below the top must be
+    # named too.
+    def group_paths(group, prefix: str = "") -> set[str]:
+        out = set()
+        for name, cmd in getattr(group, "commands", {}).items():
+            if hasattr(cmd, "commands"):
+                here = f"{prefix} {name}".strip()
+                out |= {here} | group_paths(cmd, here)
+        return out
+
+    groups = group_paths(typer.main.get_command(app))
     aliases = {k.split()[1] for k in tomllib.loads(REGISTRY.read_text(encoding="utf-8"))["removed-at"]
                if k.startswith("alias ")}
     # Registry names are bare, so a verb alias can share a group's spelling. Each such case is named here with why.
     verb_aliases = {"hooks": "the old `repo hooks` verb, whose spelling the `hooks` group shares (see the registry)"}
-    group_aliases = (aliases & groups) - set(verb_aliases)
+    group_aliases = {g for g in groups
+                     if g.split()[-1] in aliases and g.split()[-1] not in verb_aliases}
     assert group_aliases, "no registered alias names a group: the reader is matching nothing"
     assert group_aliases <= surface.COMPAT_GROUPS, sorted(group_aliases - surface.COMPAT_GROUPS)
 

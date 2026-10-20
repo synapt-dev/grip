@@ -96,22 +96,38 @@ Not there yet:
 
 ## Commands
 
+The everyday commands, what `gr2 --help` shows. `gr2 help <command>` prints any command's own help, as `git help <command>` does.
+
 | Group | Verbs |
 |---|---|
+| (top level) | branch, add, commit, push, status, update |
+| `lane` | create, enter, exit, list, push, remove |
+| `store` | init, commit, check, push, status, materialize |
+| `review` | open, run, pin, publish, receive, show, stamp, merge, update, close |
+| `pr` | create, status, merge, view |
+| `check` | run, show, set |
+| `sync` | status, run |
+
+### Plumbing
+
+What scripts, CI and other gr2 verbs call. These are hidden from `gr2 --help`, listed by `gr2 help -a`, and each runs by its full name.
+
+| Group | Verbs |
+|---|---|
+| (top level) | change, plan, apply, prune |
 | `workspace` | init, init-from-topology, materialize, status, convert-clone, detect-gr1, migrate-gr1, retire-gr1, migrate-lane-state, bootstrap-gr1, gitinclude |
 | `spec` | show, validate |
-| `lane` | create, enter, exit, show, resolve, bind, lease, list, push, remove |
-| (top level) | branch, add, commit, change, push, prune, status, plan, apply, update |
-| `sync` | status, run, wait |
-| `pr` | create, status, checks, merge, view |
-| `check` | run, show, set |
-| `proto` | json |
-| `review` | open, close, checkout-pr, read-pr, run, check, pin, publish, receive, verify, show, stamp, merge, update, repin, create-project, bind, approve, rebind, stamps, merged, blockers, list |
+| `lane` | show, resolve, bind, lease |
+| `sync` | wait |
+| `pr` | checks |
+| `review` | check, checkout-pr, read-pr, verify, repin, create-project, stamps, merged, blockers, list |
+| `store` | log, diff, checkout, migrate, migrate-reviews |
 | `exec` | status, run |
 | `repo` | status, projection-run |
 | `hooks` | trust, revoke, status, show, run |
-| `store` | init, commit, check, push, status, log, diff, checkout, materialize, migrate, migrate-reviews |
-| `target`, `config` | stored PR target; config overlays |
+| `proto` | json |
+| `target` | set, show, unset |
+| `config` | show, apply, restore |
 
 `gr2 change` commits and branches every changed member in one command, at the same safety as git itself. It refuses before any write when a member cannot take the change, and on a failure or an interrupt it undoes the members it touched, in reverse order.
 

@@ -27,9 +27,19 @@ COMPAT_PATHS = frozenset({
 # The lister itself is hidden so the porcelain stays at its count; it is named in the root help instead.
 _NOT_LISTED = COMPAT_PATHS | {"help"}
 
-# A hidden alias GROUP (registered in api/deprecations.toml) is compat as a whole: every path under it is listed
-# nowhere, so `gr2 help -a` never teaches a name that is due to be removed beside its twin.
+# A hidden alias GROUP (registered in api/deprecations.toml) is compat as a whole: every path
+# under it is listed nowhere, so `gr2 help -a` never teaches a name that is due to be removed
+# beside its twin. Each entry is the group's full path, so an alias group below the top
+# (`lane old`) is named the same way as one at it (`grip`).
 COMPAT_GROUPS = frozenset({"grip"})
+
+
+def under_compat_group(path: str) -> bool:
+    """True when the path is, or sits under, a COMPAT_GROUPS entry at any depth.
+
+    Every leading run of the path's words is checked, not only the first word."""
+    words = path.split()
+    return any(" ".join(words[:n]) in COMPAT_GROUPS for n in range(1, len(words) + 1))
 
 
 def leaves(group, path: str = "", hidden_above: bool = False) -> list[tuple[str, object, bool]]:
@@ -50,6 +60,6 @@ def plumbing(root) -> list[tuple[str, str]]:
     """(path, one-line help) for every hidden command that `gr2 help -a` lists, in path order."""
     rows = []
     for path, cmd, hidden in leaves(root):
-        if hidden and path not in _NOT_LISTED and path.split()[0] not in COMPAT_GROUPS:
+        if hidden and path not in _NOT_LISTED and not under_compat_group(path):
             rows.append((path, cmd.get_short_help_str(limit=80)))
     return rows

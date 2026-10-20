@@ -91,7 +91,8 @@ def _help(args: list[str]) -> tuple[int, str]:
     """Exit code and rendered output with any styling removed.
 
     CI forces a styled terminal, so a row that reads the raw output finds no names
-    there; each row that parses help runs both ways (the `colored` fixture).
+    there; every row that looks for names in rendered help takes the `colored` fixture
+    and runs both ways. A row that only checks an exit code or "Usage:" runs once.
     """
     result = CliRunner().invoke(app, args, terminal_width=200)
     return result.exit_code, strip_ansi(result.output)
@@ -133,7 +134,7 @@ def test_help_and_bare_gr2_list_the_porcelain_and_no_plumbing(colored: bool) -> 
 
 def test_help_a_lists_every_plumbing_path_and_nothing_else(colored: bool) -> None:
     expected = {p for p, _, hidden in surface.leaves(_root()) if hidden} - surface.COMPAT_PATHS - {"help"}
-    expected = {p for p in expected if p.split()[0] not in surface.COMPAT_GROUPS}
+    expected = {p for p in expected if not surface.under_compat_group(p)}
     assert len(expected) >= 55, f"the walk found only {len(expected)} plumbing paths"
     for flag in ("-a", "--all"):
         code, output = _help(["help", flag])
@@ -230,3 +231,66 @@ def test_help_a_lists_no_path_under_a_registered_alias_group(colored: bool) -> N
     # `grip` is the registered alias of `store` ("alias grip" in api/deprecations.toml): help -a lists none of it.
     _, listing = _help(["help", "-a"])
     assert not re.findall(r"^  gr2 grip ", listing, re.M), re.findall(r"^  gr2 grip \S+", listing, re.M)
+
+
+# `gr2 help <path>` is git's `git help <command>`: it prints that path's own --help, so the habit
+# works. A group, a leaf and a hidden path each print exactly what `<path> --help` prints; an
+# unknown path is refused by name.
+FORWARDED = [
+    ["review"], ["review", "merge"], ["store", "materialize"], ["workspace", "materialize"],
+]
+
+
+@pytest.mark.parametrize("path", FORWARDED, ids=lambda p: "-".join(p))
+def test_help_path_prints_that_paths_own_help(path: list[str], colored: bool) -> None:
+    code, forwarded = _help(["help", *path])
+    direct_code, direct = _help([*path, "--help"])
+    assert direct_code == 0 and "Usage:" in direct, direct[-300:]
+    assert code == 0 and forwarded == direct, (path, forwarded[-400:])
+
+
+def test_help_refuses_a_path_that_is_not_a_command() -> None:
+    for path in (["nosuch"], ["review", "nosuch"], ["status", "extra"]):
+        code, output = _help(["help", *path])
+        assert code == 2, (path, code, output[-300:])
+        flat = _flat(output)
+        named = f"no gr2 command '{' '.join(path)}'" in flat
+        assert named and "gr2 help -a" in flat, (path, flat[-300:])
+
+
+def test_help_refusal_escapes_control_bytes_in_the_path() -> None:
+    code, output = _help(["help", "review", "\x1b[31mRED"])
+    assert code == 2, (code, output[-300:])
+    assert "\x1b" not in output, repr(output[-300:])
+    assert "no gr2 command 'review \\x1b[31mRED'" in _flat(output), repr(_flat(output)[-300:])
+
+
+def test_help_refuses_all_with_a_path() -> None:
+    code, output = _help(["help", "-a", "review"])
+    assert code == 2 and "gr2 help -a" in _flat(output), output[-300:]
+    assert "Plumbing (hidden" not in output, output[-300:]
+
+
+def test_an_alias_group_at_any_depth_is_listed_nowhere(monkeypatch) -> None:
+    # Only `grip` is registered today, at the top. An alias group registered BELOW the top (here
+    # `lane old`) must be listed nowhere too, so the check reads every prefix of a path, not only
+    # its first word.
+    # Built the way the real CLI is, with Typer apps, so the row needs no separate `click` install
+    # (a fresh `.[dev]` install has none, and Typer's own copy has no Group).
+    def leaf() -> None:
+        """A leaf."""
+
+    old = typer.Typer()
+    old.command("x")(leaf)
+    old.command("z")(leaf)
+    lane = typer.Typer()
+    lane.add_typer(old, name="old", hidden=True)
+    lane.command("y", hidden=True)(leaf)
+    lane.command("w")(leaf)
+    cli = typer.Typer()
+    cli.add_typer(lane, name="lane")
+    cli.command("top")(leaf)
+    root = typer.main.get_command(cli)
+    monkeypatch.setattr(surface, "COMPAT_GROUPS", frozenset({"grip", "lane old"}))
+    listed = {path for path, _ in surface.plumbing(root)}
+    assert listed == {"lane y"}, sorted(listed)

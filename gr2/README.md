@@ -343,6 +343,13 @@ member's `next` is the recovery that reaches exit 0, in the order it runs. A che
 over every member is refused (`base_not_live_head`: the merged members' target moved). So commit a new head on that
 member, pin that member alone before you push, push, publish, check, and `gr2 review merge` the new review.
 
+A push the remote refuses (for example a hook) half-lands the same way: the earlier member stays merged,
+the refused one stays at its base, the receipt shows that member's `push_error`, and the run exits 4.
+`gr2 review merged` reports which members landed and also exits 4. To finish, clear the cause and rerun the
+same `gr2 review merge`: a member already merged is reported `already_merged` and not merged again, and the
+rest go through the same preflight. A member whose branch moved meanwhile is refused by that preflight with a
+`next:` step in the receipt, its target does not move, and the run still exits 4.
+
 Exit codes:
 - 0: all merged;
 - 3: none merged (refused);

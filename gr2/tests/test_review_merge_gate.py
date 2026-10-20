@@ -5,6 +5,7 @@ exact-head check record, and the gate's verdict read back from the remote.
 """
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 
@@ -372,3 +373,84 @@ def test_a_printed_next_line_escapes_control_characters_and_quotes_each_value():
         assert all(c.isprintable() for c in line), repr(line)
         assert len(line.splitlines()) == 1 and line.startswith("next: "), line  # no forged second line
     assert "/my ws" in shlex.split(lines[1]), lines[1]
+
+
+def test_a_push_refused_mid_run_is_partial_and_a_rerun_after_the_cause_clears_finishes_it(slice2, tmp_path):
+    # The README's partial-merge paragraph: separate pushes, so one member can land while another is refused; the
+    # exit is 4, `review merged` reads the same state, and a rerun skips the landed member and pushes the rest.
+    record_set(slice2)
+    beta = slice2["members"]["beta"]
+    hook = beta["remote"] / "hooks" / "pre-receive"
+    hook.write_text("#!/bin/sh\necho 'main is closed for now' >&2\nexit 1\n")
+    hook.chmod(0o755)
+    argv = ["review", "merge", slice2["review"], "--from", "feat", "--into", "main", "--approvals", "0"]
+    first = runner.invoke(app, argv)
+    print(f"$ gr2 {' '.join(argv)}\n{first.output}exit {first.exit_code}")
+    assert first.exit_code == merge_gate.EXIT_PARTIAL, first.output
+    landed = mains(slice2)
+    assert landed["beta"] == beta["base"], "the refused member's target did not move"
+    assert landed["alpha"] != slice2["members"]["alpha"]["base"], "the earlier member landed"
+    receipt = {m["key"]: m for m in json.loads(next(l for l in first.output.splitlines() if l.startswith("{")))["members"]}
+    assert receipt["alpha"]["state"] == "merged" and not receipt["alpha"].get("push_error"), receipt["alpha"]
+    assert receipt["beta"]["state"] == "unmerged" and receipt["beta"]["push_error"], receipt["beta"]
+    state = runner.invoke(app, ["review", "merged", slice2["review"], "--into", "main"])
+    print(f"$ gr2 review merged {slice2['review']} --into main\n{state.output}exit {state.exit_code}")
+    assert state.exit_code == merge_gate.EXIT_PARTIAL, state.output
+    read = {m["key"]: m["merged"] for m in json.loads(next(l for l in state.output.splitlines() if l.startswith("{")))["members"]}
+    assert read == {"alpha": landed["alpha"], "beta": None}, read
+    hook.unlink()  # the cause clears
+    again = runner.invoke(app, argv)
+    print(f"$ gr2 {' '.join(argv)}\n{again.output}exit {again.exit_code}")
+    assert again.exit_code == merge_gate.EXIT_MERGED, again.output
+    rerun = {m["key"]: m["state"] for m in json.loads(next(l for l in again.output.splitlines() if l.startswith("{")))["members"]}
+    assert rerun == {"alpha": "already_merged", "beta": "merged"}, rerun
+    assert mains(slice2)["alpha"] == landed["alpha"], "the rerun did not merge the landed member twice"
+    parents = git(beta["remote"], "rev-list", "--parents", "-n", "1", "main").split()[1:]
+    assert parents == [beta["base"], beta["head"]], parents
+
+
+def test_a_member_that_moves_after_a_half_land_is_refused_with_a_next_line_and_the_run_stays_partial(slice2):
+    # The README's half-land paragraph: a member whose branch moved before the rerun is refused by the same preflight,
+    # the refusal carries a `next:` step in the receipt, its target does not move, and the run still exits 4.
+    record_set(slice2)
+    beta = slice2["members"]["beta"]
+    hook = beta["remote"] / "hooks" / "pre-receive"
+    hook.write_text("#!/bin/sh\necho 'main is closed for now' >&2\nexit 1\n")
+    hook.chmod(0o755)
+    argv = ["review", "merge", slice2["review"], "--from", "feat", "--into", "main", "--approvals", "0"]
+    first = runner.invoke(app, argv)
+    assert first.exit_code == merge_gate.EXIT_PARTIAL, first.output
+    hook.unlink()  # the cause clears, but beta's branch moved meanwhile
+    move(beta)
+    again = runner.invoke(app, argv)
+    print(f"$ gr2 {' '.join(argv)}\n{again.output}exit {again.exit_code}")
+    assert again.exit_code == merge_gate.EXIT_PARTIAL, again.output
+    rows = {m["key"]: m for m in json.loads(next(l for l in again.output.splitlines() if l.startswith("{")))["members"]}
+    assert rows["alpha"]["state"] == "already_merged", rows["alpha"]
+    assert rows["beta"]["refused"].startswith("feature_moved"), rows["beta"]
+    assert rows["beta"]["next"].startswith("next: "), rows["beta"]
+    assert mains(slice2)["beta"] == beta["base"], "the moved member's target did not move"
+
+
+def test_a_moved_member_after_a_half_land_gets_its_new_pin_and_the_waiting_members_in_its_next(tmp_path, monkeypatch):
+    # The moved member's next is the new pin for that member (by --path), and the members the refusal left unpushed
+    # ride on it, each named in the "(then ..., not pushed after the refusal" clause.
+    s = make_slice(tmp_path, monkeypatch, ("alpha", "beta", "gamma"))
+    record_set(s)
+    beta = s["members"]["beta"]
+    hook = beta["remote"] / "hooks" / "pre-receive"
+    hook.write_text("#!/bin/sh\necho 'main is closed for now' >&2\nexit 1\n")
+    hook.chmod(0o755)
+    argv = ["review", "merge", s["review"], "--from", "feat", "--into", "main", "--approvals", "0"]
+    first = runner.invoke(app, argv)
+    assert first.exit_code == merge_gate.EXIT_PARTIAL, first.output
+    hook.unlink()
+    move(beta)
+    again = runner.invoke(app, argv)
+    print(f"$ gr2 {' '.join(argv)}\n{again.output}exit {again.exit_code}")
+    assert again.exit_code == merge_gate.EXIT_PARTIAL, again.output
+    rows = {m["key"]: m for m in json.loads(next(l for l in again.output.splitlines() if l.startswith("{")))["members"]}
+    assert rows["beta"]["refused"].startswith("feature_moved"), rows["beta"]
+    step = rows["beta"].get("next", "")
+    assert "gr2 review pin" in step and "--path beta" in step, step
+    assert "(then gamma, not pushed after the refusal" in step, step

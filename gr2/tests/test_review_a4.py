@@ -72,6 +72,7 @@ def test_a_bare_bind_binds_the_member_whose_checkout_is_not_at_its_pin(two_membe
     code, out = _cli("review", "bind", str(ws))
     assert code == 0, out
     assert "gr2: pin alpha " in out and "beta (checkout is at the workspace's pin)" in out
+    assert "(its checkout is ahead of the workspace's pin)" in out and "ahead of the live head" not in out, out
     gr_id = [l for l in out.splitlines() if l.startswith("gr:")][-1]
     _, shown = _cli("review", "show", str(ws), gr_id)
     assert "alpha:" in shown and "beta:" not in shown
@@ -114,7 +115,7 @@ def test_a_member_with_no_pin_is_named_not_bound(two_member_ws: Path) -> None:
         out_lines.append(line)
     toml.write_text("\n".join(out_lines) + "\n")
     code, out = _cli("review", "bind", str(ws))
-    assert code == 0 and "beta (the workspace records no usable pin)" in out
+    assert code == 0 and "beta (the workspace records no pin and its checkout is at the live head of refs/heads/main" in _flat(out)
 
 
 def test_the_rows_are_printed_before_anything_is_bound(two_member_ws: Path) -> None:

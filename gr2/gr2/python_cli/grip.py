@@ -353,6 +353,8 @@ def create_workspace_commit(workspace: Path, repos: list[dict[str, str]]) -> str
             raise GripCorruptError(f"invalid or duplicate workspace repo key: {key!r}")
         seen.add(key)
         _refuse_remote_credentials(key, repo.get("remote", ""))
+        if repo.get("remote", "").startswith("-") or any(ord(c) < 32 or ord(c) == 127 for c in repo.get("remote", "")):
+            raise GripCorruptError(f"invalid workspace repository: {key} remote is not a remote")
         fields: list[str] = []
         for name, value in (("remote", repo.get("remote", "")), ("path", repo.get("path", "")), ("commit", repo.get("commit", "")), ("base", repo.get("base", ""))):
             if not value or (name in {"commit", "base"} and not _SHA40.match(value)):
@@ -378,6 +380,8 @@ def read_workspace_commit(workspace: Path, commit: str) -> list[dict[str, str]]:
     for key, fields in sorted(rows.items()):
         if set(fields) != {"remote", "path", "commit", "base"} or not _SHA40.match(fields["commit"]) or not _SHA40.match(fields["base"]):
             raise GripCorruptError(f"invalid workspace repository tree: {key}")
+        if fields["remote"].startswith("-") or any(ord(c) < 32 or ord(c) == 127 for c in fields["remote"]):
+            raise GripCorruptError(f"invalid workspace repository tree: {key} remote is not a remote")
         decoded.append({"key": key, "remote": fields["remote"], "path": fields["path"], "commit": fields["commit"], "base": fields["base"]})
     return decoded
 

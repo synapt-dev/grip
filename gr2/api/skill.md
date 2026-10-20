@@ -391,7 +391,7 @@ next: gr2 check set '<workspace>' '<review>' -- <your combined test command>
 
 ### check_set_fail
 
-next: the set check failed at these heads and that failure is recorded; a rerun does not clear it. Fix the member, commit a new head, then pin, stamp, run gr2 check set on that head and publish it
+next: the set check failed at these heads; the newest result at these heads wins, so fix the member and rerun gr2 check set '<workspace>' '<review>' -- <your combined test command> at these heads (or commit a new head)
 
 ### declared_set_pin_unreviewed
 

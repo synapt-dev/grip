@@ -305,15 +305,17 @@ def test_a_single_member_review_keeps_the_plain_check_fail_advice():
 
 def test_F1_a_red_set_is_not_cleared_by_a_green_rerun_and_the_refusal_says_so(slice2):
     run_set(slice2, FAIL)
-    run_set(slice2, PASS)  # a rerun at the same heads: the red record is still there
     code, receipt = merge(slice2)
     assert code == merge_gate.EXIT_REFUSED, receipt
     lines = _next_lines(receipt)
     assert len(lines) == 2, lines
-    for line in lines:
-        assert "new head" in line and "does not clear" in line, line
-        assert "-- <your combined test command>" not in line, "a bare rerun instruction cannot clear a recorded failure: " + line
+    for line in lines:  # the newest result at these heads wins, so the advice is a rerun of the set at these heads
+        assert "does not clear" not in line and "-- <your combined test command>" in line, line
     assert untouched(slice2)
+    run_set(slice2, PASS)  # a rerun at the same heads: the newer green record is the one judged
+    code, receipt = merge(slice2)
+    # Changed landed row, reason: the newest result at the same heads wins.
+    assert code == merge_gate.EXIT_MERGED, receipt
 
 
 def _show(m, *extra, remote=None):

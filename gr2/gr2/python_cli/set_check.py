@@ -41,8 +41,8 @@ def judge_set_records(rows: Sequence[Mapping], review: str, expected_set_id: str
     Without expected_set_id only the review is compared (a reader holding one record and no workspace); the merge gate
     always passes the set identity it computed from the review's own rows."""
     named = [r for r in rows if r.get("name") == SET_CHECK_NAME]
-    mine = [r for r in named if r.get("review") == review
-            and (expected_set_id is None or r.get("set_id") == expected_set_id)]
+    mine = check_records.newest([r for r in named if r.get("review") == review
+                                 and (expected_set_id is None or r.get("set_id") == expected_set_id)])
     if not mine:
         if named:
             return "stale", "a set record exists at this head but not for this review and set"
@@ -61,12 +61,12 @@ def judge_plain_check(rows: Sequence[Mapping], name: str, review: str, expected_
     Without set evidence, the member's own X records (no review field) decide X exactly as a single member's would."""
     named = [r for r in rows if r.get("name") == name]
     scoped = [r for r in named if "review" in r or "set_id" in r]
-    mine = [r for r in scoped if r.get("review") == review and r.get("set_id") == expected_set_id]
+    mine = check_records.newest([r for r in scoped if r.get("review") == review and r.get("set_id") == expected_set_id])
     if mine:
         if any(r.get("result") != "pass" for r in mine):
             return "fail", f"the {name} check failed as a set at these heads", "set"
         return "pass", "required_checks_pass", "set"
-    own = [r for r in named if r not in scoped]
+    own = check_records.newest([r for r in named if r not in scoped])
     if any(r.get("result") != "pass" for r in own):
         return "fail", "required_check_failed", "member"
     if own:

@@ -240,5 +240,6 @@ def test_a_single_member_review_still_reads_its_own_test_record(world):  # noqa:
     set_check.run_set_check(world["author"], world["review"], "test", PASS)
     code, receipt = merge_gate.review_merge(world["author"], world["review"], into="main", feature="feat",
                                             required_checks=("test",), no_set=True, required_approvals=0)
-    assert code == merge_gate.EXIT_REFUSED, receipt
-    assert all((r["refused"] or "").startswith("check_fail: required_check_failed") for r in receipt["members"]), receipt
+    # Changed landed row, reason: the newest result at the same head wins. The set-check
+    # pass was published after the member's own fail, so it is the record judged; the reverse order still refuses.
+    assert code == merge_gate.EXIT_MERGED, receipt

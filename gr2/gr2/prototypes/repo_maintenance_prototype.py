@@ -1300,11 +1300,14 @@ def classify(target: RepoTarget, status: RepoStatus, policy: RepoPolicy) -> Plan
             policy,
         )
 
+    # ahead/behind are counted against the local tracking ref, and nothing
+    # here fetches: a remote that moved since the last fetch is invisible,
+    # so the reason says what was compared rather than claiming alignment.
     if status.behind == 0 and status.ahead == 0:
         return PlannedAction(
             target,
             "no_change",
-            "repo is already aligned with upstream",
+            f"repo matches {status.upstream} as last fetched (status does not fetch)",
             status,
             policy,
         )

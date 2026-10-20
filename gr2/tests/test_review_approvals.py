@@ -277,7 +277,7 @@ def multi(world, tmp_path):
     members = {"member": dict(repo=world["member"], remote=world["remote"], head=world["head"], base=world["base"]),
                "beta": dict(repo=beta, remote=remote, head=head, base=world["base"])}
     rows = [{"key": key, "path": key, "remote": str(m["remote"]), "head": m["head"], "base": m["base"],
-             "ref": "refs/heads/main", "source": str(m["repo"])} for key, m in members.items()]
+             "ref": "refs/heads/main", "source": str(m["repo"]), "visibility": "public"} for key, m in members.items()]
     # The original member was already pushed by world as its feature branch tip, which pins and records
     # pushed_before_pin (1.0521306); no receipt is needed.
     rid = grip.create_review_bind_commit(workspace, rows)

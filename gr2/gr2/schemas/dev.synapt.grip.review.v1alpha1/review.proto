@@ -31,6 +31,7 @@ message Member {
   bytes committers = 12;        // committer identities for an exact reconstruction
   Evidence evidence = 13;
   string target = 14;           // the target ref the review was pinned against, full name; absent in older binds
+  string visibility = 15;       // "public" or "private"; absent means undeclared
 }
 
 // Commands the author ran, and how a failure was resolved.

@@ -85,7 +85,7 @@ def _world(tmp_path, monkeypatch, *, resolve_by_merge: bool):
     init = runner.invoke(app, ["store", "init", str(author)])
     assert init.exit_code == 0, init.output
     rows = [{"key": n, "path": n, "remote": str(m["remote"]), "base": m["base"], "head": m["head"],
-             "ref": "refs/heads/main", "source": str(m["repo"])} for n, m in out["members"].items()]
+             "ref": "refs/heads/main", "source": str(m["repo"]), "visibility": "public"} for n, m in out["members"].items()]
     (tmp_path / "rows.json").write_text(json.dumps(rows))
     monkeypatch.chdir(author)
     made = runner.invoke(app, ["review", "bind", "--rows-json", str(tmp_path / "rows.json")])

@@ -254,6 +254,7 @@ Pin a review gr commit for one or more repository rows; print ``gr:<commit>``.
 - `--rows-json`: A JSON file with a list of row objects (key/remote/base/head, optional path/ref/title/body; source or range is optional on a single row but required on every row when the file holds more than one); pins ALL rows into ONE gr commit. Exclusive with the single-row flags.
 - `--ratified`: gr:<id> of an earlier pin of this same head that was stamped: the one way to pin a --head already on the remote; recorded in the review
 - `--members`: With no rows given: pin only these members (comma-separated names)
+- `--visibility`: NAME=public|private, repeatable: declare a pinned member's visibility (publish refuses a review of several members unless each one declares it); a --rows-json row that carries its own "visibility" refuses this flag for that member
 
 ### gr2 push
 

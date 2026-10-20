@@ -33,7 +33,7 @@ def _build(tmp_path, monkeypatch, m):
         git(author / name, "commit", "-am", "reviewed")
         rows.append({"key": name, "path": name, "remote": str(remote), "base": base,
                      "head": git(author / name, "rev-parse", "HEAD"), "ref": "refs/heads/main",
-                     "source": str(author / name)})
+                     "source": str(author / name), "visibility": "public"})
         remotes[name] = remote
     assert runner.invoke(app, ["store", "init", str(author)]).exit_code == 0
     (tmp_path / "rows.json").write_text(json.dumps(rows))

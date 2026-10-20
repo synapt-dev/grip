@@ -44,13 +44,16 @@ def _git_identity(monkeypatch):
     monkeypatch.setenv("GIT_TERMINAL_PROMPT", "0")
 
 
-def build(tmp_path, monkeypatch, *, shared=False):
+def build(tmp_path, monkeypatch, *, shared=False, visibility=None, names=("alpha", "beta")):
     """Two members, alpha and beta, pinned into ONE review; nothing pushed, nothing published.
-    shared=True puts both on one bare remote (alpha's), on branches feat-alpha and feat-beta."""
+    shared=True puts both on one bare remote (alpha's), on branches feat-alpha and feat-beta.
+    visibility=None declares every member private; a member a given dict does not name binds undeclared (no field)."""
+    if visibility is None:
+        visibility = {name: "private" for name in names}
     author = tmp_path / "author"
     author.mkdir()
     w = {"author": author, "members": {}}
-    for name in ("alpha", "beta"):
+    for name in names:
         remote = tmp_path / ("alpha.git" if shared else f"{name}.git")
         if not remote.exists():
             git(tmp_path, "init", "--bare", "-b", "main", remote)
@@ -74,6 +77,8 @@ def build(tmp_path, monkeypatch, *, shared=False):
         m["head"] = git(m["repo"], "rev-parse", "HEAD")
         rows.append({"key": name, "path": name, "remote": str(m["remote"]), "base": m["base"], "head": m["head"],
                      "ref": "refs/heads/main", "source": str(m["repo"])})
+        if name in visibility:
+            rows[-1]["visibility"] = visibility[name]
     (tmp_path / "rows.json").write_text(json.dumps(rows))
     monkeypatch.chdir(author)
     made = runner.invoke(app, ["review", "bind", "--rows-json", str(tmp_path / "rows.json")])
@@ -370,3 +375,132 @@ def test_c2_after_the_push_a_tabbed_row_with_no_oid_fails_remote_unreadable(w, m
     assert row["state"] == "failed" and row["error"].startswith("remote_unreadable: "), out.stdout
     assert row["head_state"] == "failed" and tip(beta["remote"], "refs/heads/feat") == beta["head"]
     assert {r["remote"]: r for r in receipt(out)["remotes"]}[str(beta["remote"])]["review"] != "pushed", out.stdout
+
+
+@pytest.mark.parametrize("form", ["bare", "remote"])
+def test_v1_a_private_member_never_reaches_a_public_members_remote(tmp_path, monkeypatch, form):
+    """The review commit names every member (key, remote, range), so publishing it to a public member's remote while
+    another member is private leaks the private one."""
+    w = build(tmp_path, monkeypatch, visibility={"alpha": "public", "beta": "private"})
+    alpha = w["members"]["alpha"]
+    out = publish(w["review"]) if form == "bare" else publish(w["review"], "--remote", str(alpha["remote"]))
+    assert all(untouched(m) for m in w["members"].values()), out.output
+    assert out.exit_code == 2, out.output
+
+
+def test_v2_an_all_public_review_still_publishes_to_a_public_members_remote(tmp_path, monkeypatch):
+    w = build(tmp_path, monkeypatch, visibility={"alpha": "public", "beta": "public"})
+    alpha = w["members"]["alpha"]
+    out = publish(w["review"], "--remote", str(alpha["remote"]))
+    assert out.exit_code == 0, out.output
+    assert review_on(alpha["remote"], w["full"]) == w["full"]
+
+
+def test_v4_a_record_without_visibility_and_more_than_one_member_now_refuses(tmp_path, monkeypatch):
+    """A review bound before the field, or bound now with no visibility, has none in its record. Unknown is public, so
+    the bare publish refuses until the members are declared, and the message names the field and the members."""
+    w = build(tmp_path, monkeypatch, visibility={})
+    out = publish(w["review"])
+    assert all(untouched(m) for m in w["members"].values()), out.output
+    assert out.exit_code == 2, out.output
+    assert "--visibility alpha=public|private" in out.output and "'alpha', 'beta'" in out.output
+
+
+def test_vo_a_pre_field_bind_record_refuses_the_bare_publish_naming_the_field_and_both_members(tmp_path, monkeypatch):
+    """The old record shape: two members bound with no visibility key written anywhere in the record."""
+    w = build(tmp_path, monkeypatch, visibility={})
+    assert "visibility" not in git(Path.cwd(), "ls-tree", "-r", "--name-only", w["full"])
+    out = publish(w["review"])
+    assert all(untouched(m) for m in w["members"].values()), out.output
+    assert out.exit_code == 2, out.output
+    assert "'visibility' field" in out.output and "'alpha'" in out.output and "'beta'" in out.output, out.output
+
+
+@pytest.mark.parametrize("owner", ["alpha", "beta"])
+def test_va_an_undeclared_two_member_review_refuses_at_either_members_remote(tmp_path, monkeypatch, owner):
+    """The leak: a real bind with no visibility, no patch. Neither member is declared, so neither record carries the
+    field; undeclared reads public, so either member's remote refuses, with nothing pushed."""
+    w = build(tmp_path, monkeypatch, visibility={})
+    assert "visibility" not in git(Path.cwd(), "ls-tree", "-r", "--name-only", w["full"])
+    out = publish(w["review"], "--remote", str(w["members"][owner]["remote"]))
+    assert all(untouched(m) for m in w["members"].values()), out.output
+    assert out.exit_code == 2, out.output
+    assert "'visibility' field" in out.output, out.output
+
+
+def test_vb_a_single_member_undeclared_review_still_publishes(tmp_path, monkeypatch):
+    w = build(tmp_path, monkeypatch, visibility={}, names=("alpha",))
+    out = publish(w["review"])
+    assert out.exit_code == 0, out.output
+    assert review_on(w["members"]["alpha"]["remote"], w["full"]) == w["full"]
+
+
+def test_vc_an_all_declared_private_review_publishes_to_a_members_remote(tmp_path, monkeypatch):
+    w = build(tmp_path, monkeypatch, visibility={"alpha": "private", "beta": "private"})
+    alpha = w["members"]["alpha"]
+    out = publish(w["review"], "--remote", str(alpha["remote"]))
+    assert out.exit_code == 0, out.output
+    assert review_on(alpha["remote"], w["full"]) == w["full"]
+
+
+def test_vd_a_mixed_review_refuses_the_public_remote_and_publishes_to_the_private_one(tmp_path, monkeypatch):
+    """Public content in a private remote is no leak; private content in a public remote is."""
+    w = build(tmp_path, monkeypatch, visibility={"alpha": "public", "beta": "private"})
+    alpha, beta = w["members"]["alpha"], w["members"]["beta"]
+    out = publish(w["review"], "--remote", str(alpha["remote"]))
+    assert all(untouched(m) for m in w["members"].values()), out.output
+    assert out.exit_code == 2, out.output
+    out = publish(w["review"], "--remote", str(beta["remote"]))
+    assert out.exit_code == 0, out.output
+    assert review_on(beta["remote"], w["full"]) == w["full"]
+
+
+def test_v3_an_empty_visibility_binds_undeclared_and_publish_refuses(tmp_path, monkeypatch):
+    """proto3 reads an absent string as "", so "" is undeclared, which reads public: a two-member review refuses."""
+    w = build(tmp_path, monkeypatch, visibility={"alpha": "private", "beta": ""})
+    out = publish(w["review"], "--remote", str(w["members"]["alpha"]["remote"]))
+    assert all(untouched(m) for m in w["members"].values()), out.output
+    assert out.exit_code == 2, out.output
+    assert "'visibility' field" in out.output and "'beta'" in out.output, out.output
+
+
+def test_v5_a_destination_no_member_owns_that_is_not_host_local_reads_public_and_refuses(tmp_path, monkeypatch):
+    """An all-private review sent to an unrelated network URL must not read private just because no member is there."""
+    w = build(tmp_path, monkeypatch, visibility={"alpha": "private", "beta": "private"})
+    out = publish(w["review"], "--remote", "https://example.invalid/org/elsewhere.git")
+    assert all(untouched(m) for m in w["members"].values()), out.output
+    assert out.exit_code == 2, out.output
+    assert "not host-local; read as public" in out.output
+
+
+def test_v6_a_host_local_destination_no_member_owns_still_publishes_an_all_private_review(tmp_path, monkeypatch):
+    w = build(tmp_path, monkeypatch, visibility={"alpha": "private", "beta": "private"})
+    other = tmp_path / "other.git"
+    git(tmp_path, "init", "--bare", "-b", "main", other)
+    out = publish(w["review"], "--remote", str(other))
+    assert out.exit_code == 0, out.output
+    assert review_on(other, w["full"]) == w["full"]
+
+
+@pytest.mark.parametrize("destination", ["http://example.invalid/org/repo.git", "ssh://git@example.invalid/org/repo.git",
+                                         "git://example.invalid/org/repo.git", "git@example.invalid:org/repo.git"])
+def test_v7_every_network_form_no_member_owns_reads_public(destination):
+    from gr2.python_cli.grip import GripReviewRefused, _refuse_visibility_mismatch
+    states = {"alpha": {"remote": "/srv/alpha.git", "visibility": "private"}, "beta": {"remote": "/srv/beta.git", "visibility": "private"}}
+    with pytest.raises(Exception) as caught:
+        _refuse_visibility_mismatch(states, destination)
+    assert isinstance(caught.value, GripReviewRefused) and caught.value.refusal == "visibility_mismatch"
+    assert "not host-local; read as public" in str(caught.value)
+
+
+def test_v8_a_file_url_no_member_owns_reads_private(tmp_path):
+    from gr2.python_cli.grip import _refuse_visibility_mismatch
+    states = {"alpha": {"remote": "/srv/alpha.git", "visibility": "private"}, "beta": {"remote": "/srv/beta.git", "visibility": "private"}}
+    _refuse_visibility_mismatch(states, (tmp_path / "local.git").as_uri())
+
+
+def test_v9_a_file_url_with_a_host_reads_public():
+    from gr2.python_cli.grip import GripReviewRefused, _refuse_visibility_mismatch
+    states = {"alpha": {"remote": "/srv/alpha.git", "visibility": "private"}, "beta": {"remote": "/srv/beta.git", "visibility": "private"}}
+    with pytest.raises(GripReviewRefused, match="not host-local; read as public"):
+        _refuse_visibility_mismatch(states, "file://host/share/repo.git")

@@ -528,6 +528,7 @@ flag  review bind --repo <str> (hidden)                               stable
 flag  review bind --rows-json <str> (hidden)                          stable
 flag  review bind --source <str> (hidden)                             stable
 flag  review bind --title <str> (hidden)                              stable
+flag  review bind --visibility <str> (hidden)                         stable
 verb  review bind (hidden)                                            stable
 # review blockers
 arg   review blockers review_id <str> (hidden)                        stable
@@ -665,6 +666,7 @@ flag  review pin --repo <str>                                         stable
 flag  review pin --rows-json <str>                                    stable
 flag  review pin --source <str>                                       stable
 flag  review pin --title <str>                                        stable
+flag  review pin --visibility <str>                                   stable
 verb  review pin                                                      stable
 # review publish
 arg   review publish commit <str>                                     may-change

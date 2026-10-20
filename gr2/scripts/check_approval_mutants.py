@@ -30,6 +30,7 @@ GUARDS = [
     ("branch_unique", "branch", "if None in found or len(found) != 1:", "if False:", "test_branch_resolver_refuses_different_member_branches"),
     ("reconcile_stability", "_reconcile", "if set(measured.values()) != {tip}:", "if False:", "test_reconcile_refuses_a_changed_post_publish_measurement"),
     ("writer_identity", "approve", "if not name.strip():", "if False:", "test_missing_approver_refuses_before_remote_measurement"),
+    ("writer_name", "approve", "check_approver_name(name)", "pass", "test_invalid_approver_name_refuses_before_remote_measurement"),
     ("reconcile_lease", "_reconcile", 'f"--force-with-lease={ref}:{old or \'\'}"', '"--force"', "test_reconcile_lease_keeps_a_racing_remote_link"),
     ("bind_unknown_payloads", "_bind_record", "wire = fd.to_protobuf(workspace, tree, reader)", "wire = fd.encode(fd.read_record(workspace, tree))", "test_first_prev_hashes_full_bind_with_bytes_and_nested_unknowns"),
     ("bind_byte_payloads", "_bind_record", "base64.b64encode(payload)", "base64.b64encode(b'')", "test_first_prev_hashes_full_bind_with_bytes_and_nested_unknowns"),

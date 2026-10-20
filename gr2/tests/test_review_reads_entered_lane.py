@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from gr2.prototypes import lane_workspace_prototype as lanes
+from gr2.python_cli import review_update
 from tests.test_review_a4_v2 import _init, _invoke
 from tests.test_review_a4_v3 import _spec
 from tests.test_review_bind_native_store import _unpushed_head
@@ -121,6 +122,27 @@ def test_several_units_in_a_lane_refuse_by_name(ws_at_pin) -> None:
     out = pin.stdout + pin.stderr
     assert pin.exit_code != 0
     assert "south/feature" in out and "north/feature" in out and "gr2 lane exit" in out
+
+
+def test_update_merges_in_the_entered_lane_it_preflights(ws_at_pin) -> None:
+    ws, remote, base, _head = ws_at_pin
+    clone = _lane(ws, "north")
+    lane_head = _commit_in_lane(ws, clone)
+    gr_id = _pin_row(ws, remote, base, lane_head, clone)
+    mover = ws.parent / "mover"
+    subprocess.run(["git", "clone", "-q", remote, str(mover)], check=True)
+    (mover / "moved.txt").write_text("moved\n")
+    _g(mover, "add", "moved.txt")
+    _g(mover, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "target moved")
+    _g(mover, "push", "-q", "origin", "HEAD:main")
+    tip = _g(mover, "rev-parse", "HEAD")
+    shared_before = _g(ws / "alpha", "rev-parse", "HEAD")
+    assert shared_before != lane_head  # the two trees sit at different heads
+    code, receipt = review_update.update(ws, gr_id)
+    assert code == 0, receipt["refused"]
+    assert _g(clone, "rev-parse", "HEAD^1", "HEAD^2").split() == [lane_head, tip]
+    assert _g(ws / "alpha", "rev-parse", "HEAD") == shared_before  # the shared checkout is untouched
+    assert receipt["members"][0]["head"] == _g(clone, "rev-parse", "HEAD")
 
 
 def test_control_no_lane_entered_reads_the_shared_checkout(ws_at_pin) -> None:

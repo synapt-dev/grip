@@ -888,7 +888,8 @@ def _bind_review_rows_body(
     repo = _bind_dir(workspace)
     root_tree = fd.write_tree(repo, fd.encode(record))
     # Verify the tree as written before it is committed: invalid bytes never reach a commit or a ref.
-    fd.verify_tree(repo, root_tree)
+    with fd.BatchReader(repo) as reader:
+        fd.verify_tree(repo, root_tree, reader=reader)
     # The order is recorded in the bind's own message, so it is part of the gr id; the review
     # schema (a pinned copy) is unchanged. One trailer per member pinned after its push.
     trailers = [f"{_PUSHED_BEFORE_PIN} {key} {branch}" for key, branch in sorted(pushed_before.items())]

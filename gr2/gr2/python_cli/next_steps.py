@@ -240,7 +240,7 @@ def merge_row(refused: str, *, workspace: str, review: str, remote: str, path: s
     if refused.startswith("feature_moved"):
         # Name the check over the moved set, then the two real ways to merge it. "Pin the new head" alone pointed
         # at head_already_on_remote, which refuses a head already pushed, so the two refusals pointed at each other.
-        moved = re.match(r"feature_moved: remote (\S+) is ", refused)
+        moved = re.match(r"feature_moved(?:_before_push)?: remote (\S+) is ", refused)
         branch = moved.group(1).removeprefix("refs/heads/") if moved else "<branch>"
         return (f"next: the feature branch moved after the pin; to check the set as it is now: gr2 check set "
                 f"{_shown(workspace)} {_shown(review)} --at-remote-heads {_shown(branch)} -- <your combined test command>. "

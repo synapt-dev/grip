@@ -169,8 +169,9 @@ def judge(root: Path, declaration: Declaration, dset: DeclaredSet, member: str, 
     for row in named:
         by_commit.setdefault(str(row.get("root_commit")), []).append(row)
     # A failure belongs to the PINS it was run over, not to the commit id that carried them: an empty commit gives the
-    # same pins a new id, and a pass there must not outvote the failure (the per-member `test` check is sticky the same
-    # way). A failure at pins that have since changed is outvotable: that is fixing the code and running the check again.
+    # same pins a new id, and a pass there must not outvote the failure (the per-member `test` check is newest-wins at
+    # the same heads instead; a declared set stays sticky by pins on purpose). A failure at pins
+    # that have since changed is outvotable: that is fixing the code and running the check again.
     failed_pins = {_pins_of(r) for r in named if r.get("result") != "pass"}
     reasons: list[str | None] = []
     for commit, group in by_commit.items():

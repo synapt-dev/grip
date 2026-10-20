@@ -11,7 +11,7 @@ import subprocess
 
 from gr2.python_cli import check_records
 
-PINNED_TREE = "d4a2a25633451dd2101fc8909d81db984771c859"
+PINNED_TREE = "ad84e35363b2dd9a4789a2865219ad324ea3c941"
 
 
 def _git(cwd, *args, env):

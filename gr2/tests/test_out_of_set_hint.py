@@ -7,6 +7,7 @@ gate green and stays broken; these rows pin that the commands now say so, and sa
 from __future__ import annotations
 
 import json
+import re
 
 from gr2.python_cli import set_hints
 from gr2.python_cli.app import app
@@ -21,6 +22,11 @@ runner = make_cli_runner()
 def check_set(w):
     return runner.invoke(app, ["check", "set", str(w["author"]), "--root-commit", w["root"],
                                "--set", "money", "--", *ACCEPT], catch_exceptions=False)
+
+
+def _ids_out(stdout):
+    # a rerun at the same pins is a new observation, so only its record and observation ids may differ (the newest result wins)
+    return re.sub(r'"(record_id|observation_id)": "[0-9a-f]+"', r'"\1": "-"', stdout)
 
 
 def hint_lines(result):
@@ -158,7 +164,7 @@ def test_an_error_inside_the_hint_changes_nothing(tmp_path, monkeypatch):
 
     monkeypatch.setattr(set_hints, "_removed_names", boom)
     out = check_set(w)
-    assert out.exit_code == control.exit_code and hint_lines(out) == [] and out.stdout == control.stdout
+    assert out.exit_code == control.exit_code and hint_lines(out) == [] and _ids_out(out.stdout) == _ids_out(control.stdout)
 
 
 def test_an_identifier_the_set_member_still_mentions_elsewhere_is_still_hinted(tmp_path, monkeypatch):

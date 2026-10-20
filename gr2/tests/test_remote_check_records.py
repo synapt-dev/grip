@@ -51,7 +51,7 @@ def test_check_crosses_bare_remote_and_stays_at_exact_head():
         seen = cli("show", reader, "--remote", remote, "--head", head, "--json")
         observation = produced["observation"]
         assert observation == dict(v=1, head=head, observed_head=head, name="test", result="pass",
-                                   exit_code=0, observation_id=observation["observation_id"])
+                                   exit_code=0, seq=1, observation_id=observation["observation_id"])
         assert seen == dict(status="pass", record_id=produced["record_id"],
                             snapshot_oid=produced["snapshot_oid"], head=head, member_key="repo",
                             records=[observation], reason="required_checks_pass")
@@ -208,10 +208,11 @@ def test_duplicate_and_missing_policy_and_transport_failure(repositories, monkey
     repo, remote, head, _ = repositories
     first = check_records.publish_observation(repo, remote, receipt(head))
     second = check_records.publish_observation(repo, remote, receipt(head))
-    assert first['record_id'] == second['record_id']
-    assert len(read(repo, remote, head)['records']) == 1
+    # A second run of the same check is a new observation, ordered after the first (it no longer folds into it).
+    assert first['record_id'] != second['record_id']
+    assert [r['seq'] for r in read(repo, remote, head)['records']] == [1, 2]
     missing = read(repo, remote, head, ('lint',))
-    assert missing['status'] == 'absent' and missing['record_id'] == first['record_id']
+    assert missing['status'] == 'absent' and missing['record_id'] == second['record_id']
     assert read(repo, remote, head, ())['status'] == 'fail'
     original = check_records._git
 
@@ -275,15 +276,29 @@ def test_duplicate_keys_guard_is_independent():
         check_records._pairs([('v', 1), ('v', 1)])
 
 
-def test_failed_execution_is_recorded_and_pass_cannot_erase_it(repositories):
+def test_newest_run_at_the_same_head_decides_and_a_failure_shows_why(repositories):
+    # The newest result per check name at the same head wins; history is kept.
     repo, remote, head, _ = repositories
-    failed = check_records.run_check(repo, remote, head, 'test', [sys.executable, '-c', 'raise SystemExit(7)'])
-    assert failed['observation']['result'] == 'fail'
-    assert failed['observation']['exit_code'] == 7
-    check_records.run_check(repo, remote, head, 'test', [sys.executable, '-c', 'pass'])
+    fail = [sys.executable, '-c', 'import os, sys; print("out-7"); sys.exit("err-7 " + os.getcwd())']
+    failed = check_records.run_check(repo, remote, head, 'test', fail)
+    assert failed['observation']['result'] == 'fail' and failed['observation']['exit_code'] == 1
+    assert failed['failure']['stdout'] == 'out-7\n'
+    assert failed['failure']['stderr'] == f"err-7 {failed['failure']['cwd']}\n"
+    passed = check_records.run_check(repo, remote, head, 'test', [sys.executable, '-c', 'pass'])
+    assert 'failure' not in passed
     seen = read(repo, remote, head)
-    assert seen['status'] == 'fail' and len(seen['records']) == 2
+    assert seen['status'] == 'pass' and len(seen['records']) == 2
     assert {r['result'] for r in seen['records']} == {'pass', 'fail'}
+    check_records.run_check(repo, remote, head, 'test', fail)
+    seen = read(repo, remote, head)
+    assert seen['status'] == 'fail' and sorted(r['seq'] for r in seen['records']) == [1, 2, 3]
+
+
+def test_unsequenced_and_tied_records_fail_closed():
+    rows = [dict(name='test', result='fail'), dict(name='test', result='pass', seq=1)]
+    assert check_records.newest(rows) == [rows[1]]
+    tied = [dict(name='test', result='pass', seq=2), dict(name='test', result='fail', seq=2)]
+    assert check_records.newest(tied) == tied
 
 
 @pytest.mark.parametrize('duplicate', ['leaf', 'fanout', 'none'])

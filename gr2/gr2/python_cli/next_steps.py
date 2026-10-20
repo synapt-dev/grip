@@ -196,9 +196,10 @@ def merge_row(refused: str, *, workspace: str, review: str, remote: str, path: s
                 f"{_shown(found['remote'])} serves no {_shown(found['ref'])} to pin it against; gr2 review pin needs that "
                 f"head as --base")
     if refused.startswith("check_set_fail"):
-        # A recorded failure at these heads stays (a pass beside it does not erase it), so a rerun cannot clear it.
-        return ("next: the set check failed at these heads and that failure is recorded; a rerun does not clear it. "
-                "Fix the member, commit a new head, then pin, stamp, run gr2 check set on that head and publish it")
+        # The newest result at these heads wins, so a green rerun after the fix is judged over this failure.
+        return (f"next: the set check failed at these heads; the newest result at these heads wins, so fix the member "
+                f"and rerun gr2 check set {_shown(workspace)} {_shown(review)} -- <your combined test command> "
+                f"at these heads (or commit a new head)")
     if refused.startswith("check_set_"):
         # The one safe next command; a set is checked together, never member by member.
         return f"next: gr2 check set {_shown(workspace)} {_shown(review)} -- <your combined test command>"

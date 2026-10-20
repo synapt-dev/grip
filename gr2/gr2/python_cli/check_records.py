@@ -114,10 +114,19 @@ def _records(blob: bytes, head: str) -> list[dict]:
                 or row.get("result") not in ("pass", "fail", "error")
                 or type(row.get("exit_code")) is not int
                 or row.get("observed_head") != head
-                or (row["result"] == "pass") != (row["exit_code"] == 0)):
+                or (row["result"] == "pass") != (row["exit_code"] == 0)
+                or ("seq" in row and (type(row["seq"]) is not int or row["seq"] < 1))):
             raise CheckRefused("invalid_check_record")
         rows.append({**row, "observation_id": hashlib.sha256(line).hexdigest()})
     return rows
+
+
+def newest(rows: Sequence[Mapping]) -> list[Mapping]:
+    """The rows of one check at one head that a reader judges: those with the highest seq. A record written before
+    seq existed counts as 0, so any sequenced observation supersedes it; rows tied on the highest seq (two writers
+    racing) are all kept, and any failure among them still fails."""
+    top = max((r.get("seq", 0) for r in rows), default=0)
+    return [r for r in rows if r.get("seq", 0) == top]
 
 
 def _snapshot(repo: Path, remote: str, store: _Store | None = None) -> str | None:
@@ -206,7 +215,7 @@ def _read_remote_check(remote: str, member: Mapping, head: str, required_names: 
         result["record_id"] = blob
         rows = _records(store.blob(blob) if store else _git(repo, "cat-file", "blob", blob), head) if blob else []
         result["records"] = rows
-        required = [r for r in rows if r["name"] in required_names]
+        required = [r for name in dict.fromkeys(required_names) for r in newest([r for r in rows if r["name"] == name])]
         if any(r["result"] != "pass" for r in required):
             result.update(status="fail", reason="required_check_failed")
         elif any(not any(r["name"] == name for r in rows) for name in required_names):
@@ -240,7 +249,13 @@ def run_check(repo: Path, remote: str, head: str, name: str, argv: Sequence[str]
                result="pass" if execution.returncode == 0 else "fail", exit_code=execution.returncode)
     line = _line(row)
     _records(line + b"\n", head)
-    return publish_observation(repo, remote, row)
+    published = publish_observation(repo, remote, row)
+    if execution.returncode:
+        # The record stays small; the person who ran the check sees why it failed and where it ran.
+        published["failure"] = {"cwd": str(checkout), "argv": list(argv),
+                                "stdout": execution.stdout[-4000:].decode("utf-8", "replace"),
+                                "stderr": execution.stderr[-4000:].decode("utf-8", "replace")}
+    return published
 
 
 def _local_snapshot(repo: Path, store: _Store | None = None) -> str | None:
@@ -303,10 +318,17 @@ def publish_observation(repo: Path, remote: str, row: dict) -> dict:
     """Storage seam for a validated executor receipt, not a manual-result CLI."""
     head = _oid(repo, row["head"])
     _remote(remote)
-    line = _line(row)
-    _records(line + b"\n", head)
-    identity = hashlib.sha256(line).hexdigest()
     with _Store(repo) as store:
+        # seq orders observations at one head, so a later run of a check supersedes an earlier one (newest()).
+        key = head[:2] + "/" + head[2:]
+        seen = [0]
+        for snapshot in dict.fromkeys((_snapshot(repo, remote, store), _local_snapshot(repo, store))):
+            blob = _entries(repo, snapshot, store).get(key)
+            seen += [r.get("seq", 0) for r in _records(store.blob(blob), head)] if blob else []
+        row = {**row, "seq": max(seen) + 1}
+        line = _line(row)
+        _records(line + b"\n", head)
+        identity = hashlib.sha256(line).hexdigest()
         return _publish(repo, remote, row, head, line, identity, store)
 
 

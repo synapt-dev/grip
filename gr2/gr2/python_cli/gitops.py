@@ -788,6 +788,24 @@ def conflicting_files(path: Path) -> list[str]:
     return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
 
 
+def _refuse_planted_cache_remotes(cache_repo_root: Path) -> None:
+    """A repo cache holds one remote, origin. Any `remotes.*` group key or any other remote's key is state gr2
+    never writes, so the cache is refused as corrupt, naming the KEY (never its value, which may be a URL)."""
+    from .grip import GripCorruptError  # lazy, as _shown_arg
+
+    proc = run_argv(
+        ["git", "--git-dir", str(cache_repo_root), "config", "--null", "--name-only", "--get-regexp", r"^remotes?\."]
+    )
+    if proc.returncode not in (0, 1):
+        raise GripCorruptError(f"cannot read repo cache config {cache_repo_root}: {(proc.stderr or '').strip()[:160]}")
+    for key in (proc.stdout or "").split("\0"):
+        if not key:
+            continue
+        if key.startswith("remotes.") or not key.startswith("remote.origin.") or key.count(".") != 2:
+            shown = ascii(key) if unsafe_in_identifier(key) else key
+            raise GripCorruptError(f"repo cache {cache_repo_root} holds a remote gr2 never writes: config key {shown}")
+
+
 def ensure_repo_cache(url: str, cache_repo_root: Path, *, local_source: Path | None = None) -> bool:
     """Ensure a local bare mirror exists for a repo URL.
 
@@ -803,15 +821,25 @@ def ensure_repo_cache(url: str, cache_repo_root: Path, *, local_source: Path | N
     An EXISTING cache self-heals the same way before refreshing: its origin is
     repointed to the effective url first (a cache seeded before this fix
     existed, or by a human whose own SSH works, must not keep failing on every
-    later refresh), then ``remote update --prune`` runs.
+    later refresh), then the effective url is fetched with the mirror refspec.
 
-    Returns True if a cache was created, False if it already existed and was refreshed.
+    Returns True if a cache was created, False if it already existed and was refreshed, or already held a mirror of
+    another repo (origin neither url nor the effective url) and was left untouched.
     """
     effective_url = _effective_remote_url(url)
 
     if cache_repo_root.exists():
         if not is_git_dir(cache_repo_root):
             raise SystemExit(f"repo cache path exists but is not a git dir: {cache_repo_root}")
+
+        # A cache path names a repo by its last path segment, so it can already hold a mirror of ANOTHER repo with
+        # the same name. Fetching this url into it would mix two repos' refs and prune the other's; `remote update`
+        # refreshed such a mirror from its own origin. Read origin before the heal (set-url would overwrite it) and
+        # leave a mirror whose origin is neither url nor effective_url untouched: callers then find this repo's
+        # objects missing from it and fall back to the remote.
+        origin_proc = run_argv(["git", "--git-dir", str(cache_repo_root), "config", "--get-all", "remote.origin.url"])
+        if origin_proc.stdout.splitlines() not in ([url], [effective_url]):
+            return False
 
         if effective_url != url:
             remote_proc = run_argv(["git", "--git-dir", str(cache_repo_root), "remote", "set-url", "origin", effective_url])
@@ -821,7 +849,17 @@ def ensure_repo_cache(url: str, cache_repo_root: Path, *, local_source: Path | N
                     f"{remote_proc.stderr or remote_proc.stdout}"
                 )
 
-        proc = run_argv(["git", "--git-dir", str(cache_repo_root), "remote", "update", "--prune"])
+        # The refresh fetches the effective URL with the mirror's own refspec, never a remote NAME. `remote update`
+        # fetched EVERY remote on the mirror, so a remote planted there named `--upload-pack=<cmd>` reached git's
+        # argv as an option and ran <cmd> on every `sync run`; and `fetch -- origin` still expands a
+        # `remotes.origin` group, whose members git fetches in child processes with no `--` (and a group naming
+        # origin itself recurses without end). A URL argument never consults remotes.* or remote.*.
+        if not effective_url or effective_url.startswith("-") or unsafe_in_identifier(effective_url):
+            raise SystemExit(f"refusing to refresh repo cache {cache_repo_root}: url is option-shaped or holds a control character")
+        _refuse_planted_cache_remotes(cache_repo_root)
+        proc = run_argv(
+            ["git", "--git-dir", str(cache_repo_root), "fetch", "--prune", "--", effective_url, "+refs/*:refs/*"]
+        )
         if proc.returncode != 0:
             raise SystemExit(f"failed to refresh repo cache {cache_repo_root}:\n{proc.stderr or proc.stdout}")
         return False

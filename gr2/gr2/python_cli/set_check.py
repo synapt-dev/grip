@@ -128,13 +128,16 @@ def run_set_check(workspace: Path, review_id: str, name: str, argv: Sequence[str
     for key in keys:
         if not _KEY.fullmatch(key) or key.endswith(".git"):
             raise check_records.CheckRefused(f"member_key_unsafe: {key!r} cannot name a directory in the lane")
+    from .commit import entered_member_roots
+
     repos: dict[str, Path] = {}
+    roots = entered_member_roots(root)  # with a lane entered, the lane's clones (LaneAmbiguous with several)
     for m in members:
         if grip.url_has_credentials(m["remote"]):  # every message below may name the remote, so refuse by key first
             raise check_records.CheckRefused(
                 f"remote_credentials: {m['key']}: the recorded remote cannot be parsed or carries URL userinfo; "
                 "pin again from a remote without it and use a credential helper")
-        repo = (workspace / m["path"]).resolve()
+        repo = roots.get(m["key"], workspace / m["path"]).resolve()
         if not repo.is_relative_to(root):
             raise check_records.CheckRefused(f"member_path_outside_workspace: {m['path']}")
         if gitops.run(repo, "cat-file", "-e", f"{m['head']}^{{commit}}").returncode != 0:

@@ -176,6 +176,35 @@ def _lane_repo_targets(
     return [(repo, lane_proto.lane_repo_root(workspace_root, owner_unit, lane_name, repo)) for repo in repos]
 
 
+def entered_member_roots(workspace_root: Path) -> dict[str, Path]:
+    """{repo_key: checkout} for the lane that is entered, so the review verbs read the same clones commit wrote.
+
+    With no unit in a lane this is empty and every caller reads the shared checkout, as before. With exactly one
+    unit in a lane it maps that lane's repos (the same targets `commit` uses). With several it refuses by name:
+    which lane a review means cannot be guessed, and a wrong guess reads the wrong clone without a word.
+    """
+    workspace_root = Path(workspace_root).resolve()
+    state = lane_proto.current_lane_file(workspace_root, "_").parent
+    entered: list[tuple[str, str]] = []
+    for path in sorted(state.glob("*.json")) if state.is_dir() else []:
+        try:
+            lane_name = lane_proto.require_current_lane(workspace_root, path.stem)["lane_name"]
+        except SystemExit:
+            continue
+        entered.append((path.stem, lane_name))
+    if not entered:
+        return {}
+    if len(entered) > 1:
+        names = ", ".join(f"{unit}/{lane}" for unit, lane in entered)
+        raise SystemExit(
+            f"several units have a lane entered ({names}); a review reads one lane's clones. "
+            "Run `gr2 lane exit <workspace> <unit>` for every unit but the one under review, then run this again."
+        )
+    unit, lane_name = entered[0]
+    doc = lane_proto.load_lane_doc(workspace_root, unit, lane_name)
+    return dict(_lane_repo_targets(workspace_root, unit, lane_name, doc))
+
+
 @lane_proto.lane_read_scope()
 def commit_lane(
     workspace_root: Path,

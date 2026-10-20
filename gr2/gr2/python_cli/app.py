@@ -5822,9 +5822,13 @@ def review_verify(
 
 def _resolve_merge_defaults(ws: Path, review_id: Optional[str], into: Optional[str],
                             feature: Optional[str]) -> tuple[str, str, str]:
-    """Fill the review id, --from and --into from the workspace when not given; say on stderr what was resolved."""
+    """Fill the review id, --from and --into from the workspace when not given; say on stderr what was resolved.
+    With a lane entered, each member is read from the lane's clone, the one commit wrote to."""
+    roots = commit_ops.entered_member_roots(ws)
+
     def members(bind: str) -> list[tuple[Path, str]]:
-        return [((ws / m["path"]).resolve(), m["head"]) for m in grip.show_review_commit(ws, bind)["members"]]
+        return [(roots.get(m["key"], ws / m["path"]).resolve(), m["head"])
+                for m in grip.show_review_commit(ws, bind)["members"]]
 
     rsrc = "given"
     if not review_id:
@@ -5837,7 +5841,7 @@ def _resolve_merge_defaults(ws: Path, review_id: Optional[str], into: Optional[s
             raise
         # A named bind that cannot be read is the merge gate's to report: its receipt says bind_unreadable.
         return review_id, into or "", feature or ""
-    paths = [(ws / m["path"]).resolve() for m in view["members"]]
+    paths = [roots.get(m["key"], ws / m["path"]).resolve() for m in view["members"]]
     feature, fsrc = defaults.branch(paths, feature)
     pinned = None if into else defaults.pinned_target(view["members"])
     into, isrc = pinned or defaults.target_branch(

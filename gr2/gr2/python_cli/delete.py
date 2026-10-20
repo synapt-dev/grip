@@ -41,8 +41,8 @@ def delete(repo: Path, stook: str, *, org: str, remote: str = "origin") -> list[
         if not name.endswith("^{}"):
             now[name] = sha
     shadows_now = {n for n in now if n.endswith("/SHADOW")}
-    tracked_shadows = {f"refs/{org}/" + r[len(track_root):] for r in gitops.run(
-        repo, "for-each-ref", "--format=%(refname)", track_root).stdout.split() if r.endswith("/SHADOW")}
+    tracked_shadows = {f"refs/{org}/" + r[len(track_root):] for r in gitops.for_each_ref_rows(gitops.run(
+        repo, "for-each-ref", "--format=%(refname)", track_root).stdout) if r.endswith("/SHADOW")}
     for name in sorted(shadows_now | tracked_shadows | {stook}):
         if now.get(name) != tracking.tracked(repo, name, org=org, remote=remote):
             raise leased_push.PushRefused(name, f"stale tracking: the remote has {now.get(name) or 'nothing'}, the "

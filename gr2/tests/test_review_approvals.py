@@ -153,7 +153,7 @@ def test_moved_head_cannot_reuse_the_old_chain(world):
     git(world["member"], "commit", "-m", "moved")
     git(world["member"], "push", world["remote"], "feature")
     default = runner.invoke(app, ["review", "merge"])
-    assert default.exit_code == 3 and "review_ambiguous" in default.output, default.output
+    assert default.exit_code == 3 and "review_not_found" in default.output, default.output
     explicit = runner.invoke(app, ["review", "merge", "gr:" + world["rid"]])
     assert explicit.exit_code == 3, explicit.output
     assert json.loads(explicit.stdout)["members"][0]["refused"].startswith("feature_moved")

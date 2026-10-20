@@ -70,7 +70,7 @@ def test_a_member_moved_locally_matches_no_bind_and_refuses(world):
     merged = runner.invoke(app, ["review", "merge", "--approvals", "0"])
     assert merged.exit_code == 3, merged.output
     receipt = out(merged)
-    assert receipt["refused"].startswith("review_ambiguous: no pinned review")
+    assert receipt["refused"].startswith("review_not_found: pass the review id")
     assert set(receipt) == {"id", "into", "feature", "exit", "members", "refused"} and receipt["members"] == []
     assert git(world["remote"], "rev-parse", "main") == world["base"]
 
@@ -232,7 +232,7 @@ def test_an_opened_review_marker_supplies_the_workspace_never_the_review(world, 
     _moved_local_head_inside_an_opened_review(world, tmp_path, monkeypatch)
     merged = runner.invoke(app, ["review", "merge", "--approvals", "0"])
     assert merged.exit_code == 3, merged.output
-    assert out(merged)["refused"].startswith("review_ambiguous: no pinned review")
+    assert out(merged)["refused"].startswith("review_not_found: pass the review id")
     assert git(world["remote"], "rev-parse", "main") == world["base"]
 
 
@@ -248,3 +248,31 @@ def test_an_explicit_head_overrides_HEAD(world):
     made = runner.invoke(app, ["check", "run", str(member), "--head", world["base"], "--", sys.executable, "-c", "pass"])
     assert made.exit_code == 0, made.output
     assert f"head={world['base']} (given)" in made.stderr
+
+
+def test_review_selection_names_not_found_apart_from_ambiguous():
+    from gr2.python_cli.defaults import Unresolved, review as select
+
+    heads = {"m": "h1"}.get
+
+    def members(bind):
+        if bind == "bad":
+            raise ValueError("unreadable")
+        return [("m", {"a": "h0", "b": "h1", "c": "h1"}[bind])]
+
+    for binds, note in ((["a"], False), (["a", "bad"], True)):
+        try:
+            select(binds, members, heads)
+        except Unresolved as e:
+            reason = str(e)
+        else:
+            raise AssertionError("no match must refuse")
+        assert reason.startswith("review_not_found: pass the review id, or pin one;"), reason
+        assert ("(1 unreadable pinned review(s) skipped)" in reason) is note, reason
+        assert "review_ambiguous" not in reason, reason
+    try:
+        select(["b", "c"], members, heads)
+    except Unresolved as e:
+        reason = str(e)
+    assert reason.startswith("review_ambiguous: several pinned reviews"), reason
+    assert "gr:b" in reason and "gr:c" in reason, reason

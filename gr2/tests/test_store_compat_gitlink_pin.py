@@ -97,3 +97,33 @@ def test_full_mode_answers_are_unchanged_the_line_is_still_read(tmp_path):
     assert gc._native_members_at(root, "HEAD")["alpha"] == new, "full: the committed line, as dev"
     diff = {row["name"]: row for row in gc._native_store_diff(root, "HEAD~1", "HEAD")}
     assert (diff["alpha"]["old_pin"], diff["alpha"]["new_pin"], diff["alpha"]["changed"]) == (old, new, True)
+
+
+def _gitlink_repo(tmp_path: Path, *paths: str) -> tuple[Path, str]:
+    """A plain repo whose index holds a gitlink at each of ``paths`` (one sha for all)."""
+    root = tmp_path / "links"
+    root.mkdir()
+    git(root, "init", "-q")
+    sha = "1234567890abcdef1234567890abcdef12345678"
+    for path in paths:
+        git(root, "update-index", "--add", "--cacheinfo", f"160000,{sha},{path}")
+    return root, sha
+
+
+def test_the_pin_is_the_gitlink_at_the_members_path_itself(tmp_path):
+    root, sha = _gitlink_repo(tmp_path, "app")
+    assert gc._member_pin(root, None, {"path": "app"}) == sha
+
+
+def test_a_gitlink_beneath_the_members_path_is_not_its_pin(tmp_path):
+    root, _ = _gitlink_repo(tmp_path, "app/sub")
+    assert gc._member_pin(root, None, {"path": "app"}) is None, "the index read matched a gitlink under the path"
+    git(root, "commit", "-q", "--no-verify", "-m", "nested")
+    assert gc._member_pin(root, "HEAD", {"path": "app"}) is None, "the commit read matched a gitlink under the path"
+
+
+def test_a_path_with_glob_characters_reads_only_itself(tmp_path):
+    root, _ = _gitlink_repo(tmp_path, "ab")
+    assert gc._member_pin(root, None, {"path": "a?"}) is None, "the index read globbed the member's path"
+    git(root, "commit", "-q", "--no-verify", "-m", "glob")
+    assert gc._member_pin(root, "HEAD", {"path": "a?"}) is None, "the commit read globbed the member's path"

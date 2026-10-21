@@ -533,12 +533,17 @@ def _member_pin(root: Path, revision: str | None, member: dict) -> str | None:
     None; None when there is no gitlink there. Compat only: a full-mode gitlink is a field-commit before the sidecar."""
     path = keys.member_path_key(member["path"])
     if revision is None:
-        entry = _store_git(root, "ls-files", "-s", "--", path, check=False).stdout.split()
-        mode, sha = (entry[0], entry[1]) if len(entry) >= 2 else ("", "")
+        # A literal pathspec, or a directory path would match the gitlinks beneath it and a glob path its matches.
+        out = _store_git(root, "ls-files", "-s", "-z", "--", f":(literal){path}", check=False).stdout
     else:
-        entry = _store_git(root, "ls-tree", revision, "--", path, check=False).stdout.split()
-        mode, sha = (entry[0], entry[2]) if len(entry) >= 3 else ("", "")
-    return sha if mode == "160000" and _FULL_SHA.match(sha) else None
+        out = _store_git(root, "ls-tree", "-z", revision, "--", path, check=False).stdout
+    for record in out.split("\0"):
+        meta, tab, name = record.partition("\t")
+        if tab and name == path:  # only the entry AT the member's path is its pin
+            fields = meta.split()
+            mode, sha = (fields[0], fields[1] if revision is None else fields[2]) if len(fields) >= 3 else ("", "")
+            return sha if mode == "160000" and _FULL_SHA.match(sha) else None
+    return None
 
 
 #: A file the engine writes from `grip.toml` and always accepts, whatever the owner's `.gitinclude` lists: a

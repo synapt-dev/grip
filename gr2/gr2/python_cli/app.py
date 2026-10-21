@@ -1388,7 +1388,7 @@ def _scan_existing_repos(workspace_root: Path) -> list[dict[str, object]]:
     for name, child in candidates:
         rel = child.relative_to(workspace_root).as_posix()
         declared = modules_by_key.get(member_path_key(rel), {})
-        pinned = pins.get(rel)
+        pinned = pins_by_key.get(member_path_key(rel))
 
         if pinned is not None and not repo_proto.is_own_toplevel(child):
             # A member that is NOT materialized -- the ordinary state after a

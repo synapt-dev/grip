@@ -26,6 +26,7 @@ def review_approve(
     of the workspace the lane was opened from and the members checked out in the lane, so a reviewer in another
     gripspace stamps from the lane. The approver is GIT_AUTHOR_NAME, else the git user.name of the workspace the lane was opened from."""
     from . import approvals
+    opened = None
     try:
         # A review lane (`review checkout-pr` or `review open`) carries its (repo, head) record; stamp binds to it.
         opened = approvals.review_open_lane(workspace_root.resolve()) if review_id is None else None
@@ -50,11 +51,18 @@ def review_approve(
         if getattr(exc, "next_step", None):
             typer.echo(exc.next_step, err=True)
         if str(exc) == "self_approval" and not getattr(exc, "next_step", None):
+            # A `review open` lane stamped against the store it was opened from: the policy, the review and the
+            # merge the next line prints are that store's, never the lane's (a lane has no grip.toml).
+            here = opened[0] if opened is not None else workspace_root.resolve()
             try:
-                rid = review_id or approvals.current_review(workspace_root.resolve())
+                rid = review_id or (opened[1] if opened is not None else approvals.current_review(here))
             except Exception:  # the next line is advice; a review id we cannot resolve still leaves the command shape
                 rid = "<review id>"
-            typer.echo(next_steps.self_approval(str(workspace_root), rid if rid.startswith(("gr:", "<")) else f"gr:{rid}"),
-                       err=True)
+            try:
+                floor = approvals.approval_policy(here, 0)["required"]
+            except approvals.ApprovalRefused:  # unreadable or invalid policy: the merge refuses it too
+                floor = None
+            typer.echo(next_steps.self_approval(str(here if opened is not None else workspace_root),
+                                                rid if rid.startswith(("gr:", "<")) else f"gr:{rid}", floor), err=True)
         raise typer.Exit(code=2)
     typer.echo(json.dumps(result))

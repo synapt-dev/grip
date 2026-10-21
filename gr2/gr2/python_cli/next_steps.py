@@ -30,7 +30,9 @@ A review goes through five steps, in this order:
   2. gr2 review publish  push every member's pinned head to its own remote,
                          then put the pinned review there
   3. gr2 review stamp    an approver other than the author stamps it; in their
-                         own workspace, after gr2 review receive
+                         own workspace, after gr2 review receive. Alone, with
+                         no other approver and no approvals required in
+                         grip.toml: no stamp; merge with --approvals 0
   4. gr2 check run       record the check at the exact head on the remote; a
                          review over several members needs only gr2 check set,
                          one command over every member: merge accepts on the
@@ -39,10 +41,19 @@ A review goes through five steps, in this order:
 Each refusal along the way names the next command."""
 
 
-def self_approval(workspace: str, review: str) -> str:
-    return (f"next: a different approver stamps it from their own workspace, after receiving it there: "
+def self_approval(workspace: str, review: str, floor: int | None = 0) -> str:
+    # floor: grip.toml's [approvals] required, which --approvals can only raise. The solo merge is printed only when
+    # it is 0, since under a floor it refuses; None (the policy could not be read) prints neither, as the merge
+    # refuses that policy too.
+    line = (f"next: a different approver stamps it from their own workspace, after receiving it there: "
             f"gr2 review receive <their-workspace> {_shown(review)} --remote <member-remote>, then "
             f"gr2 review stamp <their-workspace> {_shown(review)}")
+    if floor == 0:
+        return f"{line}; with no other approver: gr2 review merge {_shown(workspace)} {_shown(review)} --approvals 0"
+    if floor:
+        return (f"{line}; this workspace requires {floor} approval(s) (grip.toml [approvals] required), so a second "
+                f"approver is needed")
+    return line
 
 
 def head_not_fetched(repo: str, remote: str, head: str, workspace: str, review: str) -> str:

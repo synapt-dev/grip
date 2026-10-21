@@ -1,9 +1,6 @@
 """One canonical key per kind. A compare that passes both sides through a kind's function here sees two spellings
-of one thing as one key. Every member-path compare calls `member_path_key` except two. App.py's superproject scan
-looks up a member's `.gitmodules` declaration (`modules.get(rel)`) by the raw spelling `.gitmodules` holds, so a
-declaration spelled `./alpha` is not found for `alpha` there (its pin and declared-ref lookups are keyed). And
-consent's member key (`consent.member_key`) still strips '/', so a spec path spelled `./alpha` keys as `./alpha`
-there; it moves onto `member_path_key` in a separate change.
+of one thing as one key. Every member-path compare calls `member_path_key`, including app.py's superproject scan,
+which looks up a member's `.gitmodules` declaration by key, so a declaration spelled `./alpha` gives `alpha` its url.
 
 Remote URLs have two keys, because readers ask two questions whose safe errors point opposite ways:
 

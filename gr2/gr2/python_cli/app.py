@@ -1364,9 +1364,11 @@ def _scan_existing_repos(workspace_root: Path) -> list[dict[str, object]]:
     pins = _root_gitlink_pins(workspace_root)
     declared_refs = repo_proto.root_submodule_branches(workspace_root)
     modules = repo_proto.root_submodule_declarations(workspace_root)
-    # The same, as member keys, for the declared-state lookup: `.gitmodules` may spell a path `./alpha` or `alpha/`.
+    # The same, as member keys, for the declared-state and declaration lookups: `.gitmodules` may spell a path
+    # `./alpha` or `alpha/`.
     pins_by_key = {member_path_key(path): pin for path, pin in pins.items()}
     declared_refs_by_key = {member_path_key(path): ref for path, ref in declared_refs.items()}
+    modules_by_key = {member_path_key(path): spec for path, spec in modules.items()}
 
     if pins:
         # A root that pins members has a KNOWN member set, at ANY depth: the
@@ -1385,8 +1387,8 @@ def _scan_existing_repos(workspace_root: Path) -> list[dict[str, object]]:
 
     for name, child in candidates:
         rel = child.relative_to(workspace_root).as_posix()
-        declared = modules.get(rel, {})
-        pinned = pins.get(rel)
+        declared = modules_by_key.get(member_path_key(rel), {})
+        pinned = pins_by_key.get(member_path_key(rel))
 
         if pinned is not None and not repo_proto.is_own_toplevel(child):
             # A member that is NOT materialized -- the ordinary state after a

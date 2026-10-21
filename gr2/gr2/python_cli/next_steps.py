@@ -134,7 +134,9 @@ def _merge_partial_line(code: int, receipt: dict) -> str | None:
     for m in members:
         reason = (m.get("refused") or "").split(":", 1)[0]
         if m.get("final") == "merged":
-            sides["merged"].append(f"{_shown(m['key'])} ({str(m.get('merged') or '?')[:12]})")
+            # A merged member can still carry a code (stranded or unmeasured after the merge): it says what is missing.
+            code_note = f"; {reason}" if reason else ""
+            sides["merged"].append(f"{_shown(m['key'])} ({str(m.get('merged') or '?')[:12]}{code_note})")
         elif m.get("final") == "unmerged" and reason != "push_unconfirmed":
             sides["not merged"].append(f"{_shown(m['key'])} ({reason or 'unmerged'})")
         else:

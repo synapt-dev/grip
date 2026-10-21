@@ -449,6 +449,7 @@ def test_the_readme_names_the_partial_line_the_helper_prints():
     shape = "`partial: merged <key> (<sha12>); not merged <key> (<reason>); not known <key> (<reason>)`"
     assert shape in readme, "README names the exit-4 stderr line"
     assert "`partial: nothing measured (<code>)`" in readme, "README names the no-members line"
+    assert "shows it beside the sha as `<key> (<sha12>; <code>)`" in readme, "README names the merged-with-code entry"
     prefix = shape.strip("`").split("<", 1)[0]
     receipt = {"members": [{"key": "alpha", "final": "merged", "merged": "a" * 40},
                            {"key": "beta", "final": "unmerged", "refused": "push_rejected: main is closed"},
@@ -456,6 +457,16 @@ def test_the_readme_names_the_partial_line_the_helper_prints():
     line = next_steps._merge_partial_line(merge_gate.EXIT_PARTIAL, receipt)
     assert prefix == "partial: merged " and line.startswith(prefix), line
     assert line == f"partial: merged alpha ({'a' * 12}); not merged beta (push_rejected); not known gamma (unknown)", line
+
+
+@pytest.mark.parametrize("code", ["platform_head_moved_after_merge", "platform_head_unmeasured_after_merge"])
+def test_a_merged_member_with_a_code_shows_the_code_beside_the_sha(code):
+    # Exit 4 with every member merged: the stranded or unmeasured member's code is the one thing the line can name.
+    from gr2.python_cli import next_steps
+    receipt = {"members": [{"key": "alpha", "final": "merged", "merged": "a" * 40, "refused": f"{code}: PR #7 detail"},
+                           {"key": "beta", "final": "merged", "merged": "a" * 40, "refused": None}]}
+    line = next_steps._merge_partial_line(merge_gate.EXIT_PARTIAL, receipt)
+    assert line == f"partial: merged alpha ({'a' * 12}; {code}), beta ({'a' * 12})", line
 
 
 def test_a_bind_fault_partial_line_says_nothing_was_measured():

@@ -356,7 +356,7 @@ Exit codes:
 - 3: none merged (refused);
 - 4: partial or unknown.
 
-At exit 4, gr2 also prints one line to stderr after the JSON receipt, in the shape `partial: merged <key> (<sha12>); not merged <key> (<reason>); not known <key> (<reason>)`, where `<reason>` is the member's refusal code (or its final state if it has none), several members are joined by `, `, and a side with no members is left out. `not known` holds each member the run never measured and each whose push went unconfirmed (`push_unconfirmed`: it may still land). When the run measured no member at all (a bind fault), the line is `partial: nothing measured (<code>)`, naming the receipt's refusal code; the receipt stays the record.
+At exit 4, gr2 also prints one line to stderr after the JSON receipt, in the shape `partial: merged <key> (<sha12>); not merged <key> (<reason>); not known <key> (<reason>)`, where a merged member that carries a refusal code shows it beside the sha as `<key> (<sha12>; <code>)` (a member stranded or left unmeasured after its merge), `<reason>` is the member's refusal code (or its final state if it has none), several members are joined by `, `, and a side with no members is left out. `not known` holds each member the run never measured and each whose push went unconfirmed (`push_unconfirmed`: it may still land). When the run measured no member at all (a bind fault), the line is `partial: nothing measured (<code>)`, naming the receipt's refusal code; the receipt stays the record.
 
 A review id, `--from` and `--into` override the defaults. Zero or several matching pinned reviews, or members on
 different branches, refuse and name the value to pass.

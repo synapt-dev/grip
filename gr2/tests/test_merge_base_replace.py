@@ -2,14 +2,17 @@
 
 A replace ref (refs/replace/<sha>) swaps a commit for another on every plain read git makes, so a plain `git merge-base`
 can name a later base than the real one. A later base drops the branch's own unlanded commits from the range it
-compares: prune then reads a branch carrying unlanded work as squash-merged, and coverage reads a pin as landed. Both
-reads use gitops.real_history_run, as gitops.is_ancestor already does."""
+compares: prune then reads a branch carrying unlanded work as squash-merged, and coverage reads a pin as landed. The
+base a review records (git review open, a PR-head pin, a continued lane's fork base) moves the same way, to the head
+itself, so the review covers none of the branch's work. These reads use gitops.real_history_run, as
+gitops.is_ancestor already does."""
 from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
-from gr2.python_cli import grip_cli, prune
+from gr2.python_cli import app, git_review, grip_cli, prune
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -134,3 +137,47 @@ def test_squash_map_reads_a_replaced_root_as_a_root(tmp_path):
     _git(work, "replace", a, _fake(work, a, x))
     assert _git(work, "rev-parse", f"{a}^") == x
     assert prune.list_merged_branches(work, "main")[0] == []
+
+
+def _feature_with_replaced_main(tmp_path: Path) -> tuple[Path, str, str, str]:
+    # feature: A - P (adds p). main: A - S (adds s). refs/replace/S -> a commit with S's tree on top of P, so a plain
+    # merge-base of feature and main is P itself: the base the branch's own work starts from moves past that work.
+    work, a = _init(tmp_path)
+    _git(work, "checkout", "-q", "-b", "feature")
+    p = _commit(work, "p")
+    _git(work, "checkout", "-q", "main")
+    s = _commit(work, "s")
+    _git(work, "replace", s, _fake(work, s, p))
+    assert _git(work, "merge-base", "feature", "main") == p
+    return work, a, p, s
+
+
+def test_review_open_records_the_real_base_through_a_replaced_default_branch(tmp_path):
+    work, a, p, _ = _feature_with_replaced_main(tmp_path)
+    _git(work, "checkout", "-q", "feature")
+    assert git_review._resolve_base(work, None) == (a, False)
+    assert git_review.open_review(work)["base"] == a
+
+
+def _with_origin(tmp_path: Path, work: Path) -> Path:
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(remote)], check=True)
+    _git(work, "remote", "add", "origin", str(remote))
+    _git(work, "push", "-q", "origin", "main", "feature")
+    _git(work, "fetch", "-q", "origin")
+    return remote
+
+
+def test_pr_base_pin_is_the_real_base_through_a_replaced_base_branch(tmp_path, monkeypatch):
+    work, a, p, _ = _feature_with_replaced_main(tmp_path)
+    _with_origin(tmp_path, work)
+    adapter = SimpleNamespace(pr_status=lambda repo, number: SimpleNamespace(ref=SimpleNamespace(base_branch="main")))
+    monkeypatch.setattr(app.platform_ops, "get_platform_adapter", lambda platform: adapter)
+    assert app._pr_base_sha(work, "repo", 1, p, "fake") == a
+
+
+def test_continued_lane_fork_base_is_the_real_base_through_a_replaced_integration_ref(tmp_path):
+    work, a, p, _ = _feature_with_replaced_main(tmp_path)
+    _with_origin(tmp_path, work)
+    _git(work, "checkout", "-q", "feature")
+    assert app._start_lane_branch("repo", work, "feature", "main", seed_is_work=False) == (a, None)

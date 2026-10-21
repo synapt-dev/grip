@@ -56,8 +56,9 @@ class GitReviewError(RuntimeError):
     """A single-repo review operation could not proceed."""
 
 
-def _git(repo: Path, *args: str) -> str:
-    r = gitops.run(repo, *args)
+def _git(repo: Path, *args: str, history: bool = False) -> str:
+    # `history` reads the real history (gitops.real_history_run): for the merge-base a review records as its base.
+    r = (gitops.real_history_run if history else gitops.run)(repo, *args)
     if r.returncode != 0:
         raise GitReviewError(f"git {' '.join(args)} failed: {r.stderr.strip()}")
     return r.stdout.strip()
@@ -117,7 +118,7 @@ def _resolve_base(repo_root: Path, base_arg: str | None) -> tuple[str, bool]:
     if ref is None:
         return head, True
     try:
-        base = _git(repo_root, "merge-base", "HEAD", ref)
+        base = _git(repo_root, "merge-base", "HEAD", ref, history=True)
     except GitReviewError:
         return head, True
     return base, base == head

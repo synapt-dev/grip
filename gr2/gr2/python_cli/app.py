@@ -322,7 +322,7 @@ def _start_lane_branch(repo_name: str, repo: Path, branch: str, ref: str | None,
         tracked = git(repo, "branch", f"--set-upstream-to=origin/{branch}", branch)
         if tracked.returncode:
             raise SystemExit(f"cannot set {branch} to track origin/{branch} in {repo_name}: {tracked.stderr.strip()}")
-        base = git(repo, "merge-base", head, integration)
+        base = gitops.real_history_run(repo, "merge-base", head, integration, via_cwd=True)
         fork = base.stdout.strip() if base.returncode == 0 and base.stdout.strip() else head
         print(f"gr2: {repo_name}: continues origin/{branch} at {head[:12]}; fork base {fork[:12]}", file=sys.stderr)
         return fork, None
@@ -622,7 +622,7 @@ def _pr_base_sha(source_repo_root: Path, repo: str, pr_number: int, head_sha: st
     if fetched.returncode != 0:
         _refuse(f"{repo}: could not fetch base branch {base_branch!r} of PR #{pr_number}")
     base_tip = git(source_repo_root, "rev-parse", "--verify", "FETCH_HEAD^{commit}").stdout.strip()
-    merged = git(source_repo_root, "merge-base", head_sha, base_tip)
+    merged = gitops.real_history_run(source_repo_root, "merge-base", head_sha, base_tip, via_cwd=True)
     return merged.stdout.strip() if merged.returncode == 0 else base_tip
 
 

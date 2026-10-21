@@ -5156,7 +5156,10 @@ def review_bind(
     """Pin a review gr commit for one or more repository rows; print ``gr:<commit>``.
 
     With no row given at all, every member whose checkout is ahead of the commit the workspace records for it is
-    pinned, and the rows chosen are printed BEFORE anything is pinned (a pin is a local ref, so it can be thrown away,
+    pinned; a member the workspace records no pin for is pinned when its checkout is ahead of the live head of its ref,
+    which is then its base. The set is refused when such a member is on a detached HEAD, when the live head of its ref
+    cannot be read, when its checkout is behind that head or does not hold it, or when such members are on different
+    branches. The rows chosen are printed BEFORE anything is pinned (a pin is a local ref, so it can be thrown away,
     but a run with no terminal cannot stop in between); --members narrows, and it refuses when no member is ahead. Otherwise one
     row from --repo/--remote/--base/--head, or many from --rows-json (all in
     ONE commit). For every row, reads the live remote head of its ref and refuses

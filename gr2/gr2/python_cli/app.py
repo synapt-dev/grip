@@ -33,6 +33,7 @@ from .keys import member_path_key
 from . import branch as branch_ops
 from . import change as change_ops
 from . import commit as commit_ops
+from .workspace_root import _is_workspace_root, _resolve_workspace_root  # noqa: F401  (re-exported)
 from . import execops, failures, grip, migration, next_steps, review_diff, spec_apply, syncops
 from . import surface
 from . import gitinclude
@@ -49,6 +50,7 @@ from . import target as target_ops
 from . import project_review
 from . import push as push_ops
 from . import read_review
+from .review_stamp import review_approve
 from .clone_exec import rmtree_or_refuse
 from .events import EventEmitError, EventType, emit, emit_after_outcome
 from .layout import GRIP_DIR, grip_dir
@@ -235,33 +237,6 @@ def _workspace_repo_spec(workspace_root: Path, repo_name: str) -> dict[str, obje
         if repo.get("name") == repo_name:
             return repo
     raise SystemExit(f"repo not found in workspace spec: {repo_name}")
-
-
-def _is_workspace_root(path: Path) -> bool:
-    """A directory that IS a workspace, of either kind: it holds ``.grip/workspace_spec.toml``,
-    or it is a native store root (``grip.toml`` beside a root ``.git``, what ``store init`` makes)."""
-    return (path / ".grip" / "workspace_spec.toml").is_file() or grip._is_native_workspace(path)
-
-
-def _resolve_workspace_root(workspace_root: Optional[Path] = None) -> Path:
-    """The workspace root for a verb: the argument if given, else the nearest
-    ancestor of the current directory (the directory itself included) that is a
-    workspace of EITHER kind, else the current directory.
-
-    NEAREST, across both kinds. A store root has no ``workspace_spec.toml``, so walking
-    for the spec file alone let any outer initialised workspace win over the store root
-    the caller was standing in: ``review bind`` then exited 0 having bound in the outer
-    workspace, and every read of that id against the caller's own root said it bound nothing.
-
-    Every verb took this as a REQUIRED bare positional until now, so a stranger
-    running ``gr2 spec validate`` from inside their own workspace got
-    "Missing argument 'workspace_root'" and read the tool as broken. The
-    explicit form is unchanged: a value passed in wins, and is still resolved.
-    """
-    if workspace_root is not None:
-        return workspace_root.resolve()
-    cwd = Path.cwd().resolve()
-    return next((path for path in (cwd, *cwd.parents) if _is_workspace_root(path)), cwd)
 
 
 def _workspace_spec_path(workspace_root: Path) -> Path:
@@ -6060,50 +6035,8 @@ def _resolve_merged_defaults(ws: Path, review_id: Optional[str], into: Optional[
     return view["id"], into
 
 
-@review_app.command("stamp", cls=ReviewHeadCommand)
-def review_approve(
-    workspace_root: Path,
-    review_id: Optional[str] = typer.Argument(None, help="Review id; default is the pinned review at the current member heads"),
-    root: Optional[Path] = ROOT_OPTION,
-) -> None:
-    """Stamp the review: append an unsigned exact-head approval as GIT_AUTHOR_NAME, else the workspace git user.name, on every member remote.
-
-    WORKSPACE_ROOT may be a lane `review open` made, or one member directory in it: the stamp then uses the store
-    of the workspace the lane was opened from and the members checked out in the lane, so a reviewer in another
-    gripspace stamps from the lane. The approver is GIT_AUTHOR_NAME, else the git user.name of the workspace the lane was opened from."""
-    from . import approvals
-    try:
-        # A review lane (`review checkout-pr` or `review open`) carries its (repo, head) record; stamp binds to it.
-        opened = approvals.review_open_lane(workspace_root.resolve()) if review_id is None else None
-        if opened is not None:
-            # A `review open` lane: the store is the workspace it was opened from, the members are read here.
-            store, rid, members = opened
-            result = approvals.approve(store, rid, members)
-        elif review_id is None and approvals.pr_lane_record(workspace_root.resolve()) is not None:
-            result = approvals.approve_pr_lane(workspace_root.resolve())
-        else:
-            result = approvals.approve(workspace_root.resolve(), review_id)
-    except grip.ReviewStoreAbsent as exc:
-        # The review was never received here (a reviewer's own workspace): a named refusal and the order that
-        # works, never a traceback.
-        typer.echo(f"refused: not_received: {exc}", err=True)
-        rid = review_id or "<review id>"
-        typer.echo(next_steps.not_received(str(workspace_root), rid if rid.startswith(("gr:", "<")) else f"gr:{rid}"),
-                   err=True)
-        raise typer.Exit(code=2)
-    except approvals.ApprovalRefused as exc:
-        typer.echo(str(exc), err=True)
-        if getattr(exc, "next_step", None):
-            typer.echo(exc.next_step, err=True)
-        if str(exc) == "self_approval" and not getattr(exc, "next_step", None):
-            try:
-                rid = review_id or approvals.current_review(workspace_root.resolve())
-            except Exception:  # the next line is advice; a review id we cannot resolve still leaves the command shape
-                rid = "<review id>"
-            typer.echo(next_steps.self_approval(str(workspace_root), rid if rid.startswith(("gr:", "<")) else f"gr:{rid}"),
-                       err=True)
-        raise typer.Exit(code=2)
-    typer.echo(json.dumps(result))
+# The body lives in review_stamp.py so the dispatch table can build `review stamp` without this module.
+review_app.command("stamp", cls=ReviewHeadCommand)(review_approve)
 
 
 # `approve` is the earlier name of `review stamp`; it stays as an alias with the same options and output.
@@ -7064,25 +6997,9 @@ def check_show(
 
 
 def main() -> None:
-    """Console-script entry point, and the ONE place an AdapterError becomes a sentence.
-
-    An adapter's failure arrives as an exception that already carries the forge's own
-    message — a remote that is not a forge URL, a head branch equal to its base.
-    Uncaught, it reaches the user as a Python traceback in place of the refusal it
-    already is, which is what a stranger met on the first-run path. Catching it here,
-    once, covers every adapter a user may plug in rather than one check per trigger:
-    adapters are exactly the part of this CLI the team does not write.
-    """
-    # `gr` runs this half with GR_RESOLVED set so it cannot resolve twice. The guard is spent once gr2 starts;
-    # kept, it would reach every process gr2 runs, and any `gr` there would refuse to resolve twice.
-    os.environ.pop("GR_RESOLVED", None)
-    from .gr_shadow import note_shadow
-    note_shadow()  # at most once per install, never under --json
-    try:
-        app()
-    except AdapterError as exc:
-        typer.echo(f"gr2: {exc}", err=True)
-        raise SystemExit(1) from None
+    """The full command tree inside the one boundary every way in shares (dispatch.run)."""
+    from .dispatch import run
+    run(app)
 
 
 if __name__ == "__main__":

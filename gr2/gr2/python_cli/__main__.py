@@ -1,4 +1,4 @@
-from .app import main
+from .dispatch import main
 
 if __name__ == "__main__":
     # `main()`, never `app()`: the AdapterError boundary lives on main(), and this

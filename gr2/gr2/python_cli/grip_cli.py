@@ -1203,11 +1203,11 @@ def _store_root(root: Path | None, positional: Path | None = None) -> Path:
 
 def _store_root_upward(root: Path | None) -> Path:
     """The root for a verb that may run from inside a member: `--root/-C`, else the nearest workspace at or above the
-    current directory, by the review verbs' own walk (`app._resolve_workspace_root`). With no workspace up there it
+    current directory, by the review verbs' own walk (`workspace_root._resolve_workspace_root`). With no workspace up there it
     refuses at 5 naming where it started, and does not send the caller to init a store inside a member."""
     if root is not None:
         return _store_root(root)
-    from .app import _is_workspace_root, _resolve_workspace_root
+    from .workspace_root import _is_workspace_root, _resolve_workspace_root
 
     found = _resolve_workspace_root(None)
     if not _is_workspace_root(found):

@@ -84,7 +84,7 @@ def quiet_from_env(env: Optional[dict[str, str]] = None) -> bool:
 
 
 def _is_workspace_root(path: Path) -> bool:
-    from .app import _is_workspace_root as is_root
+    from .workspace_root import _is_workspace_root as is_root
 
     return is_root(path)
 

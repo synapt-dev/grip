@@ -172,6 +172,34 @@ def test_the_merge_entry_point_reports_a_sentence_and_not_a_traceback(
     )
 
 
+def test_a_platform_error_on_the_pin_read_reports_a_sentence_and_not_a_traceback(
+    tmp_path: Path, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from gr2.python_cli import platform as platform_ops
+    from gr2.python_cli.platform import AdapterError
+
+    class _StatusFails(_NeverCalled):
+        def pr_status(self, *args: object, **kwargs: object) -> object:
+            raise AdapterError("HTTP 502: bad gateway")
+
+    workspace = _workspace(tmp_path, ["app"])
+    monkeypatch.setattr(platform_ops, "get_platform_adapter", lambda _name: _StatusFails())
+    monkeypatch.setattr(
+        gr2_app,
+        "_merge_verification_targets",
+        lambda _root: {"app": MergeVerificationTarget(
+            repo_root=workspace / "repos" / "app", remote="https://example.test/app.git")},
+    )
+
+    code = _run_main(["pr", "merge", str(workspace), OWNER_UNIT, LANE_NAME,
+                      "--match-head-commit", f"app={READ_SHA}"])
+    output = "".join(capsys.readouterr())
+
+    assert code == 1, output
+    assert "Traceback" not in output, f"the operator met a stack: {output}"
+    assert "app" in output and "HTTP 502: bad gateway" in output, output
+
+
 def _write_raw_group(workspace: Path, prs: list[dict]) -> None:
     """Overwrite the group with entries exactly as given, unvalidated."""
     (workspace / ".grip" / "pr_groups" / f"{GROUP_ID}.json").write_text(

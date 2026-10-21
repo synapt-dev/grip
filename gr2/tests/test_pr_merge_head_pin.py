@@ -421,3 +421,55 @@ def test_internal_type_error_is_not_retried_without_pin(tmp_path: Path) -> None:
                expected_heads={"app": READ_SHA, "api": READ_SHA})
     assert adapter.merged == ["app"]
     assert adapter.pins_seen == {"app": READ_SHA}
+
+
+class _StatusRaises(_Pinned):
+    """The pin pass's head read fails; merge_pr records any call it gets."""
+
+    def __init__(self, error: Exception) -> None:
+        super().__init__({"app": READ_SHA, "api": READ_SHA})
+        self.error = error
+
+    def pr_status(self, repo: str, number: int) -> PRStatus:
+        self.status_calls.append(repo)
+        raise self.error
+
+
+def test_a_platform_error_on_the_pin_read_is_a_recorded_merge_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from gr2.python_cli import pr as pr_mod
+
+    records: list[dict] = []
+    real = pr_mod._record_merge_failure
+
+    def spy(**kwargs: object) -> None:
+        records.append(dict(kwargs))
+        real(**kwargs)
+
+    monkeypatch.setattr(pr_mod, "_record_merge_failure", spy)
+    adapter = _StatusRaises(AdapterError("HTTP 502: bad gateway"))
+
+    with pytest.raises(pr_mod.PRMergeError) as raised:
+        _merge(tmp_path, ["app", "api"], adapter,
+               expected_heads={"app": READ_SHA, "api": READ_SHA})
+
+    assert adapter.merged == [], "no member may merge after the pin read failed"
+    assert raised.value.completed == []
+    assert "502" in str(raised.value)
+    assert len(records) == 1, records
+    assert records[0]["repo"] == "app"
+    assert records[0]["reason"] == "HTTP 502: bad gateway"
+    assert records[0]["completed"] == []
+    assert records[0]["operation_acknowledged"] is False
+
+
+def test_a_non_platform_error_on_the_pin_read_is_not_swallowed(tmp_path: Path) -> None:
+    """The control: the catch is no wider than AdapterError."""
+    adapter = _StatusRaises(KeyError("head_oid"))
+
+    with pytest.raises(KeyError, match="head_oid"):
+        _merge(tmp_path, ["app", "api"], adapter,
+               expected_heads={"app": READ_SHA, "api": READ_SHA})
+
+    assert adapter.merged == []

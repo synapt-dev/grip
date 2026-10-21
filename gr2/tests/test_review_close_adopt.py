@@ -296,3 +296,18 @@ def test_adopt_is_refused_for_a_reconstruction_close(world):
     assert result.exit_code == 2, result.output
     assert "not a reconstruction lane" in result.output
     assert lane.is_dir() and world["ws"].is_dir()
+
+
+def test_adopt_reads_the_merge_base_in_the_real_history_through_a_replaced_checkout(world):
+    # refs/replace/<main> -> a parentless commit with main's tree: a plain merge-base of the PR head and HEAD finds
+    # none, though the real history holds the head (the merge is real), so the adopt must not refuse.
+    source = world["source"]
+    main = _git(source, "rev-parse", "HEAD")
+    fake = _git(source, "commit-tree", _git(source, "rev-parse", "HEAD^{tree}"), "-m", "fake")
+    _git(source, "replace", main, fake)
+    assert subprocess.run(["git", "merge-base", world["head"], "HEAD"], cwd=source).returncode == 1
+    lane = _clone_lane(world, world["head"])
+    result = _close(world, "--adopt")
+    assert "no merge-base" not in result.output, result.output
+    assert result.exit_code == 0, result.output
+    assert not lane.exists()

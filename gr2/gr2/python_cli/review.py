@@ -665,7 +665,7 @@ def adopt_review_lane(
             "or move it out, then adopt again (nothing was recorded):\n  " + "\n  ".join(work)
         )
     # The base an older build never recorded: where the review head meets the member's checkout.
-    base = gitops.git(source, "merge-base", head, "HEAD")
+    base = gitops.real_history_run(source, "merge-base", head, "HEAD", via_cwd=True)
     if base.returncode != 0 or not _SHA40.match(base.stdout.strip()):
         raise ReviewError(f"no merge-base between {head} and {source} HEAD; refusing to adopt {lane}.")
     # Close deletes the lane, so adopt only a review the member's checkout already holds. Any answer but

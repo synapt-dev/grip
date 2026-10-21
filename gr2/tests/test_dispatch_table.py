@@ -6,6 +6,7 @@ Each row runs the console entry (dispatch.main, as the installed gr2 script call
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 
@@ -71,6 +72,8 @@ def test_help_and_unknown_verbs_are_the_full_cli(tmp_path, argv):
 
 def test_top_help_still_lists_every_verb(tmp_path):
     _, out, _ = _run(TABLE_CMD, ["--help"], cwd=tmp_path)
+    # CI forces color, so rich wraps each verb in ANSI codes; compare the plain text.
+    out = re.sub(r"\x1b\[[0-9;]*m", "", out)
     for verb in ("lane", "review", "check", "pr", "sync", "store"):
         assert f" {verb} " in out, out
 

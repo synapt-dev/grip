@@ -70,6 +70,7 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Fixed
 
+- **`gr2` test suite: a passed test leaves no temp dirs behind.** The isolation fixture's three dirs now live under the test's own `tmp_path`, and `tmp_path_retention_policy = "failed"` removes a passed test's `tmp_path` at its teardown, so a run no longer holds one dir tree per test until the session ends.
 - **gr2: `review open-project` on an unpublished head prints its refusal.** Run before the lane head was pushed, it
   exited 1 with nothing printed; it now refuses with exit 2 and `open_refused: review mirror ... does not carry head
   ...: publish the pinned head to the remote, or pass a local source that holds it` on stderr.

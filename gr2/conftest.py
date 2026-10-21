@@ -187,7 +187,7 @@ def _no_seat_actor(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _isolated_git_config(tmp_path_factory, monkeypatch):
+def _isolated_git_config(tmp_path, monkeypatch):
     """Every gr2 test runs against an isolated Git identity and no host options.
 
     `git review run`'s cleanup lost two review cycles to the same class of defect:
@@ -251,17 +251,20 @@ def _isolated_git_config(tmp_path_factory, monkeypatch):
     fixture already closes covers it. Revisit if a supported git version is
     ever measured to behave otherwise.
     """
-    blank_global = tmp_path_factory.mktemp("isolated-git-global") / "gitconfig"
+    # Under the test's own tmp_path, so the retention policy in pyproject removes them with it.
+    for name in (".isolated-git-global", ".isolated-git-xdg", ".isolated-review-cache"):
+        (tmp_path / name).mkdir()
+    blank_global = tmp_path / ".isolated-git-global" / "gitconfig"
     # Bind records the binder's configured identity. Keep that representative
     # while excluding all ambient options and ignore rules, as before.
     blank_global.write_text("[user]\n\tname = Fixture\n\temail = fixture@example.invalid\n")
-    blank_xdg = tmp_path_factory.mktemp("isolated-git-xdg")
+    blank_xdg = tmp_path / ".isolated-git-xdg"
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(blank_global))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(blank_xdg))
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     # `review open` reads its lane from the host's review mirror cache, so every test gets its
     # own cache root: no test ever writes the host's ~/.synapt-review-cache, and no test reads
     # a mirror another left behind. A test that sets its own root still overrides this one.
-    monkeypatch.setenv("SYNAPT_REVIEW_CACHE_ROOT", str(tmp_path_factory.mktemp("isolated-review-cache")))
+    monkeypatch.setenv("SYNAPT_REVIEW_CACHE_ROOT", str(tmp_path / ".isolated-review-cache"))
     monkeypatch.delenv("GIT_CONFIG_COUNT", raising=False)
     monkeypatch.delenv("GIT_CONFIG_PARAMETERS", raising=False)

@@ -758,3 +758,22 @@ def test_a_moved_head_prints_the_table_without_json(
     lines = [line.strip() for line in payload["raw"].splitlines()]
     moved = [line for line in lines if line.startswith("api#2 ")]
     assert len(moved) == 1 and moved[0].endswith("MOVED"), payload["raw"]
+
+
+def test_b1_a_text_refusal_with_no_pins_prints_a_dash_not_none(tmp_path, capsys, monkeypatch):
+    code, payload, *_ = _cli_refusal(tmp_path, capsys, monkeypatch,
+                                     {"app": READ_SHA, "api": READ_SHA}, pins=[], as_json=False)
+    assert code == 4
+    assert "pin -" in payload["raw"]
+    assert "pin None" not in payload["raw"]
+
+
+def test_b2_a_repo_listed_twice_is_named_once_in_the_unpinned_refusal(tmp_path: Path) -> None:
+    from gr2.python_cli.pr import PRUnpinnedError
+
+    adapter = _Pinned({"app": READ_SHA, "api": READ_SHA})
+    with pytest.raises(PRUnpinnedError) as raised:
+        _merge(tmp_path, ["app", "app", "api"], adapter, expected_heads={})
+    assert "no reviewed head bound for app, api" in raised.value.reason
+    assert [r["repo"] for r in raised.value.members].count("app") == 1
+    assert adapter.merged == []

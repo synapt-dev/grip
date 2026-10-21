@@ -760,7 +760,11 @@ def merge_pr_group(
     # EVERY member is pinned, or nothing merges. Refused after the missing-target
     # check (the more basic error) and before any host read, so a library caller
     # cannot merge unpinned either.
-    unpinned = [(repo, number) for repo, number in members if repo not in pins]
+    # A repo the group lists twice is named once, with its first number.
+    first_number: dict[str, int] = {}
+    for repo, number in members:
+        first_number.setdefault(repo, number)
+    unpinned = [(repo, number) for repo, number in first_number.items() if repo not in pins]
     if unpinned:
         raise PRUnpinnedError(unpinned[0][0], unpinned[0][1], unpinned=unpinned)
 

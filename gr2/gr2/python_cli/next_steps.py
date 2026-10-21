@@ -177,7 +177,7 @@ def remote_branch_diverged() -> str:
 
 
 def merge_row(refused: str, *, workspace: str, review: str, remote: str, path: str, head: str,
-              checks: tuple[str, ...], siblings: dict | None = None) -> str | None:
+              checks: tuple[str, ...], siblings: dict | None = None, into: str | None = None) -> str | None:
     """The next command for one member's merge refusal, or None when no single command answers it. ``siblings`` maps
     a declared-set member's name to what the gate found for it: the newest review of it at its pin in this workspace
     (or None), its remote, its clone and its target's live head."""
@@ -259,7 +259,7 @@ def merge_row(refused: str, *, workspace: str, review: str, remote: str, path: s
     if refused.startswith("base_moved"):
         # Name the target the merge measured, so update merges THAT branch and not the remote's default.
         moved = re.match(r"base_moved: remote (\S+) is ", refused)
-        into = moved.group(1).removeprefix("refs/heads/") if moved else "<branch>"
+        into = moved.group(1).removeprefix("refs/heads/") if moved else into or "<branch>"
         return (f"next: the target moved after the pin; bring every member up to it and pin again: "
                 f"gr2 review update {_shown(workspace)} {_shown(review)} --into {_shown(into)}")
     if refused.startswith("head_already_on_target"):

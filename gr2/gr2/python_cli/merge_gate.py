@@ -697,7 +697,7 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
                 step = next_steps.merge_row(r["refused"], workspace=str(root), review="gr:" + view["id"].removeprefix("gr:"),
                                             remote=m["remote"], path=str((workspace / m["path"]).resolve()),
                                             head=m["head"], checks=tuple(required_checks),
-                                            siblings=siblings.get(m["key"], {}))
+                                            siblings=siblings.get(m["key"], {}), into=into)
                 if step:
                     r["next"] = step
             expected, observed = r.pop("_heads", (None, None))
@@ -855,7 +855,7 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
             step = next_steps.merge_row(r["refused"], workspace=str(root), review="gr:" + view["id"].removeprefix("gr:"),
                                         remote=m["remote"], path=str((workspace / m["path"]).resolve()),
                                         head=m["head"], checks=tuple(required_checks),
-                                        siblings=siblings.get(m["key"], {}))
+                                        siblings=siblings.get(m["key"], {}), into=into)
             if step:
                 r["next"] = step
 

@@ -17,6 +17,16 @@ def test_feature_moved_next_names_the_branch(refused):
     assert "--at-remote-heads feat --" in line and "<branch>" not in line, line
 
 
+@pytest.mark.parametrize("refused", ["feature_moved_later: remote refs/heads/feat is " + "b" * 40,
+                                     "feature_movedx: remote feat is " + "b" * 40])
+def test_unknown_feature_moved_code_does_not_name_a_branch(refused):
+    # Only the two known codes carry a branch the gate measured; a code that merely starts like them must not
+    # have one read out of it.
+    line = next_steps.merge_row(refused, workspace="/ws", review="gr:abc", remote="/r.git", path="/ws/m",
+                                head="a" * 40, checks=("test",))
+    assert "--at-remote-heads feat " not in line and "<branch>" in line, line
+
+
 def _move_on_commit_tree(monkeypatch, repo, remote):
     real_run = subprocess.run
     fired = {"n": 0}

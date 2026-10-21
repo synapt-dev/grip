@@ -202,3 +202,12 @@ def test_out_of_set_hint_reads_the_removed_names_from_the_real_base_through_a_re
     head = _commit(work, "gone_name", remove=True)
     _git(work, "replace", base, _fake(work, a, a))
     assert set_hints._removed_names(work, base, head) == {"gone_name"}
+
+
+def test_out_of_set_hint_reads_the_paths_at_the_real_head_through_a_replaced_head(tmp_path):
+    # The head commit is replaced by one holding an older tree, so a plain grep at the head reads the replacement's
+    # tree: the path that still names the removed name is never found and the hint never names it.
+    work, a = _init(tmp_path)
+    head = _commit(work, "kept_name")
+    _git(work, "replace", head, _fake(work, a, a))
+    assert set_hints._paths_by_name(work, ["kept_name"], head) == {"kept_name": ["kept_name"]}

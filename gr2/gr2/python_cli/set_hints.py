@@ -43,10 +43,12 @@ def _removed_names(repo: Path, base: str, head: str) -> set[str]:
 
 def _paths_by_name(repo: Path, names: list[str], head: str) -> dict[str, list[str]]:
     """Every path at `head` naming each of `names` as a whole word, in ONE git grep, not one per name. The names go
-    in on stdin (`-f -`), so a large removal never meets the argument-length limit."""
+    in on stdin (`-f -`), so a large removal never meets the argument-length limit. Read with replace refs off
+    (real_history_run), so a replaced `head` is grepped through its own tree, not the replacement's."""
     if not names:
         return {}
-    found = gitops.run(repo, "grep", "-w", "-F", "-o", "-f", "-", head, input="".join(f"{n}\n" for n in names))
+    found = gitops.real_history_run(repo, "grep", "-w", "-F", "-o", "-f", "-", head,
+                                    input="".join(f"{n}\n" for n in names))
     if found.returncode:
         return {}
     by_name: dict[str, set[str]] = {}

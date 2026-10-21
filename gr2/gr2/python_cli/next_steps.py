@@ -244,7 +244,10 @@ def merge_row(refused: str, *, workspace: str, review: str, remote: str, path: s
                         f"with --check set; if the member itself is broken")
         return (f"next: the check failed at this head{together or ';'} "
                 "fix it, commit a new head, then pin, stamp, check and publish that head")
-    if refused.startswith("feature_moved"):
+    if (refused.startswith("feature_moved")
+            and refused.split(":", 1)[0] in ("feature_moved", "feature_moved_before_push")):
+        # Only the two codes the gate writes: a code that merely starts like them falls through to no line. The
+        # startswith stays for scripts/dump_skill.py, which reads a dispatcher's codes from its startswith calls.
         # Name the check over the moved set, then the two real ways to merge it. "Pin the new head" alone pointed
         # at head_already_on_remote, which refuses a head already pushed, so the two refusals pointed at each other.
         moved = re.match(r"feature_moved(?:_before_push)?: remote (\S+) is ", refused)

@@ -20,11 +20,20 @@ def test_feature_moved_next_names_the_branch(refused):
 @pytest.mark.parametrize("refused", ["feature_moved_later: remote refs/heads/feat is " + "b" * 40,
                                      "feature_movedx: remote feat is " + "b" * 40])
 def test_unknown_feature_moved_code_does_not_name_a_branch(refused):
-    # Only the two known codes carry a branch the gate measured; a code that merely starts like them must not
-    # have one read out of it.
+    # Only the two known codes carry a branch the gate measured; a code that merely starts like them gets no
+    # feature_moved line at all, so no branch is read out of it and no <branch> placeholder is printed either.
     line = next_steps.merge_row(refused, workspace="/ws", review="gr:abc", remote="/r.git", path="/ws/m",
                                 head="a" * 40, checks=("test",))
-    assert "--at-remote-heads feat " not in line and "<branch>" in line, line
+    assert line is None or ("--at-remote-heads" not in line and "<branch>" not in line), line
+
+
+@pytest.mark.parametrize("refused", ["feature_moved_later: remote refs/heads/feat is " + "b" * 40,
+                                     "feature_movedx: remote feat is " + "b" * 40])
+def test_unknown_feature_moved_code_gets_the_generic_line(refused):
+    # The same answer as a code that starts like nothing merge_row knows.
+    kw = dict(workspace="/ws", review="gr:abc", remote="/r.git", path="/ws/m", head="a" * 40, checks=("test",))
+    generic = next_steps.merge_row("zz_unknown_code: remote refs/heads/feat is " + "b" * 40, **kw)
+    assert next_steps.merge_row(refused, **kw) == generic
 
 
 def _move_on_commit_tree(monkeypatch, repo, remote):

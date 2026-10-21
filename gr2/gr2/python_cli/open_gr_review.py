@@ -153,7 +153,6 @@ def _refuse_local_work(target: Path, allocation: dict) -> None:
     found: list[str] = []
     members = [target / item["path"] for item in allocation["members"]]
     if not (target / ".git").exists():
-        from .review_run import _LEGACY_MARKERS
         member_names = {m.relative_to(target).parts[0] for m in members if m != target}
         # The upstream and downstream members `review run` cloned into the lane root are the review's
         # too, and are examined below exactly like a member, so work inside one still refuses.
@@ -163,9 +162,7 @@ def _refuse_local_work(target: Path, allocation: dict) -> None:
         # The exact names the review writes at the root, as regular files: its marker, receipt and
         # run logs (one per member, in either spelling). The shared environment is the `.venv`
         # directory, checked separately. Nothing else is the review's.
-        own = {_MARKER_NAME, *_LEGACY_MARKERS, _RUN_RECEIPT_NAME, _RUN_LOG_NAME,
-               *(f"{key}{_RUN_LOG_NAME}" for key in member_names),
-               *(f"{_RUN_LOG_NAME}.{key}" for key in member_names)}
+        own = _lane_own_names(member_names)
         for entry in sorted(target.iterdir()):
             name = entry.name
             if name in member_names or (name == ".venv" and entry.is_dir()) \
@@ -205,6 +202,14 @@ def _lane_relative(target: Path, repo: Path, rel: str) -> str:
     return rel if prefix == "." else f"{prefix}/{rel}"
 
 
+def _lane_own_names(keys) -> set[str]:
+    """The names the review writes at a lane root as regular files: its marker (and the legacy one), its
+    receipt, its run log, and each key's run log in either spelling, derived from the keys themselves."""
+    from .review_run import _LEGACY_MARKERS
+    return {_MARKER_NAME, *_LEGACY_MARKERS, _RUN_RECEIPT_NAME, _RUN_LOG_NAME,
+            *(f"{key}{_RUN_LOG_NAME}" for key in keys), *(f"{_RUN_LOG_NAME}.{key}" for key in keys)}
+
+
 def _run_placed_members(target: Path, receipt: dict, member_names: set[str]) -> list[str]:
     """The upstream and downstream members `review run` cloned into the lane root, as its receipt records
     them: a key named in the run's selection, whose directory at the lane root is a real git clone (not a
@@ -220,6 +225,8 @@ def _run_placed_members(target: Path, receipt: dict, member_names: set[str]) -> 
     keys = [k for k in dict.fromkeys(keys) if isinstance(k, str)]
     folded = [grip.member_key_fold(k) for k in keys]
     taken = {grip.member_key_fold(name) for name in member_names}
+    # Nor a key a case-insensitive filesystem reads as a file the review writes at the root (_lane_own_names).
+    taken |= {grip.member_key_fold(name) for name in _lane_own_names([*member_names, *keys])}
     placed = []
     for key in keys:
         if not grip.plain_member_key(key) or grip.member_key_fold(key) in taken \

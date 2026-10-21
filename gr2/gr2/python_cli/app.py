@@ -5035,7 +5035,7 @@ _ROW_REQUIRED = ("key", "remote", "base", "head")
 _ROW_STRING_FIELDS = ("key", "remote", "base", "head", "path", "ref", "title", "body", "source", "range", "visibility")
 
 
-def _normalize_review_row(raw: object) -> dict:
+def _normalize_review_row(raw: object, index: int) -> dict:
     """Fill a rows-json entry to the shape create_review_bind_commit expects:
     key/remote/base/head required; path defaults to key, ref to refs/heads/dev,
     title/body to empty, source resolved to an absolute path when present."""
@@ -5051,7 +5051,10 @@ def _normalize_review_row(raw: object) -> dict:
             )
     missing = [f for f in _ROW_REQUIRED if not raw.get(f)]
     if missing:
-        raise typer.BadParameter(f"rows-json entry {raw.get('key', '?')!r} is missing {', '.join(missing)}")
+        # An entry with no key is named by its 1-based place in the file.
+        label = repr(raw["key"]) if raw.get("key") else f"#{index}"
+        hint = '; the member is named by "key", not "repo"' if "key" in missing and "repo" in raw else ""
+        raise typer.BadParameter(f"rows-json entry {label} is missing {', '.join(missing)}{hint}")
     row = {
         "key": raw["key"], "remote": raw["remote"], "base": raw["base"], "head": raw["head"],
         "path": raw.get("path") or raw["key"], "ref": raw.get("ref", "refs/heads/dev"),
@@ -5230,7 +5233,7 @@ def review_bind(
             raise typer.BadParameter(f"--rows-json {rows_json}: invalid JSON ({exc})")
         if not isinstance(raw, list) or not raw:
             raise typer.BadParameter("--rows-json must be a non-empty JSON list of row objects")
-        rows = [_normalize_review_row(r) for r in raw]
+        rows = [_normalize_review_row(r, i) for i, r in enumerate(raw, 1)]
     else:
         missing = [f"--{n}" for n, v in (("repo", key), ("remote", remote), ("base", base), ("head", head)) if not v]
         if missing:

@@ -6,6 +6,7 @@ remote, so no row waits for real.
 from __future__ import annotations
 
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -82,6 +83,58 @@ def test_an_unmoved_tip_times_out_with_a_nonzero_code(world):
     with pytest.raises(RemoteWaitError) as exc:
         _wait(work, remote, timeout=3)
     assert exc.value.code == CODE_TIMEOUT and "still at" in str(exc.value)
+
+
+def _stub_ls_remote(monkeypatch, answer):
+    """Replace gitops.run for ls-remote only; ``answer(timeout)`` gives its stdout or raises. Returns the timeouts."""
+    real, seen = remote_wait.gitops.run, []
+
+    def run(cwd, *args, **kw):
+        if args[0] != "ls-remote":
+            return real(cwd, *args, **kw)
+        seen.append(kw.get("timeout"))
+        return subprocess.CompletedProcess(args, 0, stdout=answer(kw.get("timeout")), stderr="")
+
+    monkeypatch.setattr(remote_wait.gitops, "run", run)
+    return seen
+
+
+def test_each_ls_remote_is_bounded_by_the_time_the_wait_has_left(world, monkeypatch):
+    work, remote = world
+    seen = _stub_ls_remote(monkeypatch, lambda _t: f"{'a' * 40}\trefs/heads/main\n")
+    clock = Clock()
+    clock.actions = [lambda: setattr(clock, "now", clock.now + 6)]  # 1 s slept plus 6: 7 s gone before read two
+    with pytest.raises(RemoteWaitError) as exc:
+        _wait(work, remote, clock=clock, timeout=10)
+    assert exc.value.code == CODE_TIMEOUT
+    assert seen[0] == 10 and seen[1] == pytest.approx(3)
+    assert all(t is not None and t <= 10 for t in seen)
+
+
+def test_an_ls_remote_timeout_inside_the_wait_is_the_waits_timeout(world, monkeypatch):
+    work, remote = world
+
+    def hang(timeout):
+        raise subprocess.TimeoutExpired(["git", "ls-remote"], timeout)
+
+    _stub_ls_remote(monkeypatch, hang)
+    with pytest.raises(RemoteWaitError) as exc:
+        _wait(work, remote)
+    assert exc.value.code == CODE_TIMEOUT
+    assert "the time the wait had left" in str(exc.value)
+
+
+def test_a_remote_that_never_answers_ends_the_wait_near_its_timeout(world):
+    # The upload-pack sleeps 8 s; the 2 s wait must end near 2 s, not after the 8 s answer. Each read gets the time
+    # left with a 1 s floor, so a read that starts with under 1 s left can still run up to 1 s past the deadline.
+    work, remote = world
+    _git(work, "remote", "add", "slow", str(remote))
+    _git(work, "config", "remote.slow.uploadpack", "sleep 8; git-upload-pack")
+    began = time.monotonic()
+    with pytest.raises(RemoteWaitError) as exc:
+        wait_for_tip(work, "slow", "main", interval=1, timeout=2)
+    assert exc.value.code == CODE_TIMEOUT
+    assert time.monotonic() - began < 4
 
 
 def test_a_remote_starting_with_dash_is_refused_before_git_runs_it(world, tmp_path):

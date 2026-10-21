@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 import re
+import subprocess
 import time
 from pathlib import Path
 from typing import Callable
@@ -44,9 +45,16 @@ def _bound(value: float, kind: str) -> float:
     return seconds
 
 
-def _ls_remote(repo: Path, remote: str, ref: str) -> str:
-    """The raw ls-remote answer for ``ref``. git matches the pattern by tail, so the caller keeps only the exact row."""
-    proc = gitops.run(repo, "ls-remote", "--", remote, ref)
+def _ls_remote(repo: Path, remote: str, ref: str, timeout: float) -> str:
+    """The raw ls-remote answer for ``ref``. git matches the pattern by tail, so the caller keeps only the exact row.
+    The call is bounded by ``timeout``, the time the wait has left, so a remote that does not answer within it ends
+    the wait with CODE_TIMEOUT: the only deadline in play is the wait's own."""
+    try:
+        proc = gitops.run(repo, "ls-remote", "--", remote, ref, timeout=timeout, raise_timeout=True)
+    except subprocess.TimeoutExpired:
+        raise RemoteWaitError(
+            f"{gitops._shown_arg(remote)} {ref}: no answer within {timeout:g}s, the time the wait had left", CODE_TIMEOUT
+        ) from None
     if proc.returncode != 0:
         args = ("ls-remote", "--", remote, ref)
         raise RemoteWaitError(
@@ -56,9 +64,9 @@ def _ls_remote(repo: Path, remote: str, ref: str) -> str:
     return proc.stdout
 
 
-def _tip(repo: Path, remote: str, ref: str) -> str | None:
+def _tip(repo: Path, remote: str, ref: str, timeout: float) -> str | None:
     """The oid the exact ``ref`` row names, or None when no row names it exactly."""
-    listing = _ls_remote(repo, remote, ref)
+    listing = _ls_remote(repo, remote, ref, timeout)
     try:
         return gitops.ls_remote_oid(listing, ref)
     except ValueError as exc:  # LsRemoteMalformed, or the ref advertised twice
@@ -83,7 +91,7 @@ def wait_for_tip(
         raise RemoteWaitError(f"from must be a full 40-hex sha, not {from_sha!r}", CODE_REFUSED)
     shown = gitops._shown_arg(remote)
     deadline = clock() + timeout
-    start = _tip(repo, remote, ref)
+    start = _tip(repo, remote, ref, max(1.0, deadline - clock()))
     if start is None:
         raise RemoteWaitError(f"{shown} has no {ref}", CODE_REMOTE)
     old = from_sha.lower() if from_sha is not None else start
@@ -94,7 +102,7 @@ def wait_for_tip(
         if left <= 0:
             raise RemoteWaitError(f"{shown} {ref} still at {old} after {timeout:g}s", CODE_TIMEOUT)
         sleep(min(interval, left))
-        new = _tip(repo, remote, ref)
+        new = _tip(repo, remote, ref, max(1.0, deadline - clock()))
         if new is None:
             raise RemoteWaitError(f"{shown} {ref} was deleted while waiting (it was {old})", CODE_REMOTE)
         if new != old:

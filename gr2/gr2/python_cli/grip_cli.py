@@ -519,7 +519,31 @@ def _native_members(root: Path, revision: str | None = None) -> list[dict[str, s
             if entry is None or entry != item["pin"]:
                 raise NativeStoreRefusal(f"{item['name']} selected document pin disagrees with its gitlink", 4)
         result.append(item)
+    if revision is None and not full:
+        # Compat: the staged gitlink is the pin; the line is a derived copy. A member with no gitlink yet (store add,
+        # before its first commit) keeps the line as its pending pin.
+        for item in result:
+            item["line"] = item.get("pin")  # the derived copy, for the verbs that report its disagreement
+            item["pin"] = _member_pin(root, None, item) or item.get("pin")
     return result
+
+
+def _member_pin(root: Path, revision: str | None, member: dict) -> str | None:
+    """THE compat pin reader: the gitlink at the member's path in ``revision``, or in the index when ``revision`` is
+    None; None when there is no gitlink there. Compat only: a full-mode gitlink is a field-commit before the sidecar."""
+    path = keys.member_path_key(member["path"])
+    if revision is None:
+        # A literal pathspec, or a directory path would match the gitlinks beneath it and a glob path its matches.
+        out = _store_git(root, "ls-files", "-s", "-z", "--", f":(literal){path}", check=False).stdout
+    else:
+        out = _store_git(root, "ls-tree", "-z", revision, "--", path, check=False).stdout
+    for record in out.split("\0"):
+        meta, tab, name = record.partition("\t")
+        if tab and name == path:  # only the entry AT the member's path is its pin
+            fields = meta.split()
+            mode, sha = (fields[0], fields[1] if revision is None else fields[2]) if len(fields) >= 3 else ("", "")
+            return sha if mode == "160000" and _FULL_SHA.match(sha) else None
+    return None
 
 
 #: A file the engine writes from `grip.toml` and always accepts, whatever the owner's `.gitinclude` lists: a
@@ -2149,7 +2173,10 @@ def _committed_pin(root: Path, member: dict) -> str | None:
     """The member's pin as the root commit records it (HEAD:grip.toml). grip.toml in the work tree is editable, so a pin
     line set back to an older sha is not the record; the working pin is used only when HEAD records none (a first
     commit, or the empty root commit of a full-mode workspace). The record is found by the member's PATH, not its name:
-    a name is a label the working file can change, while the path is where the member's commits live."""
+    a name is a label the working file can change, while the path is where the member's commits live. Compat: HEAD's
+    gitlink at the path is the record, and the line is not read."""
+    if _workspace_mode(_head_grip_toml(root)) != "full":
+        return _member_pin(root, "HEAD", member) or member.get("pin")
     return _head_member_pin(root, str(member["path"])) or member.get("pin")
 
 
@@ -2582,8 +2609,8 @@ def _native_store_check(root: Path, coverage: bool = True) -> list[dict[str, str
         # the row that exists to pin "every verb that reads the pin exits 4 and names BOTH
         # values" goes red -- measured 2026-09-28 when this helper was introduced.
         gitlink = _recorded_pin(root, member, full) or ""
-        if gitlink != member["pin"]:
-            raise NativeStoreRefusal(_gitlink_disagreement(root, member, gitlink or None, full), 4)
+        if gitlink != member.get("line", member["pin"]):  # check reports the line against the gitlink
+            raise NativeStoreRefusal(_gitlink_disagreement(root, {**member, "pin": member.get("line", member["pin"])}, gitlink or None, full), 4)
         # §5a's input is the RECORDED PIN, not the member's current HEAD: this verb asks
         # whether the pin the root publishes is still covered, and a member whose HEAD has
         # moved is `unpinned` (a status observation) whose recorded pin may be fine.
@@ -2980,7 +3007,8 @@ def _native_store_push(root: Path, to: str | None = None, atomic: bool = False, 
         # THE FENCE first, so a hand-edited pin gets its own name and not a later reader's: a hand commit whose
         # recorded pins equal the shadow's pushes, and the shadow advances to it in the same atomic push (the implicit
         # --snapshot); one that edits a pin is refused before anything moves.
-        pins = _native_members_at(root, "HEAD")
+        # The fence checks the derived copy (HEAD's lines) against the gitlinks, so it reads the lines themselves.
+        pins = _recorded_pins(_recorded_text_at(root, "HEAD"), root)
         mode = _workspace_mode(tomllib.loads(_store_git(root, "show", "HEAD:grip.toml").stdout))
         _refuse_unrecorded_pins(root, pins, shadow, mode, _gitlinks_at(root, "HEAD", pins))
     recursed: list[dict[str, str]] = []
@@ -3047,11 +3075,22 @@ def _native_store_push(root: Path, to: str | None = None, atomic: bool = False, 
 
 
 def _native_members_at(root: Path, revision: str) -> dict[str, str]:
+    """{name: pin} that ``revision`` records, for log, diff and the rewind lease. Compat: the gitlink at each member's
+    path (the line is a derived copy and is not read); a member with no gitlink there keeps its line. Full: the line."""
+    text = _recorded_text_at(root, revision)
+    if _workspace_mode(tomllib.loads(text)) == "full":
+        return _recorded_pins(text, root)
+    members = [m for m in tomllib.loads(text).get("members", []) if isinstance(m, dict)]
+    return {str(m["name"]): _member_pin(root, revision, m) or str(m.get("pin", "")) for m in members}
+
+
+def _recorded_text_at(root: Path, revision: str) -> str:
+    """``revision``'s grip.toml text, refusing the empty root commit by name."""
     if _store_git(root, "rev-parse", f"{revision}^{{tree}}").stdout.strip() == _EMPTY_TREE:
         raise NativeStoreRefusal(
             f"{revision} is the empty root commit that holds the first-parent place in a full-mode workspace; "
             f"it records no members, so name a commit that carries grip.toml", 5)
-    return _recorded_pins(_store_git(root, "show", f"{revision}:grip.toml").stdout, root)
+    return _store_git(root, "show", f"{revision}:grip.toml").stdout
 
 
 @_refuses_moved_workspace
@@ -3338,7 +3377,7 @@ def _native_store_status(root: Path) -> tuple[list[dict[str, str | None]], dict[
         # copy happens to be.
         path = _native_member_working_root(root, member, claimed)
         gitlink = _recorded_pin(root, member, full)
-        pin = member.get("pin") or None
+        pin = member.get("line", member.get("pin")) or None  # status reports the line against the gitlink
         top = _store_git(path, "rev-parse", "--show-toplevel", check=False)
         is_checkout = top.returncode == 0 and Path(top.stdout.strip()).resolve() == path.resolve()
         if not is_checkout:
@@ -3374,7 +3413,7 @@ def _native_store_status(root: Path) -> tuple[list[dict[str, str | None]], dict[
             state = "stale"
         else:
             state = "upstream"
-        rows.append({"name": member["name"], "pin": member["pin"], "gitlink": gitlink, "head": head_sha, "state": state,
+        rows.append({"name": member["name"], "pin": pin, "gitlink": gitlink, "head": head_sha, "state": state,
                      **_member_inspection(path, member["upstream"] if measured else None)})
     # The root's status recurses into every member gitlink and the child status would refresh that member's index,
     # so the root read carries GIT_OPTIONAL_LOCKS=0 too (git passes it to the child).

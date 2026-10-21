@@ -73,14 +73,28 @@ def member(lane: Path, key: str, mod: str, needs: str) -> None:
     )
 
 
-@pytest.fixture
-def scratch_venv(tmp_path: Path) -> Path:
+def _make_scratch_venv(tmp_path: Path) -> Path:
     env = tmp_path / "venv"
     try:
         venv.EnvBuilder(with_pip=True, clear=True).create(env)
-    except Exception as exc:  # pragma: no cover
+    except (Exception, SystemExit) as exc:
         pytest.skip(f"a scratch venv could not be created here ({exc})")
     return env / "bin" / "python"
+
+
+@pytest.fixture
+def scratch_venv(tmp_path: Path) -> Path:
+    return _make_scratch_venv(tmp_path)
+
+
+def test_scratch_venv_skips_when_create_exits(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def exits(self, env_dir):
+        raise SystemExit(1)
+
+    monkeypatch.setattr(venv.EnvBuilder, "create", exits)
+    with pytest.raises(pytest.skip.Exception) as info:
+        _make_scratch_venv(tmp_path)
+    assert "a scratch venv could not be created here" in str(info.value)
 
 
 def pip_install(py: Path, dirs: list[str]) -> subprocess.CompletedProcess:

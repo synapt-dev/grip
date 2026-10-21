@@ -181,7 +181,7 @@ class TestEnsureRepoCacheRefreshRepointsSshOrigin:
     def test_refresh_repoints_ssh_origin_before_updating(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         """An EXISTING cache whose origin is still `git@github.com:...` (pre-fix
         state, or a human's working SSH) must have its origin repointed to the
-        rewritten https url before `remote update --prune` runs -- otherwise
+        rewritten https url before `fetch --prune -- origin` runs -- otherwise
         every refresh after the very first seed keeps failing the same way."""
         from gr2.python_cli import gitops as gitops_mod
 
@@ -202,7 +202,7 @@ class TestEnsureRepoCacheRefreshRepointsSshOrigin:
         def fake_run(cmd, *args, **kwargs):
             cmd = gitops_mod.logical_argv(cmd)  # the command as written, without the shared flags
             recorded.append(list(cmd))
-            if cmd[:2] == ["git", "--git-dir"] and "update" in cmd:
+            if cmd[:2] == ["git", "--git-dir"] and "fetch" in cmd:
                 return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
             return real_run(cmd, *args, **kwargs)
 
@@ -215,9 +215,9 @@ class TestEnsureRepoCacheRefreshRepointsSshOrigin:
         assert len(set_url_cmds) == 1
         assert set_url_cmds[0][-1] == "https://github.com/synapt-dev/app.git"
 
-        update_idx = next(i for i, c in enumerate(recorded) if "update" in c)
+        update_idx = next(i for i, c in enumerate(recorded) if "fetch" in c)
         set_url_idx = next(i for i, c in enumerate(recorded) if "set-url" in c)
-        assert set_url_idx < update_idx, "origin must be repointed BEFORE remote update runs"
+        assert set_url_idx < update_idx, "origin must be repointed BEFORE the refresh fetch runs"
 
     def test_refresh_does_not_touch_an_already_https_origin(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         from gr2.python_cli import gitops as gitops_mod
@@ -239,7 +239,7 @@ class TestEnsureRepoCacheRefreshRepointsSshOrigin:
         def fake_run(cmd, *args, **kwargs):
             cmd = gitops_mod.logical_argv(cmd)  # the command as written, without the shared flags
             recorded.append(list(cmd))
-            if cmd[:2] == ["git", "--git-dir"] and "update" in cmd:
+            if cmd[:2] == ["git", "--git-dir"] and "fetch" in cmd:
                 return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
             return real_run(cmd, *args, **kwargs)
 

@@ -152,7 +152,7 @@ def test_a_ref_gone_mid_poll_is_7_with_its_named_line(world):
 
 def test_a_lookalike_ref_is_not_the_branch(world):
     work, remote = world
-    _git(work, "push", "-q", str(remote), "main:refs/heads/x/main")
+    _git(work, "push", "-q", str(remote), "main:refs/heads/x/refs/heads/main")
     _git(work, "push", "-q", str(remote), ":refs/heads/main")
     with pytest.raises(RemoteWaitError) as exc:
         _wait(work, remote)

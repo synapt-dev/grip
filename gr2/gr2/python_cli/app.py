@@ -1146,6 +1146,57 @@ def _configured_merge_method(workspace_root: Path) -> str | None:
     return value
 
 
+class _UnpinnedPins(ValueError):
+    """A pin set that leaves a member without one usable pin.
+
+    Carries the pins that DID hold, so the merge refuses through the library's
+    unpinned refusal (exit 4), naming every member left unpinned.
+    """
+
+    def __init__(
+        self, pins: dict[str, str], message: str, conflicted: Mapping[str, list[str]] | None = None
+    ) -> None:
+        self.pins = dict(pins)
+        # repo -> every distinct pin it was given, in order, for a repo pinned twice.
+        self.conflicted = {repo: list(shas) for repo, shas in (conflicted or {}).items()}
+        super().__init__(message)
+
+
+def _ambiguous_pin_refusal(
+    group: Mapping[str, object], exc: _UnpinnedPins, targets: Mapping[str, object]
+) -> "pr_ops.PRUnpinnedError | None":
+    """The exit-4 refusal for a pin set that pins some repo twice, or None.
+
+    Every repo given disagreeing pins is AMBIGUOUS and carries each pin; every other
+    member with no pin is UNPINNED. Built here because the library takes one pin per
+    repo, so it never sees the second one.
+
+    The members come from `pr_ops.group_members`, the one place that proves each
+    entry's shape (no bare `int()`, which takes `True` and `7.9` in silence). A group
+    it refuses, or an empty one, gives None: no refusal is built here, and
+    `merge_pr_group` refuses the group itself, as the more basic error. So does a
+    member with no verification target: that check is the library's, and it comes first.
+    """
+    try:
+        members = pr_ops.group_members(group)
+    except pr_ops.PRMergeError:
+        return None
+    if not members or any(repo not in targets for repo, _ in members):
+        return None
+    numbers: dict[str, int] = {}
+    for repo, number in members:
+        numbers.setdefault(repo, number)
+    if any(repo not in numbers for repo in exc.conflicted):
+        return None
+    ambiguous = [(repo, numbers[repo], shas) for repo, shas in exc.conflicted.items()]
+    unpinned = [
+        (repo, number) for repo, number in numbers.items()
+        if repo not in exc.pins and repo not in exc.conflicted
+    ]
+    first_repo, first_number, _ = ambiguous[0]
+    return pr_ops.PRUnpinnedError(first_repo, first_number, unpinned=unpinned, ambiguous=ambiguous)
+
+
 def _parse_head_pins(
     entries: list[str] | None,
     group: Mapping[str, object],
@@ -1171,6 +1222,7 @@ def _parse_head_pins(
         if isinstance(entry, dict) and isinstance(entry.get("repo"), str) and entry["repo"]
     ]
     pins: dict[str, str] = {}
+    conflicted: dict[str, list[str]] = {}
     for entry in entries or []:
         text = entry.strip()
         if not text:
@@ -1199,12 +1251,24 @@ def _parse_head_pins(
                 f"--match-head-commit {entry!r} pins {sha!r}, which is not 40 lowercase "
                 "hex characters; pass the full commit as `git rev-parse` prints it"
             )
+        # Parse every entry before refusing: raising at the first conflict dropped
+        # every pin given after it, so a held pin read as unpinned.
         if repo in pins and pins[repo] != sha:
-            raise ValueError(
-                f"--match-head-commit pins {repo} twice with different commits "
-                f"({pins[repo][:8]} and {sha[:8]})"
-            )
+            shas = conflicted.setdefault(repo, [pins[repo]])
+            if sha not in shas:
+                shas.append(sha)
+            continue
         pins[repo] = sha
+    if conflicted:
+        raise _UnpinnedPins(
+            {name: pin for name, pin in pins.items() if name not in conflicted},
+            "--match-head-commit pins "
+            + "; ".join(
+                f"{repo} with different commits ({', '.join(s[:8] for s in shas)})"
+                for repo, shas in conflicted.items()
+            ),
+            conflicted,
+        )
     # DISTINCT repos, not positions. A group that lists one repo twice otherwise
     # compares 2 pins against 3 positions and refuses a group whose every repo WAS
     # pinned -- and the message it printed named NOBODY, because `unpinned` filtered
@@ -1212,7 +1276,8 @@ def _parse_head_pins(
     distinct_members = list(dict.fromkeys(members))
     if pins and len(pins) != len(distinct_members):
         unpinned = [member for member in distinct_members if member not in pins]
-        raise ValueError(
+        raise _UnpinnedPins(
+            pins,
             f"--match-head-commit pins {len(pins)} of {len(distinct_members)} members; "
             f"{', '.join(unpinned)} would merge unpinned. Pin every member or none: a "
             "partial pin reads as protection for the whole group and is not."
@@ -6715,8 +6780,18 @@ def pr_merge(
         resolved_lane = _resolve_lane_name(workspace_root, owner_unit, lane_name)
         group_path, group = _find_pr_group(workspace_root, owner_unit, resolved_lane)
     adapter = platform_ops.get_platform_adapter(str(group.get("platform", "github")))
+    pending_conflict: _UnpinnedPins | None = None
     try:
         expected_heads = _parse_head_pins(match_head_commit, group)
+    except _UnpinnedPins as exc:
+        # The library refuses what is left unpinned, before any read or write, and its
+        # refusal names every unpinned member; a repo pinned twice is refused below,
+        # AMBIGUOUS with both pins, since the library takes one pin per repo. No stderr
+        # line on either path: the parse's own sentence describes an unpinned mode that
+        # does not exist ("would merge unpinned", "or none").
+        expected_heads = exc.pins
+        if exc.conflicted:
+            pending_conflict = exc
     except ValueError as exc:
         typer.echo(f"gr2: {exc}", err=True)
         raise typer.Exit(code=1) from exc
@@ -6741,6 +6816,15 @@ def pr_merge(
             typer.echo(json.dumps(payload, indent=2))
         raise typer.Exit(code=1)
     try:
+        merge_targets = subject_targets if subject_targets is not None else _merge_verification_targets(
+            workspace_root,
+        )
+        # Built after the targets are known, so the group's own refusals (malformed,
+        # empty, a member with no target) come first, as the more basic errors.
+        if pending_conflict is not None:
+            refusal = _ambiguous_pin_refusal(group, pending_conflict, merge_targets)
+            if refusal is not None:
+                raise refusal
         result = pr_ops.merge_pr_group(
             workspace_root=workspace_root,
             pr_group_id=str(group["pr_group_id"]),
@@ -6753,9 +6837,7 @@ def pr_merge(
                 configured=_configured_merge_method(workspace_root)
                 if subject_targets is None or spec_apply.workspace_spec_path(workspace_root).exists() else None,
             ),
-            verification_targets=subject_targets if subject_targets is not None else _merge_verification_targets(
-                workspace_root,
-            ),
+            verification_targets=merge_targets,
             report=lambda message: typer.echo(message, err=True),
             expected_heads=expected_heads,
         )
@@ -6779,7 +6861,10 @@ def pr_merge(
             "merged": [],
             "refused": [{"repo": exc.repo, "number": exc.pr_number, "reason": exc.reason}],
             "members": [
-                {key: row.get(key) for key in ("repo", "number", "pin", "host_head", "state")}
+                {
+                    **{key: row.get(key) for key in ("repo", "number", "pin", "host_head", "state")},
+                    **({"pins": list(row["pins"])} if "pins" in row else {}),
+                }
                 for row in exc.members
             ],
         }
@@ -6788,8 +6873,10 @@ def pr_merge(
         else:
             typer.echo(f"merge refused for {exc.repo}#{exc.pr_number}: {exc.reason}")
             for row in payload["members"]:
+                pin_text = (", ".join(sha[:12] for sha in row["pins"]) if row.get("pins")
+                            else str(row["pin"])[:12])
                 typer.echo(
-                    f"  {row['repo']}#{row['number']}  pin {str(row['pin'])[:12]}  "
+                    f"  {row['repo']}#{row['number']}  pin {pin_text}  "
                     f"host {str(row['host_head'] or '-')[:12]}  {row['state']}"
                 )
         raise typer.Exit(code=exc.exit_code)

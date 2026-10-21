@@ -120,7 +120,18 @@ def _merge_contract(workspace: Path, group: dict) -> dict[str, object]:
             for item in group["prs"]
         },
         "report": lambda _message: None,
+        "expected_heads": {str(item["repo"]): PIN for item in group["prs"]},
     }
+
+
+PIN = "c" * 40
+
+
+@pytest.fixture(autouse=True)
+def _host_head(monkeypatch: pytest.MonkeyPatch) -> None:
+    from gr2.python_cli import pr as pr_mod
+
+    monkeypatch.setattr(pr_mod, "host_pr_head_oid", lambda root, number, *, remote="origin": PIN)
 
 
 # ---------------------------------------------------------------------------

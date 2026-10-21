@@ -654,7 +654,12 @@ def test_pr_commands_route_through_platform_adapter(tmp_path: Path, monkeypatch)
     assert result.exit_code == 0
     assert any(kind == "checks" for kind, _ in calls)
 
-    result = runner.invoke(app, ["pr", "merge", str(workspace_root), "atlas", "feat-auth", "--json"])
+    pin = "a" * 40
+    monkeypatch.setattr(app_module.pr_ops, "host_pr_head_oid", lambda root, number, *, remote="origin": pin)
+    result = runner.invoke(
+        app,
+        ["pr", "merge", str(workspace_root), "atlas", "feat-auth", "--json", "--match-head-commit", f"app={pin}"],
+    )
     assert result.exit_code == 0
     assert ("merge", ("app", 42, MergeMethod.SQUASH)) in calls
 
@@ -669,9 +674,11 @@ def test_pr_commands_route_through_platform_adapter(tmp_path: Path, monkeypatch)
             "--method",
             "rebase",
             "--json",
+            "--match-head-commit",
+            f"app={pin}",
         ],
     )
-    assert result.exit_code == 0
+    assert result.exit_code == 0, result.output
     assert ("merge", ("app", 42, MergeMethod.REBASE)) in calls
 
 
@@ -1016,7 +1023,10 @@ def test_pr_merge_reports_partial_failure_and_preserves_state(tmp_path: Path, mo
 
     monkeypatch.setattr(app_module.platform_ops, "get_platform_adapter", lambda name="github": FakeAdapter())
 
-    result = runner.invoke(app, ["pr", "merge", str(workspace_root), "atlas", "feat-router", "--json"])
+    pin = "b" * 40
+    monkeypatch.setattr(app_module.pr_ops, "host_pr_head_oid", lambda root, number, *, remote="origin": pin)
+    pins = [arg for repo in ("app", "api", "web") for arg in ("--match-head-commit", f"{repo}={pin}")]
+    result = runner.invoke(app, ["pr", "merge", str(workspace_root), "atlas", "feat-router", "--json", *pins])
     assert result.exit_code == 1
     payload = json.loads(result.stdout)
     assert payload["status"] == "partial_failure"

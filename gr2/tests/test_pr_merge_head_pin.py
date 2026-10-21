@@ -180,13 +180,18 @@ def test_a_matching_pin_merges_and_reaches_the_adapter(tmp_path: Path) -> None:
     assert adapter.pins_seen == {"app": READ_SHA, "api": READ_SHA}
 
 
-def test_an_unpinned_member_is_not_pre_checked(tmp_path: Path) -> None:
-    """Opt-in by construction: no pin, no pr_status read, no enforcement."""
-    adapter = _Pinned({"app": MOVED_SHA, "api": MOVED_SHA})
+def test_an_unpinned_member_is_refused_not_merged(tmp_path: Path) -> None:
+    """There is no unpinned mode: a member with no pin refuses the group (exit 4)."""
+    from gr2.python_cli.pr import PRUnpinnedError
 
-    _merge(tmp_path, ["app", "api"], adapter)
+    adapter = _Pinned({"app": READ_SHA, "api": READ_SHA})
 
-    assert adapter.merged == ["app", "api"]
+    with pytest.raises(PRUnpinnedError) as raised:
+        _merge(tmp_path, ["app", "api"], adapter, expected_heads={"app": READ_SHA})
+
+    assert raised.value.exit_code == 4
+    assert raised.value.unpinned == ["api"]
+    assert adapter.merged == []
     assert adapter.status_calls == []
 
 
@@ -375,20 +380,19 @@ def test_a_group_that_lists_one_repo_twice_can_be_pinned_completely() -> None:
     }
 
 
-def test_an_empty_pin_set_is_accepted_and_means_no_enforcement() -> None:
-    """THE DEFAULT PATH, and nothing asserted it: no `--match-head-commit` at all.
+def test_an_empty_pin_set_is_refused_by_the_library(tmp_path: Path) -> None:
+    """W4-LIB: no pins at all is not "no enforcement"; merge_pr_group refuses it
+    itself, so a library caller cannot merge unpinned either."""
+    from gr2.python_cli.pr import PRUnpinnedError
 
-    `pins and` in the coverage guard is load-bearing. Drop it and an EMPTY pin set becomes
-    indistinguishable from a partial one, so a group the caller deliberately left unpinned
-    is refused with "pins 0 of 2 members; ... would merge unpinned" -- a sentence about a
-    fault nobody committed, on the ordinary merge. A body's Not-covered line calling this
-    case unchanged is true of the code and is not a guard on it; naming the common path as
-    unchanged is not the same as testing it.
-    """
-    from gr2.python_cli.app import _parse_head_pins
+    adapter = _Pinned({"app": READ_SHA, "api": READ_SHA})
 
-    assert _parse_head_pins(None, _group_spec(["app", "api"])) == {}
-    assert _parse_head_pins([], _group_spec(["app", "api"])) == {}
+    for empty in (None, {}):
+        with pytest.raises(PRUnpinnedError) as raised:
+            _merge(tmp_path, ["app", "api"], adapter, expected_heads=empty)
+        assert raised.value.exit_code == 4
+        assert raised.value.unpinned == ["app", "api"]
+    assert adapter.merged == [], "0 merge_pr calls"
 
 
 def test_a_pin_that_is_not_forty_lowercase_hex_is_refused_as_a_format_problem() -> None:
@@ -520,9 +524,14 @@ def test_an_unreadable_member_head_refuses_the_group_with_exit_5_and_writes_noth
     assert group_file.read_bytes() == before, "the group file must be byte-identical"
 
 
-def _cli_refusal(tmp_path, capsys, monkeypatch, heads, raises=None):
-    """Run `pr merge --json` with both members pinned to READ_SHA; return
-    (exit code, payload, adapter, group file before, group file, outbox)."""
+_BOTH_PINNED = ["--match-head-commit", f"app={READ_SHA}", "--match-head-commit", f"api={READ_SHA}"]
+
+
+def _cli_refusal(tmp_path, capsys, monkeypatch, heads, raises=None, pins=_BOTH_PINNED,
+                 as_json=True):
+    """Run `pr merge` (default: --json, both members pinned to READ_SHA); return
+    (exit code, payload, adapter, group file before, group file, outbox). Without
+    --json the payload is {"raw": all output}."""
     from gr2.python_cli import app as gr2_app
     from gr2.python_cli import platform as platform_ops
 
@@ -539,11 +548,13 @@ def _cli_refusal(tmp_path, capsys, monkeypatch, heads, raises=None):
     group_file = workspace / ".grip" / "pr_groups" / f"{GROUP_ID}.json"
     before = group_file.read_bytes()
     outbox = workspace / ".grip" / "events" / "outbox.jsonl"
-    code = _run_main(["pr", "merge", str(workspace), OWNER_UNIT, LANE_NAME, "--json",
-                      "--match-head-commit", f"app={READ_SHA}",
-                      "--match-head-commit", f"api={READ_SHA}"])
-    output = "".join(capsys.readouterr())
-    payload = json.loads(output[output.index("{"):]) if "{" in output else {"raw": output}
+    code = _run_main(["pr", "merge", str(workspace), OWNER_UNIT, LANE_NAME,
+                      *(["--json"] if as_json else []), *pins])
+    out, err = capsys.readouterr()
+    output = out + err
+    payload = (json.loads(out[out.index("{"):]) if as_json and "{" in out
+               else {"raw": output})
+    payload["stderr"] = err
     return code, payload, adapter, before, group_file, outbox
 
 
@@ -614,3 +625,136 @@ def test_the_pin_pass_reads_the_host_not_the_adapter_status(tmp_path: Path) -> N
            expected_heads={"app": READ_SHA, "api": READ_SHA})
 
     assert adapter.merged == ["app", "api"]
+
+
+def _assert_refused_unpinned(code, payload, adapter, before, group_file, outbox, unpinned):
+    assert code == 4, payload
+    assert payload["status"] == "refused_unpinned", payload
+    assert adapter.merged == [], "0 merge_pr calls"
+    assert group_file.read_bytes() == before, "the group file must be byte-identical"
+    events = outbox.read_text() if outbox.exists() else ""
+    assert "pr.merge_failed" not in events, events
+    assert [r["repo"] for r in payload["members"] if r["state"] == "UNPINNED"] == unpinned
+    assert all(r["number"] in (1, 2) for r in payload["members"]), payload
+
+
+def test_no_pins_on_the_cli_refuses_and_names_every_member(
+    tmp_path: Path, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """W4: the ordinary `pr merge` with no --match-head-commit refuses, exit 4."""
+    result = _cli_refusal(tmp_path, capsys, monkeypatch,
+                          {"app": READ_SHA, "api": READ_SHA}, pins=[])
+    _assert_refused_unpinned(*result, unpinned=["app", "api"])
+
+
+def _refusal_reason(payload) -> str:
+    return payload["refused"][0]["reason"]
+
+
+def test_no_pins_names_the_members_with_no_reviewed_head_bound(
+    tmp_path: Path, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The zero-rows refusal uses the design's words: "no reviewed head bound for <repo>"."""
+    code, payload, *_ = _cli_refusal(tmp_path, capsys, monkeypatch,
+                                     {"app": READ_SHA, "api": READ_SHA}, pins=[])
+    assert code == 4, payload
+    assert "no reviewed head bound for app, api" in _refusal_reason(payload), payload
+
+
+def test_a_partial_pin_set_refuses_unpinned(
+    tmp_path: Path, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """W5 partial: the member left without a pin is UNPINNED and the refusal names it.
+    Nothing describes an unpinned mode: there is none, so neither "would merge unpinned"
+    nor "or none" appears anywhere in the output."""
+    result = _cli_refusal(tmp_path, capsys, monkeypatch, {"app": READ_SHA, "api": READ_SHA},
+                          pins=["--match-head-commit", f"app={READ_SHA}"])
+    _assert_refused_unpinned(*result, unpinned=["api"])
+    payload = result[1]
+    assert "no reviewed head bound for api" in _refusal_reason(payload), payload
+    output = json.dumps(payload)
+    assert "would merge unpinned" not in output, output
+    assert "or none" not in output, output
+
+
+def test_two_disagreeing_pins_for_one_member_refuse_ambiguous_naming_both(
+    tmp_path: Path, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """W5 conflicting: a repo pinned twice is AMBIGUOUS and the refusal names both pins;
+    the other member's valid pin still holds."""
+    code, payload, adapter, before, group_file, outbox = _cli_refusal(
+        tmp_path, capsys, monkeypatch, {"app": READ_SHA, "api": READ_SHA},
+        pins=["--match-head-commit", f"app={READ_SHA}", "--match-head-commit", f"app={MOVED_SHA}",
+              "--match-head-commit", f"api={READ_SHA}"],
+    )
+    assert code == 4, payload
+    assert payload["status"] == "refused_unpinned", payload
+    assert adapter.merged == [], "0 merge_pr calls"
+    assert group_file.read_bytes() == before, "the group file must be byte-identical"
+    events = outbox.read_text() if outbox.exists() else ""
+    assert "pr.merge_failed" not in events, events
+    assert _states(payload) == {"app": "AMBIGUOUS"}, payload
+    app = next(row for row in payload["members"] if row["repo"] == "app")
+    assert app["pins"] == [READ_SHA, MOVED_SHA], app
+    reason = _refusal_reason(payload)
+    assert f"app: two pins, {READ_SHA[:12]} and {MOVED_SHA[:12]}" in reason, reason
+    assert "no reviewed head bound" not in reason, "api is pinned; nothing else is unbound"
+
+
+@pytest.mark.parametrize("broken", ["pr_number_true", "pr_number_float", "no_target_for_api"])
+def test_the_groups_own_refusal_comes_before_ambiguous_pins(
+    tmp_path: Path, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch, broken: str
+) -> None:
+    """A malformed member, or a member with no target, is the more basic error: with two
+    pins for app it still exits through the group's own refusal, never AMBIGUOUS with a
+    number nobody wrote, and never a traceback."""
+    from gr2.python_cli import app as gr2_app
+    from gr2.python_cli import platform as platform_ops
+
+    from .test_pr_merge_missing_target import (
+        GROUP_ID, LANE_NAME, OWNER_UNIT, _run_main, _workspace,
+    )
+
+    workspace = _workspace(tmp_path, ["app", "api"])
+    group_file = workspace / ".grip" / "pr_groups" / f"{GROUP_ID}.json"
+    if broken.startswith("pr_number"):
+        group = json.loads(group_file.read_text())
+        group["prs"][0]["pr_number"] = True if broken == "pr_number_true" else 7.9
+        group_file.write_text(json.dumps(group))
+    target_repos = ["app"] if broken == "no_target_for_api" else ["app", "api"]
+    adapter = _Pinned({"app": READ_SHA, "api": READ_SHA})
+    monkeypatch.setattr(platform_ops, "get_platform_adapter", lambda _name: adapter)
+    monkeypatch.setattr(gr2_app, "_merge_verification_targets",
+                        lambda _root: _targets(workspace, target_repos))
+
+    code = _run_main(["pr", "merge", str(workspace), OWNER_UNIT, LANE_NAME, "--json",
+                      "--match-head-commit", f"app={READ_SHA}",
+                      "--match-head-commit", f"app={MOVED_SHA}",
+                      "--match-head-commit", f"api={READ_SHA}"])
+    out, err = capsys.readouterr()
+    output = out + err
+
+    assert code not in (0, 4), output
+    assert "AMBIGUOUS" not in output, output
+    assert "refused_unpinned" not in output, output
+    assert "Traceback" not in output, output
+    assert adapter.merged == [], "0 merge_pr calls"
+    if broken == "no_target_for_api":
+        assert "api" in output, output
+    else:
+        assert ("True" if broken == "pr_number_true" else "7.9") in output, output
+
+
+def test_a_moved_head_prints_the_table_without_json(
+    tmp_path: Path, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """TEXT: the human path prints the member table, the moved row marked MOVED."""
+    code, payload, adapter, *_ = _cli_refusal(
+        tmp_path, capsys, monkeypatch, {"app": READ_SHA, "api": MOVED_SHA}, as_json=False
+    )
+
+    assert code == 3, payload
+    assert adapter.merged == []
+    lines = [line.strip() for line in payload["raw"].splitlines()]
+    moved = [line for line in lines if line.startswith("api#2 ")]
+    assert len(moved) == 1 and moved[0].endswith("MOVED"), payload["raw"]

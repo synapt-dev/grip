@@ -146,7 +146,11 @@ def test_status_gives_each_member_its_own_target(tmp_path):
     assert adapter.status_targets["lib"].org == "acme" and adapter.status_targets["lib"].host == "github.com"
 
 
-def test_merge_gives_each_member_its_own_target(tmp_path):
+def test_merge_gives_each_member_its_own_target(tmp_path, monkeypatch):
+    from gr2.python_cli import pr as pr_mod
+
+    pin = "c" * 40
+    monkeypatch.setattr(pr_mod, "host_pr_head_oid", lambda root, number, *, remote="origin": pin)
     adapter = _V2()
     group = _create(tmp_path, adapter)
     merge_pr_group(
@@ -159,6 +163,7 @@ def test_merge_gives_each_member_its_own_target(tmp_path):
             repo: MergeVerificationTarget(repo_root=tmp_path / repo, remote=REMOTES[repo]) for repo in REMOTES
         },
         report=lambda _msg: None,
+        expected_heads={repo: pin for repo in REMOTES},
     )
     assert adapter.merge_targets["app"].project == "web"
     assert adapter.merge_targets["lib"].host == "github.com"

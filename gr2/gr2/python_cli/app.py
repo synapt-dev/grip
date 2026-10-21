@@ -586,7 +586,7 @@ def _prepare_review_branch(workspace_root: Path, repo: str, pr_number: int, bran
     repo_spec = _workspace_repo_spec(workspace_root, repo)
     repo_root = (workspace_root / str(repo_spec["path"])).resolve()
     if not repo_root.exists():
-        raise SystemExit(f"shared repo missing for review checkout: {repo_root}\nrun `gr2 apply {workspace_root} --yes` first")
+        raise SystemExit(f"shared repo missing for review checkout: {repo_root}\nrun `gr2 apply {next_steps._shown(str(workspace_root))} --yes` first")
 
     target_branch = branch or f"pr/{pr_number}"
     source_ref = f"refs/heads/{branch}" if branch else f"refs/pull/{pr_number}/head"
@@ -3388,7 +3388,7 @@ def _lane_create_defaults(workspace_root: Path, lane_name: str, repos: Optional[
             raise typer.BadParameter(
                 f"the branch {branch!r} already exists on {c.repo}'s remote at {c.remote_tip[:12]}{more}, which is not the tip of {c.base_ref} "
                 f"({c.base_tip[:12]}), so it is work that is already pushed. Two readings: to continue that work, "
-                f"pass --branch {branch} to use the existing branch (the lane starts at its remote tip and tracks it); "
+                f"pass --branch {next_steps._shown(branch)} to use the existing branch (the lane starts at its remote tip and tracks it); "
                 f"to start something new, pick another lane name."
             )
         if result.not_checked:  # a skipped SAFETY check is not information to hush
@@ -3541,9 +3541,10 @@ def lane_create(
                     # command a user cannot run is worse than one that names the path.
                     lane_root = lane_proto.lane_dir(workspace_root, owner_unit, lane_name)
                     typer.echo(
-                        f"lane create: the lane {owner_unit}/{lane_name} was KEPT because its fork "
+                        f"lane create: the lane {next_steps._shown(f'{owner_unit}/{lane_name}')} was KEPT because its fork "
                         f"base is recorded, so it is recoverable.\n"
-                        f"  continue with it: gr2 review create-project {workspace_root} {owner_unit} {lane_name}\n"
+                        f"  continue with it: gr2 review create-project {next_steps._shown(str(workspace_root))} "
+                        f"{next_steps._shown(owner_unit)} {next_steps._shown(lane_name)}\n"
                         f"  metadata:         {lane_root}\n"
                         f"  checkout:         {lane_proto.lane_checkout_root(workspace_root, owner_unit, lane_name)}\n"
                         f"  removal needs both paths (no lane-removal verb exists yet)",
@@ -4511,7 +4512,7 @@ def review_open(
     if not source_repo_root.exists():
         raise SystemExit(
             f"shared repo missing for review open: {source_repo_root}\n"
-            f"run `gr2 apply {workspace_root} --yes` first"
+            f"run `gr2 apply {next_steps._shown(str(workspace_root))} --yes` first"
         )
 
     # Bind the expected head from the HOST's own advertisement of the PR head,

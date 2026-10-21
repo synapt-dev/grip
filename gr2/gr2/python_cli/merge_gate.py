@@ -676,7 +676,11 @@ def review_merge(workspace: Path, review_id: str, *, into: str = "main", feature
             required = policy["required"]
             approval_receipt = dict(policy)
             if required:
-                approval_receipt = approvals.count_approvals(root, view["id"])
+                # A member merged before this run has its target moved by its own merge: the count skips its base,
+                # so that move is never the refusal copied onto the ready members (each ready base is still read).
+                merged_before = frozenset(r["key"] for r in rows if r["state"] == "already_merged")
+                approval_receipt = approvals.count_approvals(root, view["id"],
+                                                             **({"merged": merged_before} if merged_before else {}))
                 approval_receipt.update(policy)
                 if approval_receipt["count"] < required:
                     raise approvals.ApprovalRefused(f"approvals_insufficient: {approval_receipt['count']} of {required}")

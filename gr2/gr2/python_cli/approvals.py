@@ -187,8 +187,11 @@ def review_open_lane(lane: Path) -> tuple[Path, str, dict[str, Path]] | None:
     return Path(marker["workspace_root"]).resolve(), marker["gr_commit"], members
 
 
-def _context(workspace: Path, review_id: str, member_dirs: dict[str, Path] | None = None) -> tuple[dict, set[str]]:
-    """`member_dirs` (key -> checkout) reads the members from a review lane instead of the workspace's own clones."""
+def _context(workspace: Path, review_id: str, member_dirs: dict[str, Path] | None = None,
+             merged: frozenset[str] = frozenset()) -> tuple[dict, set[str]]:
+    """`member_dirs` (key -> checkout) reads the members from a review lane instead of the workspace's own clones.
+    `merged` names members the merge gate measured as already merged into their target: their base moved by their
+    own merge, so it is not read as a moved base."""
     from . import merge_gate
     workspace = workspace.resolve()
     if merge_gate._toplevel(workspace) != workspace or not merge_gate._store_inside(workspace, workspace):
@@ -244,6 +247,8 @@ def _context(workspace: Path, review_id: str, member_dirs: dict[str, Path] | Non
         repos[m["key"]] = repo
     # Every local refusal comes first; then one remote read per member, before any approval is pushed.
     for m in view["members"]:
+        if m["key"] in merged:
+            continue
         _refuse_moved_base(workspace, m["key"], m["remote"], m["base"], "gr:" + rid, repos[m["key"]], m["head"])
     return {"review_id": "gr:" + rid, "author": author, "members": members}, authors
 
@@ -448,8 +453,9 @@ def _refuse_split(workspace: Path, root: dict, tips: dict[str, str | None]) -> N
     raise ApprovalRefused("approval_chain_divergent: " + canonical(tips), expected=heads[0], observed=heads[1])
 
 
-def count_approvals(workspace: Path, review_id: str, member_dirs: dict[str, Path] | None = None) -> dict:
-    root, authors = _context(workspace, review_id, member_dirs)
+def count_approvals(workspace: Path, review_id: str, member_dirs: dict[str, Path] | None = None,
+                    merged: frozenset[str] = frozenset()) -> dict:
+    root, authors = _context(workspace, review_id, member_dirs, merged)
     tips = _remote_tips(workspace, root)
     if len(set(tips.values())) != 1:
         _refuse_split(workspace, root, tips)

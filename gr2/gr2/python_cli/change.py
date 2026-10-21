@@ -20,7 +20,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .gitops import git
+from .gitops import git, run
 
 
 class ChangeRefused(Exception):
@@ -62,13 +62,29 @@ class Member:
     head: str = ""
 
 
+def _shown(name: str) -> str:
+    """A path as printable text: bytes that are not UTF-8 (carried as surrogates) print as \\xNN, never raise."""
+    return name.encode("utf-8", "surrogateescape").decode("utf-8", "backslashreplace")
+
+
+def _read(path: Path, *args: str) -> tuple[int, str, str]:
+    """One read as bytes, decoded strictly: the verb carries only UTF-8 paths, so a read that is not UTF-8 refuses.
+
+    Text mode would raise UnicodeDecodeError on such a path, and would turn a "\\r" in one into "\\n"."""
+    proc = run(path, *args, binary=True, via_cwd=True)
+    try:
+        return proc.returncode, proc.stdout.decode("utf-8"), proc.stderr.decode("utf-8", "backslashreplace")
+    except UnicodeDecodeError:
+        raise ChangeRefused("not_utf8", _shown(path.name), f"git {_shown(args[0])} printed a path that is not UTF-8") from None
+
+
 def _status_entries(path: Path) -> tuple[str, list[str]]:
-    proc = git(path, "status", "--porcelain=v2", "--branch", "-z")
-    if proc.returncode != 0:
-        raise ChangeRefused("not_a_repo", path.name, proc.stderr.strip() or "git status failed")
+    code, out, err = _read(path, "status", "--porcelain=v2", "--branch", "-z")
+    if code != 0:
+        raise ChangeRefused("not_a_repo", _shown(path.name), err.strip() or "git status failed")
     branch = ""
     entries: list[str] = []
-    records = proc.stdout.split("\0")
+    records = out.split("\0")
     i = 0
     while i < len(records):
         rec = records[i]
@@ -89,23 +105,36 @@ def preflight(paths: list[Path], branch: str) -> list[Member]:
     members: list[Member] = []
     for path in paths:
         member = Member(name=path.name, path=path)
+        if path.name != _shown(path.name):
+            # A path that is not UTF-8 refuses before any git call; carried on, it would commit and then fail to print.
+            raise ChangeRefused("not_utf8", _shown(path.name), "the member path is not UTF-8")
         if not path.is_dir():
             raise ChangeRefused("not_a_repo", member.name, "not a directory")
         head_branch, entries = _status_entries(path)
         # One read for both: a member that is a subdirectory of a repo (its add -A takes the whole repo), and
         # the operation-in-progress markers below.
-        pending = git(
+        code, out, err = _read(
             path, "rev-parse", "--show-toplevel",
             "--git-path", "MERGE_HEAD", "--git-path", "CHERRY_PICK_HEAD", "--git-path", "REVERT_HEAD",
             "--git-path", "rebase-apply", "--git-path", "rebase-merge", "--git-path", "sequencer",
         )
-        # One line per argument; a run that failed or printed fewer would skip the markers it left out.
-        lines = pending.stdout.splitlines()
-        if pending.returncode != 0 or len(lines) != 7:
-            raise ChangeRefused("not_a_repo", member.name, pending.stderr.strip() or "git rev-parse failed")
+        if code != 0:
+            raise ChangeRefused("not_a_repo", member.name, err.strip() or "git rev-parse failed")
+        # One line per argument, split on "\n" alone: splitlines() also breaks at U+2028, "\f" or "\r", which git
+        # prints inside a path. A path holding "\n" prints more lines; fewer or more would misread the markers.
+        lines = out.split("\n")
+        if lines[-1] == "":
+            lines.pop()
+        if len(lines) != 7:
+            raise ChangeRefused(
+                "not_a_repo", member.name, f"git rev-parse exited 0 but printed {len(lines)} lines for 7 paths"
+            )
         top, *paths_pending = lines
         if Path(top).resolve() != path.resolve():
-            raise ChangeRefused("not_a_repo", member.name, f"inside the repo at {top}")
+            # Only a top above the member is "the repo it is inside"; anything else is git naming another path.
+            if path.resolve().is_relative_to(Path(top).resolve()):
+                raise ChangeRefused("not_a_repo", member.name, f"inside the repo at {top}")
+            raise ChangeRefused("not_a_repo", member.name, f"git rev-parse named {_shown(top)} as its top, not this path")
         if head_branch == "(detached)":
             raise ChangeRefused("detached_head", member.name, "HEAD is detached")
         for rec in entries:

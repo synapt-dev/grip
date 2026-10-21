@@ -497,6 +497,27 @@ def test_a_remote_whose_tags_cannot_be_listed_is_not_removed(tmp_path: Path) -> 
     _refused_untouched(ws, repo, _remove(ws), "lane_unpushed_unknown", "cannot list dead's tags")
 
 
+def test_a_remote_named_like_an_option_is_refused_before_any_fetch(tmp_path: Path) -> None:
+    ws, repo = _pushed_exited_lane(tmp_path)
+    marker = tmp_path / "marker"
+    # `fetch --all` hands each name to a child fetch with no "--": this name ran its command, then the lane was removed.
+    name = f"--upload-pack=touch${{IFS}}{marker};git-upload-pack"
+    _git(repo, "config", f"remote.{name}.url", _git(repo, "remote", "get-url", "origin"))
+    _refused_untouched(ws, repo, _remove(ws), "lane_unpushed_unknown", "begins with '-'")
+    assert not marker.exists(), "the remote's name never ran as a command"
+
+
+def test_remote_tag_shas_reads_a_remote_named_like_an_option_as_a_name(tmp_path: Path) -> None:
+    from gr2.python_cli.app import _remote_tag_shas
+    _, repo, tagged = _lane_with_a_commit_only_a_pushed_tag_holds(tmp_path)
+    # The name holds no "/", so git reads it as a configured remote; without "--" ls-remote ran it in the repo.
+    name = "--upload-pack=touch${IFS}marker;git-upload-pack"
+    _git(repo, "config", f"remote.{name}.url", _git(repo, "remote", "get-url", "origin"))
+    _git(repo, "remote", "remove", "origin")
+    assert tagged in _remote_tag_shas(repo), "the remote is asked by its name and answers with its tags"
+    assert not (repo / "marker").exists(), "the remote's name never ran as a command"
+
+
 def test_lane_list_names_a_tag_only_commit_unchecked_not_unpushed(tmp_path: Path) -> None:
     """The list does not fetch or ask remotes, so a commit only a tag holds is UNKNOWN there, never 'unpushed'."""
     ws, _, tagged = _lane_with_a_commit_only_a_pushed_tag_holds(tmp_path)

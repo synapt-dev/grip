@@ -347,7 +347,8 @@ A push the remote refuses (for example a hook) half-lands the same way: the earl
 the refused one stays at its base, the receipt shows that member's `push_error`, and the run exits 4.
 `gr2 review merged` reports which members landed and also exits 4. To finish, clear the cause and rerun the
 same `gr2 review merge`: a member already merged is reported `already_merged` and not merged again, and the
-rest go through the same preflight. A member whose branch moved meanwhile is refused by that preflight with a
+rest go through the same preflight. When the merge requires approvals, `gr2 review stamp` the same review
+before the rerun: it stamps while any member has yet to land. A member whose branch moved meanwhile is refused by that preflight with a
 `next:` step in the receipt, its target does not move, and the run still exits 4.
 
 Exit codes:

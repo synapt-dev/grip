@@ -245,11 +245,23 @@ def _context(workspace: Path, review_id: str, member_dirs: dict[str, Path] | Non
         authors.update(_git(repo, "log", "--format=%an", f"{m['base']}..{m['head']}").splitlines())
         members.append({"key": m["key"], "remote": m["remote"], "head_commit": m["head"], "head_tree": tree})
         repos[m["key"]] = repo
-    # Every local refusal comes first; then one remote read per member, before any approval is pushed.
+    # Every local refusal comes first; then one remote read per member, before any approval is pushed. A member
+    # whose head is already on its target is half of a half-landed review, which the merge reads as already_merged
+    # and finishes; only when EVERY member's head is in does nothing remain to stamp for.
+    landed, waiting = None, False
     for m in view["members"]:
         if m["key"] in merged:
             continue
-        _refuse_moved_base(workspace, m["key"], m["remote"], m["base"], "gr:" + rid, repos[m["key"]], m["head"])
+        try:
+            _refuse_moved_base(workspace, m["key"], m["remote"], m["base"], "gr:" + rid, repos[m["key"]], m["head"])
+        except ApprovalRefused as exc:
+            if not str(exc).startswith("head_already_on_target"):
+                raise
+            landed = landed or exc
+            continue
+        waiting = True
+    if landed and not waiting:
+        raise landed
     return {"review_id": "gr:" + rid, "author": author, "members": members}, authors
 
 

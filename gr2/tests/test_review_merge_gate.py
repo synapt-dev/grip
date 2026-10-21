@@ -454,3 +454,72 @@ def test_a_moved_member_after_a_half_land_gets_its_new_pin_and_the_waiting_membe
     step = rows["beta"].get("next", "")
     assert "gr2 review pin" in step and "--path beta" in step, step
     assert "(then gamma, not pushed after the refusal" in step, step
+
+
+def _half_land(s, approvals="0"):
+    """alpha lands, a pre-receive hook on beta refuses its push; the hook is then removed (the cause clears)."""
+    hook = s["members"]["beta"]["remote"] / "hooks" / "pre-receive"
+    hook.write_text("#!/bin/sh\necho 'main is closed for now' >&2\nexit 1\n")
+    hook.chmod(0o755)
+    first = runner.invoke(app, ["review", "merge", s["review"], "--from", "feat", "--into", "main", "--approvals", approvals])
+    assert first.exit_code == merge_gate.EXIT_PARTIAL, first.output
+    hook.unlink()
+
+
+def _stamp(s, monkeypatch):
+    for k in ("GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"):
+        monkeypatch.setenv(k, "Approver B")
+    stamped = runner.invoke(app, ["review", "stamp", s["review"]])
+    print(f"$ gr2 review stamp {s['review']}\n{stamped.output}exit {stamped.exit_code}")
+    return stamped
+
+
+def _rerun_with_one_approval(s):
+    argv = ["review", "merge", s["review"], "--from", "feat", "--into", "main", "--approvals", "1"]
+    again = runner.invoke(app, argv)
+    print(f"$ gr2 {' '.join(argv)}\n{again.output}exit {again.exit_code}")
+    return again
+
+
+def test_a_stamp_after_a_half_land_counts_and_the_rerun_finishes(slice2, monkeypatch):
+    # With approvals required, the recovery for a half-landed review is stamp, then rerun. The landed member's head
+    # is already on its target; the stamp still signs while another member has yet to land.
+    record_set(slice2)
+    _half_land(slice2)
+    stamped = _stamp(slice2, monkeypatch)
+    assert stamped.exit_code == 0, stamped.output
+    assert "head_already_on_target" not in stamped.output and "no gr2 command lands it again" not in stamped.output
+    again = _rerun_with_one_approval(slice2)
+    assert again.exit_code == merge_gate.EXIT_MERGED, again.output
+    rerun = {m["key"]: m["state"] for m in json.loads(next(l for l in again.output.splitlines() if l.startswith("{")))["members"]}
+    assert rerun == {"alpha": "already_merged", "beta": "merged"}, rerun
+
+
+def test_a_stamp_after_every_member_landed_still_refuses_head_already_on_target(slice2, monkeypatch):
+    record_set(slice2)
+    done = runner.invoke(app, ["review", "merge", slice2["review"], "--from", "feat", "--into", "main", "--approvals", "0"])
+    assert done.exit_code == merge_gate.EXIT_MERGED, done.output
+    stamped = _stamp(slice2, monkeypatch)
+    assert stamped.exit_code == 2, stamped.output
+    text = " ".join(stamped.output.split())
+    assert "head_already_on_target: alpha: the reviewed head" in text, text
+    assert "next: nothing to merge; the reviewed head is already in the target" in text, text
+
+
+def test_a_stamp_before_the_half_land_is_counted_by_the_rerun(slice2, monkeypatch):
+    # The control: stamped before anything landed, the same half-land and rerun reach exit 0.
+    record_set(slice2)
+    stamped = _stamp(slice2, monkeypatch)
+    assert stamped.exit_code == 0, stamped.output
+    _half_land(slice2, approvals="1")
+    again = _rerun_with_one_approval(slice2)
+    assert again.exit_code == merge_gate.EXIT_MERGED, again.output
+    rerun = {m["key"]: m["state"] for m in json.loads(next(l for l in again.output.splitlines() if l.startswith("{")))["members"]}
+    assert rerun == {"alpha": "already_merged", "beta": "merged"}, rerun
+
+
+def test_the_readme_half_land_paragraph_names_the_stamp_before_the_rerun():
+    from pathlib import Path
+    text = " ".join((Path(__file__).resolve().parents[1] / "README.md").read_text().split())
+    assert ("When the merge requires approvals, `gr2 review stamp` the same review before the rerun: it stamps while "
+            "any member has yet to land.") in text

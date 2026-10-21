@@ -6771,11 +6771,20 @@ def pr_merge(
             "lane_name": resolved_lane,
             "merged": [],
             "refused": [{"repo": exc.repo, "number": exc.pr_number, "reason": exc.reason}],
+            "members": [
+                {key: row.get(key) for key in ("repo", "number", "pin", "host_head", "state")}
+                for row in exc.members
+            ],
         }
         if json_output:
             typer.echo(json.dumps(payload, indent=2))
         else:
             typer.echo(f"merge refused for {exc.repo}#{exc.pr_number}: {exc.reason}")
+            for row in payload["members"]:
+                typer.echo(
+                    f"  {row['repo']}#{row['number']}  pin {str(row['pin'])[:12]}  "
+                    f"host {str(row['host_head'] or '-')[:12]}  {row['state']}"
+                )
         raise typer.Exit(code=exc.exit_code)
     except pr_ops.PRMergeError as exc:
         completed = [item.as_dict() for item in exc.completed]

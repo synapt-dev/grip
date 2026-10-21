@@ -68,6 +68,10 @@ class UnpermittedMergeMethodError(RuntimeError):
         )
 
 
+def _is_full_sha(value: object) -> bool:
+    return isinstance(value, str) and len(value) == 40 and all(c in "0123456789abcdef" for c in value)
+
+
 def _parse_method(name: str, *, source: str) -> MergeMethod:
     try:
         return MergeMethod(name)
@@ -125,38 +129,6 @@ class PRMergeError(RuntimeError):
         super().__init__(f"merge failed for {repo}#{pr_number}: {reason}{suffix}")
 
 
-class PRHeadPinError(PRMergeError):
-    """A pinned member's head moved after the reads, so NOTHING merged.
-
-    `completed` is always empty by construction: the pin pass runs before the
-    first merge. That is the difference between this and a per-call check --
-    an adapter refusing only the member it has reached has already merged the
-    members before it, and a group that lands half of bytes nobody read is the
-    defect the pin exists to prevent.
-    """
-
-    def __init__(
-        self,
-        repo: str,
-        pr_number: int,
-        *,
-        expected: str,
-        actual: str | None,
-        completed: list[CompletedMerge],
-    ) -> None:
-        self.expected = expected
-        self.actual = actual
-        shown = actual[:8] if actual else "unreadable"
-        reason = (
-            f"head is {shown} ({actual or 'the adapter could not report it'}) but the "
-            f"reviewed head was {expected[:8]} ({expected}): the branch moved after the "
-            "reads, so merging would land bytes nobody reviewed, and an unreadable head "
-            "is not the same as an unchanged one. Re-bind the review to the current head "
-            "and read it again, or pass the head you actually read."
-        )
-        super().__init__(repo, pr_number, reason, completed=completed)
-
-
 class PRPrePassRefusal(PRMergeError):
     """The pre-pass refused before the first merge: nothing happened.
 
@@ -167,7 +139,16 @@ class PRPrePassRefusal(PRMergeError):
     status = "refused"
     exit_code = 1
 
-    def __init__(self, repo: str, pr_number: int, reason: str) -> None:
+    def __init__(
+        self,
+        repo: str,
+        pr_number: int,
+        reason: str,
+        *,
+        members: list[dict[str, Any]] | None = None,
+    ) -> None:
+        # Every pinned member the pass read: repo, number, pin, host_head, state.
+        self.members = list(members or [])
         super().__init__(repo, pr_number, reason, completed=[])
 
 
@@ -180,12 +161,56 @@ class PRHeadUnreadableError(PRPrePassRefusal):
     status = "refused_unreadable"
     exit_code = 5
 
-    def __init__(self, repo: str, pr_number: int, reason: str) -> None:
+    def __init__(
+        self,
+        repo: str,
+        pr_number: int,
+        reason: str,
+        *,
+        members: list[dict[str, Any]] | None = None,
+    ) -> None:
         super().__init__(
             repo,
             pr_number,
             f"the host's current head could not be read ({reason}); nothing merged",
+            members=members,
         )
+
+
+class PRHeadPinError(PRPrePassRefusal):
+    """A pinned member's head moved after the reads, so NOTHING merged.
+
+    `completed` is always empty by construction: the pin pass runs before the
+    first merge. That is the difference between this and a per-call check --
+    an adapter refusing only the member it has reached has already merged the
+    members before it, and a group that lands half of bytes nobody read is the
+    defect the pin exists to prevent.
+    """
+
+    status = "refused_head_moved"
+    exit_code = 3
+
+    def __init__(
+        self,
+        repo: str,
+        pr_number: int,
+        *,
+        expected: str,
+        actual: str | None,
+        completed: list[CompletedMerge] | None = None,
+        members: list[dict[str, Any]] | None = None,
+    ) -> None:
+        self.expected = expected
+        self.actual = actual
+        shown = actual[:8] if actual else "unreadable"
+        reason = (
+            f"head is {shown} ({actual or 'the adapter could not report it'}) but the "
+            f"reviewed head was {expected[:8]} ({expected}): the branch moved after the "
+            "reads, so merging would land bytes nobody reviewed, and an unreadable head "
+            "is not the same as an unchanged one. Re-bind the review to the current head "
+            "and read it again, or pass the head you actually read."
+        )
+        super().__init__(repo, pr_number, reason, members=members)
 
 
 class PRMergeTargetError(PRMergeError):
@@ -689,28 +714,54 @@ def merge_pr_group(
     # earlier member merges first, and half of a group that nobody read lands.
     require_adapter_capability(adapter, "merge_pr")
     routing = group_routing(adapter, group)
+    # Read EVERY pinned member before refusing, so the refusal names the whole
+    # group, not just the first member that differs.
+    members: list[dict[str, Any]] = []
     for pr_info in group["prs"]:
         repo = str(pr_info["repo"])
         expected = pins.get(repo)
         if expected is None:
             continue
         number = int(pr_info["pr_number"])
+        row: dict[str, Any] = {"repo": repo, "number": number, "pin": expected}
         try:
             # The host's CURRENT head, through ls-remote, so no local fetch can
             # lie about it.
             actual = host_pr_head_oid(targets[repo].repo_root, number, remote=targets[repo].remote)
         except ReviewError as exc:
-            # Unreadable is UNKNOWN, never moved: refuse, and record nothing,
-            # because nothing happened.
-            raise PRHeadUnreadableError(repo, number, str(exc)) from exc
-        if actual != expected:
-            raise PRHeadPinError(
-                repo,
-                number,
-                expected=expected,
-                actual=actual,
-                completed=[],
-            )
+            # Unreadable is UNKNOWN, never moved.
+            row.update(host_head=None, state="UNREADABLE", error=str(exc))
+        else:
+            if not _is_full_sha(actual):
+                # No usable head is UNKNOWN too, never moved.
+                row.update(
+                    host_head=None,
+                    state="UNREADABLE",
+                    error=f"the host returned no head for PR #{number} (got {actual!r})",
+                )
+            else:
+                row.update(host_head=actual, state="same" if actual == expected else "MOVED")
+        members.append(row)
+
+    # Unreadable wins over moved: an unknown head is the stronger refusal.
+    # Either way nothing is recorded, because nothing happened.
+    unreadable = [row for row in members if row["state"] == "UNREADABLE"]
+    if unreadable:
+        first = unreadable[0]
+        raise PRHeadUnreadableError(
+            first["repo"], first["number"], first["error"], members=members
+        )
+    moved = [row for row in members if row["state"] == "MOVED"]
+    if moved:
+        first = moved[0]
+        raise PRHeadPinError(
+            first["repo"],
+            first["number"],
+            expected=first["pin"],
+            actual=first["host_head"],
+            completed=[],
+            members=members,
+        )
 
     for pr_info in group["prs"]:
         repo = str(pr_info["repo"])

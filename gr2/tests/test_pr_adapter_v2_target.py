@@ -302,16 +302,20 @@ def test_a_remote_that_now_resolves_to_a_different_target_is_refused_before_any_
     assert adapter.calls == before  # nothing was asked of the adapter
 
 
-def test_the_head_pin_pass_reads_each_member_through_its_own_target(tmp_path):
-    """The pin pass runs before the first merge and reads each pinned member's head: it must be routed too."""
+def test_the_head_pin_pass_reads_each_member_through_its_own_target(tmp_path, monkeypatch):
+    """The pin pass runs before the first merge and reads each pinned member's head from that member's own
+    checkout and remote: two members with different targets reach the head read with different arguments."""
+    from gr2.python_cli import pr as pr_mod
+
     pin = "c" * 40
+    reads: dict[Path, str] = {}
 
-    class _Pinned(_V2):
-        def pr_status(self, repo, number, *, target=None):
-            self.status_targets[repo] = target
-            return PRStatus(ref=PRRef(repo=repo, number=number), state="OPEN", head_oid=pin)
+    def host_pr_head_oid(root, number, *, remote="origin"):
+        reads[Path(root)] = remote
+        return pin
 
-    adapter = _Pinned()
+    monkeypatch.setattr(pr_mod, "host_pr_head_oid", host_pr_head_oid)
+    adapter = _V2()
     group = _create(tmp_path, adapter)
     merge_pr_group(
         workspace_root=tmp_path,
@@ -323,9 +327,10 @@ def test_the_head_pin_pass_reads_each_member_through_its_own_target(tmp_path):
             repo: MergeVerificationTarget(repo_root=tmp_path / repo, remote=REMOTES[repo]) for repo in REMOTES
         },
         report=lambda _msg: None,
-        expected_heads={"app": pin},
+        expected_heads={repo: pin for repo in REMOTES},
     )
-    assert adapter.status_targets["app"] is not None and adapter.status_targets["app"].project == "web"
+    assert reads == {tmp_path / repo: REMOTES[repo] for repo in REMOTES}
+    assert reads[tmp_path / "app"] != reads[tmp_path / "lib"]
     assert adapter.merge_targets["app"].project == "web"
 
 

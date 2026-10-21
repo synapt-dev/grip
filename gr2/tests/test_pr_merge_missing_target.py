@@ -172,18 +172,19 @@ def test_the_merge_entry_point_reports_a_sentence_and_not_a_traceback(
     )
 
 
-def test_a_platform_error_on_the_pin_read_reports_a_sentence_and_not_a_traceback(
+def test_an_unreadable_host_head_on_the_pin_read_refuses_with_exit_5_and_no_traceback(
     tmp_path: Path, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from gr2.python_cli import platform as platform_ops
-    from gr2.python_cli.platform import AdapterError
+    from gr2.python_cli import pr as pr_mod
+    from gr2.python_cli.review import ReviewError
 
-    class _StatusFails(_NeverCalled):
-        def pr_status(self, *args: object, **kwargs: object) -> object:
-            raise AdapterError("HTTP 502: bad gateway")
+    def unreadable(*_args: object, **_kwargs: object) -> str:
+        raise ReviewError("HTTP 502: bad gateway")
 
     workspace = _workspace(tmp_path, ["app"])
-    monkeypatch.setattr(platform_ops, "get_platform_adapter", lambda _name: _StatusFails())
+    monkeypatch.setattr(pr_mod, "host_pr_head_oid", unreadable)
+    monkeypatch.setattr(platform_ops, "get_platform_adapter", lambda _name: _NeverCalled())
     monkeypatch.setattr(
         gr2_app,
         "_merge_verification_targets",
@@ -195,9 +196,11 @@ def test_a_platform_error_on_the_pin_read_reports_a_sentence_and_not_a_traceback
                       "--match-head-commit", f"app={READ_SHA}"])
     output = "".join(capsys.readouterr())
 
-    assert code == 1, output
+    assert code == 5, output
     assert "Traceback" not in output, f"the operator met a stack: {output}"
     assert "app" in output and "HTTP 502: bad gateway" in output, output
+    assert "could not be read" in output, output
+    assert not (workspace / ".grip" / "events" / "outbox.jsonl").exists()
 
 
 def _write_raw_group(workspace: Path, prs: list[dict]) -> None:

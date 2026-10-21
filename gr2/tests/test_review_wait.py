@@ -2,11 +2,17 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+
+try:
+    from typer._click.utils import strip_ansi
+except ImportError:  # older Typer
+    from click.utils import strip_ansi
 
 from gr2.python_cli import remote_wait
 from gr2.python_cli.exit_codes import EXIT_CODES
@@ -226,4 +232,6 @@ def test_cli_end_to_end_moved_timeout_refused(world):
     assert timed.returncode == 6 and "timeout" in timed.stderr
     refused = _cli(work, str(remote), "main", "--interval", "0.5")
     assert refused.returncode == 3 and "--interval" in refused.stderr
-    assert "same codes as sync wait" in _cli(work, "--help").stdout.lower()
+    help_text = strip_ansi(_cli(work, "--help").stdout)
+    help_text = " ".join(re.sub(r"[─-╿]", " ", help_text).split()).lower()
+    assert "same codes as sync wait" in help_text

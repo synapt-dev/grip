@@ -504,3 +504,43 @@ def test_bind_rows_json_int_remote_is_clean_error(tmp_path):
     assert r.returncode != 0
     assert "Traceback" not in (r.stdout + r.stderr)
     assert "must be a string" in (r.stdout + r.stderr)
+
+
+# --- A missing-field refusal must name the entry. An entry with no key is
+# named by its 1-based place in the file, not '?'; one that used "repo" is told
+# the field is "key". "repo" is still not accepted.
+
+
+def _flat_out(r: subprocess.CompletedProcess) -> str:
+    return " ".join(re.sub(r"[│╭╮╰╯─]", " ", r.stdout + r.stderr).split())
+
+
+def test_bind_rows_json_repo_without_key_names_the_entry_and_the_field(tmp_path):
+    ws = _grip_ws(tmp_path)
+    f = tmp_path / "repo.json"
+    f.write_text(json.dumps([{"repo": "a", "remote": "origin", "base": "aa", "head": "aa"}]))
+    out = _flat_out(_run_bind_real(ws, f))
+    assert "rows-json entry #1 is missing key" in out
+    assert 'not "repo"' in out
+    assert "'?'" not in out
+
+
+def test_bind_rows_json_second_entry_missing_remote_is_named_by_its_key(tmp_path):
+    ws = _grip_ws(tmp_path)
+    f = tmp_path / "two.json"
+    f.write_text(json.dumps([
+        {"key": "one", "remote": "/x/y.git", "base": "aa", "head": "bb"},
+        {"key": "two", "base": "aa", "head": "bb"},
+    ]))
+    out = _flat_out(_run_bind_real(ws, f))
+    assert "rows-json entry 'two' is missing remote" in out
+    assert "repo" not in out
+
+
+def test_bind_rows_json_entry_with_no_key_is_named_by_place(tmp_path):
+    ws = _grip_ws(tmp_path)
+    f = tmp_path / "nokey.json"
+    f.write_text(json.dumps([{"remote": "origin", "base": "aa", "head": "aa"}]))
+    out = _flat_out(_run_bind_real(ws, f))
+    assert "rows-json entry #1 is missing key" in out
+    assert "repo" not in out

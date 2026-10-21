@@ -507,6 +507,12 @@ flag  repo status --json (hidden:repo)                                stable
 flag  repo status --policy <str> (hidden:repo)                        stable
 flag  repo status --spec <str> (hidden:repo)                          stable
 verb  repo status (hidden:repo)                                       stable
+# review
+exit  review 0 ok                                                     stable
+exit  review 2 usage                                                  stable
+exit  review 3 refused                                                stable
+exit  review 6 timeout                                                stable
+exit  review 7 unreadable                                             stable
 # review approve
 arg   review approve review_id <str> (hidden)                         stable
 arg   review approve workspace_root <str> (hidden)                    stable
@@ -759,6 +765,13 @@ arg   review verify workspace_root <str> (hidden)                     stable
 flag  review verify --json (hidden)                                   stable
 flag  review verify --root/-C <str> (hidden)                          stable
 verb  review verify (hidden)                                          stable
+# review wait
+arg   review wait branch <str> (hidden)                               stable
+arg   review wait remote <str> (hidden)                               stable
+flag  review wait --interval <str> (hidden)                           stable
+flag  review wait --since <str> (hidden)                              stable
+flag  review wait --timeout <str> (hidden)                            stable
+verb  review wait (hidden)                                            stable
 # spec show
 arg   spec show workspace_root <str> (hidden:spec)                    stable
 flag  spec show --json (hidden:spec)                                  stable

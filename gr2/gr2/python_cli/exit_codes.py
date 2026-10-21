@@ -36,6 +36,14 @@ EXIT_CODES: dict[str, dict[int, str]] = {
         6: "timeout",
         7: "unreadable",
     },
+    # review wait: the same codes as sync wait, so a caller handles both waits one way.
+    "review": {
+        0: "ok",
+        2: "usage",
+        3: "refused",
+        6: "timeout",
+        7: "unreadable",
+    },
 }
 
 # The (group, code) pairs whose message carries a prefix, and the name of the

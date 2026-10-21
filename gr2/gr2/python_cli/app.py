@@ -6876,7 +6876,7 @@ def pr_merge(
             typer.echo(f"merge refused for {exc.repo}#{exc.pr_number}: {exc.reason}")
             for row in payload["members"]:
                 pin_text = (", ".join(sha[:12] for sha in row["pins"]) if row.get("pins")
-                            else str(row["pin"])[:12])
+                            else str(row["pin"] or "-")[:12])
                 typer.echo(
                     f"  {row['repo']}#{row['number']}  pin {pin_text}  "
                     f"host {str(row['host_head'] or '-')[:12]}  {row['state']}"

@@ -32,18 +32,12 @@ _DIAGNOSTIC = re.compile(r"^(?:git|gr2) [\w-]+:|\b(?:failed|exited|timed out|ret
 _QUOTERS = {"_shown", "shown", "quote"}
 
 ALLOWLIST: dict[tuple[str, str], str] = {
-    ('gr2/python_cli/app.py', 'raise SystemExit(f"shared repo missing for review checkout: {repo_root}\\nrun `gr2 apply {workspace_root} --yes` first")'):
-        'user-typed: the person passed this value in the command that prints it (app.py:518)',
     ('gr2/python_cli/app.py', 'f"another branch belongs in a new lane: gr2 lane create <workspace> {next_steps._shown(unit)} <lane>{repos} "'):
         "repos is built quoted: ' --repos ' + next_steps._shown(key), app.py:2090",
-    ('gr2/python_cli/app.py', 'f"  continue with it: gr2 review create-project {workspace_root} {owner_unit} {lane_name}\\n"'):
-        'user-typed: the person passed this value in the command that prints it (app.py:3387)',
     ('gr2/python_cli/app.py', 'stash_if_dirty(path, f"gr2 exit {owner_unit}/{lane_name}")'):
         'not printed: the stash message, passed to git as one argv item',
     ('gr2/python_cli/app.py', 'restore = f"git -C {shlex.quote(str(path))} stash apply --index {sha}"'):
         "placeholder-safe: sha is git's own rev-parse of stash@{0}, hex",
-    ('gr2/python_cli/app.py', 'f"run `gr2 apply {workspace_root} --yes` first"'):
-        'user-typed: the person passed this value in the command that prints it (app.py:4345)',
     # each value in shown is quoted with next_steps._shown (gitops.py:158); _shown_arg alone is not quote-safe
     ('gr2/python_cli/gitops.py', 'super().__init__(f"git {\' \'.join(shown)}: {_masked(_shown_stderr(args, stderr), secrets)}".rstrip(": "))'):
         'shown is built quoted: next_steps._shown(_shown_arg(arg)), gitops.py:158',

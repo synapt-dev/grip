@@ -40,7 +40,7 @@ def test_since_my_stamp_unshallow_line_quotes_a_repo_path_with_a_space(tmp_path,
     workspace.mkdir()
     pinned = {"members": [{"key": "m", "path": "m", "head": "a" * 40, "files": []}]}
     current = {"members": [{"key": "m", "path": "m", "head": "b" * 40, "files": []}]}
-    monkeypatch.setattr(approvals, "_git", lambda *a, **kw: "Approver B")
+    monkeypatch.setattr(approvals.grip, "review_author_name", lambda *a: "Approver B")
     monkeypatch.setattr(approvals.grip, "show_review_commit", lambda ws, rid: pinned if rid == "pin" else current)
     monkeypatch.setattr(approvals.grip, "list_review_binds", lambda ws: [("pin", None)])
     monkeypatch.setattr(approvals, "count_approvals", lambda ws, pin: {"links": [{"approver": "Approver B", "commit": "c"}]})

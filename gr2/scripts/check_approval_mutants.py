@@ -20,7 +20,7 @@ GUARDS = [
     ("requested_count_type", "approval_policy", "if given is not None and (type(given) is not int or given < 0):", "if False:", "test_invalid_requested_count_refuses"),
     ("optional_policy_file", "approval_policy", "except FileNotFoundError:", "except FileExistsError:", "test_unset_policy_refuses_and_an_explicit_zero_merges"),
     ("approvals_unset", "approval_policy", "if not configured and given is None:", "if False:", "test_unset_policy_refuses_and_an_explicit_zero_merges"),
-    ("workspace_approver", "approve", 'name = _git(workspace, "config", "user.name")', 'name = _git(Path.cwd(), "config", "user.name")', "test_approve_uses_workspace_identity_from_a_member_cwd"),
+    ("workspace_approver", "approve", "name = grip.review_author_name(workspace)", "name = grip.review_author_name(Path.cwd())", "test_approve_uses_workspace_identity_from_a_member_cwd"),
     ("zero_policy_skips_count", "review_merge", "if required:", "if True:", "test_zero_required_skips_an_unmeasurable_approval_chain"),
     ("counted_source", "review_merge", "approval_receipt.update(policy)", 'approval_receipt["required"] = required', "test_default_merge_reads_workspace_policy_and_counts_two_approvers"),
     ("merge_quorum", "review_merge", 'if approval_receipt["count"] < required:', "if False:", "test_default_merge_reads_workspace_policy_and_counts_two_approvers"),

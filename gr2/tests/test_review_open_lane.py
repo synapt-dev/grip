@@ -45,6 +45,15 @@ from gr2.python_cli.review_records import (
     review_record_paths,
 )
 
+
+@pytest.fixture(autouse=True)
+def _no_runner_author_name(monkeypatch):
+    """A PR-lane stamp reads its approver from GIT_AUTHOR_NAME before the lane's user.name, and git authors these
+    rows' commits from it too, so a runner that sets it would win over the names these rows set; drop it, and let
+    a row that is about the variable set it itself."""
+    monkeypatch.delenv("GIT_AUTHOR_NAME", raising=False)
+
+
 _HEX40 = re.compile(r"\A[0-9a-f]{40}\Z")
 
 
@@ -1125,6 +1134,22 @@ def test_stamp_on_a_checkout_pr_lane_applies_the_pinned_lane_name_rule(review_wo
     else:
         assert stamped.exit_code == 0, (stamped.output, stamped.exception)
         assert [link["approver"]["name"] for link in back["links"]] == [name]
+
+
+def test_stamp_on_a_checkout_pr_lane_reads_git_author_name_before_the_lane_user_name(review_world, monkeypatch):
+    """The PR-lane stamp reads the approver as the pin and the pinned stamp do (grip.review_author_name): under
+    GIT_AUTHOR_NAME=a with the lane's user.name=b it records a, so one person is one approver on both lanes."""
+    from typer.testing import CliRunner
+    from gr2.python_cli import approvals
+
+    world = review_world
+    ws, app_mod, lane = _checked_out_lane(world, monkeypatch)
+    _run(lane, "config", "user.name", "Lane Name")
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "Env Name")
+    stamped = CliRunner().invoke(app_mod.app, ["review", "stamp", str(lane)])
+    assert stamped.exit_code == 0, (stamped.output, stamped.exception)
+    back = approvals.pr_head_approvals(world["source"], approvals.pr_lane_record(lane)["repo"], world["head_sha"])
+    assert [link["approver"]["name"] for link in back["links"]] == ["Env Name"], back
 
 
 def _plant_pr_lane_stamp(store, link, parent):

@@ -107,7 +107,7 @@ gr2 check set "$WS" "$REVIEW" -- "$T/set-test.sh"  # exit 0 pass, 1 fail (it pri
 
 ### Recipe 5: approve a teammate's review
 
-Run it in YOUR workspace: the approval is made as that workspace's `git user.name`, and the author cannot approve their own review. Run it once to see the ranges and read the change; run it again with `APPROVE=1` to test and stamp. It runs the set test itself (as in Recipe 4) and stops before stamping when that test fails.
+Run it in YOUR workspace: the approval is made as `GIT_AUTHOR_NAME`, else that workspace's `git user.name`, and the author cannot approve their own review. Run it once to see the ranges and read the change; run it again with `APPROVE=1` to test and stamp. It runs the set test itself (as in Recipe 4) and stops before stamping when that test fails.
 
 ```bash
 #!/bin/bash
@@ -288,7 +288,7 @@ Receive and validate an exact native review before pinning it locally.
 
 ### gr2 review stamp
 
-Stamp the review: append an unsigned exact-head approval as git user.name, on every member remote.
+Stamp the review: append an unsigned exact-head approval as GIT_AUTHOR_NAME, else the workspace git user.name, on every member remote.
 
 - `<workspace_root>` (optional)
 - `<review_id>` (optional)

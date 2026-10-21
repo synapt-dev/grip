@@ -409,6 +409,81 @@ def test_a_push_refused_mid_run_is_partial_and_a_rerun_after_the_cause_clears_fi
     assert parents == [beta["base"], beta["head"]], parents
 
 
+def test_a_partial_merge_names_what_merged_and_what_did_not_on_stderr(slice2):
+    # Exit 4: one stderr line names each landed member with its sha and each other member with its reason code;
+    # stdout stays the one JSON receipt.
+    record_set(slice2)
+    hook = slice2["members"]["beta"]["remote"] / "hooks" / "pre-receive"
+    hook.write_text("#!/bin/sh\necho 'main is closed for now' >&2\nexit 1\n")
+    hook.chmod(0o755)
+    argv = ["review", "merge", slice2["review"], "--from", "feat", "--into", "main", "--approvals", "0"]
+    out = runner.invoke(app, argv)
+    print(f"$ gr2 {' '.join(argv)}\nstdout: {out.stdout}stderr: {out.stderr}exit {out.exit_code}")
+    assert out.exit_code == merge_gate.EXIT_PARTIAL, out.output
+    assert len(out.stdout.splitlines()) == 1, out.stdout
+    receipt = json.loads(out.stdout)
+    assert receipt["exit"] == merge_gate.EXIT_PARTIAL, receipt
+    sha = mains(slice2)["alpha"][:12]
+    lines = [l for l in out.stderr.splitlines() if l.startswith("partial:")]
+    assert lines == [f"partial: merged alpha ({sha}); not merged beta (push_rejected)"], out.stderr
+
+
+def test_a_full_merge_prints_no_partial_line(slice2):
+    record_set(slice2)
+    argv = ["review", "merge", slice2["review"], "--from", "feat", "--into", "main", "--approvals", "0"]
+    out = runner.invoke(app, argv)
+    print(f"$ gr2 {' '.join(argv)}\nstdout: {out.stdout}stderr: {out.stderr}exit {out.exit_code}")
+    assert out.exit_code == merge_gate.EXIT_MERGED, out.output
+    assert len(out.stdout.splitlines()) == 1, out.stdout
+    assert json.loads(out.stdout)["exit"] == merge_gate.EXIT_MERGED, out.stdout
+    assert "partial:" not in out.stderr, out.stderr
+
+
+def test_the_readme_names_the_partial_line_the_helper_prints():
+    # The code never says more than the README: the sentence under the exit codes names the line's shape, and the
+    # helper's line starts with that shape's literal prefix.
+    from pathlib import Path
+
+    from gr2.python_cli import next_steps
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
+    shape = "`partial: merged <key> (<sha12>); not merged <key> (<reason>); not known <key> (<reason>)`"
+    assert shape in readme, "README names the exit-4 stderr line"
+    assert "`partial: nothing measured (<code>)`" in readme, "README names the no-members line"
+    prefix = shape.strip("`").split("<", 1)[0]
+    receipt = {"members": [{"key": "alpha", "final": "merged", "merged": "a" * 40},
+                           {"key": "beta", "final": "unmerged", "refused": "push_rejected: main is closed"},
+                           {"key": "gamma", "final": "unknown", "refused": None}]}
+    line = next_steps._merge_partial_line(merge_gate.EXIT_PARTIAL, receipt)
+    assert prefix == "partial: merged " and line.startswith(prefix), line
+    assert line == f"partial: merged alpha ({'a' * 12}); not merged beta (push_rejected); not known gamma (unknown)", line
+
+
+def test_a_bind_fault_partial_line_says_nothing_was_measured():
+    # merge_gate._unmeasured: exit 4 with no members; the line names the receipt's refusal code, not "merged none".
+    from gr2.python_cli import next_steps
+    code, receipt = merge_gate._unmeasured("r1", "main", "feat", "bind_unreadable: OSError: gone")
+    assert code == merge_gate.EXIT_PARTIAL and receipt["members"] == [], receipt
+    assert next_steps._merge_partial_line(code, receipt) == "partial: nothing measured (bind_unreadable)"
+
+
+def test_an_unconfirmed_push_is_not_known_not_unmerged():
+    # A push that timed out may still land: the member is "not known", even when the target then read unmerged.
+    from gr2.python_cli import next_steps
+    receipt = {"members": [{"key": "alpha", "final": "merged", "merged": "b" * 40},
+                           {"key": "beta", "final": "unmerged", "refused": "push_unconfirmed: timed out"}]}
+    line = next_steps._merge_partial_line(merge_gate.EXIT_PARTIAL, receipt)
+    assert line == f"partial: merged alpha ({'b' * 12}); not known beta (push_unconfirmed)", line
+
+
+def test_a_member_never_measured_is_not_known():
+    # final == "unknown" (a member the run never selected, or a measurement fault): never "not merged".
+    from gr2.python_cli import next_steps
+    receipt = {"members": [{"key": "alpha", "final": "merged", "merged": "c" * 40},
+                           {"key": "beta", "final": "unknown", "refused": None}]}
+    line = next_steps._merge_partial_line(merge_gate.EXIT_PARTIAL, receipt)
+    assert line == f"partial: merged alpha ({'c' * 12}); not known beta (unknown)", line
+
+
 def test_a_member_that_moves_after_a_half_land_is_refused_with_a_next_line_and_the_run_stays_partial(slice2):
     # The README's half-land paragraph: a member whose branch moved before the rerun is refused by the same preflight,
     # the refusal carries a `next:` step in the receipt, its target does not move, and the run still exits 4.

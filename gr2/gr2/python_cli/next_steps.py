@@ -121,6 +121,27 @@ def _update_lines(workspace: str, receipt: dict) -> list[str]:
     return lines
 
 
+def _merge_partial_line(code: int, receipt: dict) -> str | None:
+    # Exit 4 only: what landed is otherwise in the JSON alone. Exit 4 is partial OR unknown, so a member is "not merged"
+    # only when its target was measured unmerged and no push may still land; an unmeasured member, or one whose push
+    # went unconfirmed, is "not known". A bind fault measured nothing and says so with its refusal code.
+    if code != 4:
+        return None
+    members = receipt.get("members") or []
+    if not members:
+        return f"partial: nothing measured ({str(receipt.get('refused') or 'unknown').split(':', 1)[0]})"
+    sides = {"merged": [], "not merged": [], "not known": []}
+    for m in members:
+        reason = (m.get("refused") or "").split(":", 1)[0]
+        if m.get("final") == "merged":
+            sides["merged"].append(f"{_shown(m['key'])} ({str(m.get('merged') or '?')[:12]})")
+        elif m.get("final") == "unmerged" and reason != "push_unconfirmed":
+            sides["not merged"].append(f"{_shown(m['key'])} ({reason or 'unmerged'})")
+        else:
+            sides["not known"].append(f"{_shown(m['key'])} ({reason or m.get('final') or 'unknown'})")
+    return "partial: " + "; ".join(f"{side} {', '.join(keys)}" for side, keys in sides.items() if keys)
+
+
 def _head_fetch(repo: str, remote: str, head: str) -> str:
     # Private, so the skill's refusal table keeps one row per printed code. The command a refusal prints for a clone
     # that lacks the pinned head; shell-quoted, so a path with a space runs as printed.

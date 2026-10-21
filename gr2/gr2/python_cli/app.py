@@ -3808,6 +3808,9 @@ def _unpushed_commits(repo: Path, *, fetch: bool = True) -> list[tuple[str, str]
     `lane list` passes fetch=False, and it says in its output that it did not fetch."""
     held: list[str] = []
     if fetch:
+        # `fetch --all` hands each remote's name to a child fetch with no "--", where --upload-pack=<cmd> runs <cmd>.
+        if any(name.startswith("-") for name in gitops.run_argv(["git", "remote"], cwd=repo).stdout.split("\n")):
+            raise SystemExit(f"cannot fetch in {repo}: a remote's name begins with '-', which git would read as an option")
         fetched = gitops.run_argv(["git", "fetch", "--quiet", "--all"], cwd=repo)
         if fetched.returncode != 0:
             raise SystemExit(f"cannot fetch in {repo}, so cannot show its commits are pushed: {fetched.stderr.strip()}")
@@ -3845,7 +3848,7 @@ def _remote_tag_shas(repo: Path) -> list[str]:
     look unpushed or, worse, a failed ask look like 'nothing held'. A sha this repo lacks cannot hide a local commit."""
     shas: list[str] = []
     for remote in git(repo, "remote").stdout.split():
-        listed = gitops.run_argv(["git", "ls-remote", "--tags", remote], cwd=repo)
+        listed = gitops.run_argv(["git", "ls-remote", "--tags", "--", remote], cwd=repo)
         if listed.returncode != 0:
             raise SystemExit(f"cannot list {remote}'s tags in {repo}, so cannot show a tagged commit is pushed: "
                              f"{listed.stderr.strip()}")

@@ -2684,6 +2684,51 @@ def _root_origin_for_push(root: Path, to: str | None) -> str | None:
     return to
 
 
+# GitHub's wording for a file over its size limit, as given in its own
+# documentation: https://docs.github.com/en/repositories/working-with-files/managing-large-files/about-large-files-on-github
+# No host was measured; this pattern follows that page only.
+_HOST_SIZE_LINE = re.compile(
+    r"^remote: error: File (?P<path>.+) is (?P<size>[0-9.]+ MB); "
+    r"this exceeds GitHub's file size limit of (?P<limit>[0-9.]+) MB\s*$",
+    re.MULTILINE,
+)
+
+# The same page gives the limit as 100 MiB, so "MB" in that line is read as
+# MiB. Not measured on a host.
+_HOST_MB = 1024 * 1024
+
+
+def host_size_refusal(stderr: str, pushed) -> tuple[str, str, tuple[str, ...]] | None:
+    """Name the file a host refused for size: (path, "<N> MB", members).
+
+    ``pushed`` is a list of (member name, repo path, commit sha). ``members``
+    holds every pushed member, in push order, whose blob at the path is over
+    the limit the host named; it is empty when none is, and the member is
+    then not determined. Returns None when the stderr has no size line we
+    know.
+    """
+    m = _HOST_SIZE_LINE.search(stderr)
+    if m is None:
+        return None
+    path, size = m.group("path"), m.group("size")
+    limit = float(m.group("limit")) * _HOST_MB
+    over: list[str] = []
+    for member, repo, sha in pushed:
+        # The read ignores replace refs and grafts, so the blob is the pushed commit's own.
+        out = gitops.real_history_run(repo, "ls-tree", "-r", "-l", "-z", sha, "--", path, binary=True)
+        if out.returncode != 0:
+            continue
+        for row in out.stdout.split(b"\0"):
+            meta, _, name = row.partition(b"\t")
+            if name != os.fsencode(path):
+                continue
+            blob_size = meta.split()[-1]
+            if blob_size.isdigit() and int(blob_size) > limit:
+                over.append(member)
+            break
+    return (path, size, tuple(over))
+
+
 def _atomic_push(root: Path, refspecs: list[tuple[str, str]], verify: bool = True,
                  leases: dict[str, str] | None = None) -> bool:
     """ONE `git push --atomic` of every (commit, ref), so the remote moves all of them or none. A refusal names

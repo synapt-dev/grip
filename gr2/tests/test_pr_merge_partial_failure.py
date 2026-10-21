@@ -89,6 +89,16 @@ def _targets(workspace: Path, repos: list[str]) -> dict[str, MergeVerificationTa
     }
 
 
+PIN = "c" * 40
+
+
+@pytest.fixture(autouse=True)
+def _host_head(monkeypatch: pytest.MonkeyPatch) -> None:
+    from gr2.python_cli import pr as pr_mod
+
+    monkeypatch.setattr(pr_mod, "host_pr_head_oid", lambda root, number, *, remote="origin": PIN)
+
+
 def _merge(
     workspace: Path,
     repos: list[str],
@@ -102,6 +112,7 @@ def _merge(
         method=MergeMethod.MERGE,
         verification_targets=_targets(workspace, repos),
         report=lambda _message: None,
+        expected_heads={repo: PIN for repo in repos},
     )
 
 
@@ -164,6 +175,7 @@ def test_postcondition_failure_preserves_the_acknowledged_receipt(
             report=lambda _message: (_ for _ in ()).throw(
                 RuntimeError("report sink unavailable")
             ),
+            expected_heads={"app": PIN},
         )
 
     assert raised.value.operation_acknowledged is True

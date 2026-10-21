@@ -41,6 +41,7 @@ from .platform import (
 __all__ = [
     "MergeMethod",
     "PRHeadPinError",
+    "PRUnpinnedError",
     "PRMergeError",
     "PRMergeGroupError",
     "PRMergeOutcomeUnknownError",
@@ -175,6 +176,53 @@ class PRHeadUnreadableError(PRPrePassRefusal):
             f"the host's current head could not be read ({reason}); nothing merged",
             members=members,
         )
+
+
+class PRUnpinnedError(PRPrePassRefusal):
+    """A member carries no reviewed head pin, so NOTHING merged.
+
+    There is no unpinned mode: a merge lands only bytes somebody read, and a
+    member with no pin has no read to hold it to.
+    """
+
+    status = "refused_unpinned"
+    exit_code = 4
+
+    def __init__(
+        self,
+        repo: str,
+        pr_number: int,
+        *,
+        unpinned: list[tuple[str, int]],
+        ambiguous: list[tuple[str, int, list[str]]] = (),
+    ) -> None:
+        self.unpinned = [name for name, _ in unpinned]
+        # A member given two or more disagreeing pins is AMBIGUOUS, and the refusal
+        # names every pin it was given, never just the member.
+        self.ambiguous = {name: list(shas) for name, _, shas in ambiguous}
+        parts = []
+        if self.unpinned:
+            parts.append(f"no reviewed head bound for {', '.join(self.unpinned)}")
+        for name, shas in self.ambiguous.items():
+            parts.append(f"{name}: {_count_word(len(shas))} pins, {_and_join([sha[:12] for sha in shas])}")
+        reason = "; ".join(parts) + "; pin every member to the head you read. Nothing merged."
+        members = [
+            {"repo": name, "number": number, "pin": None, "host_head": None, "state": "UNPINNED"}
+            for name, number in unpinned
+        ] + [
+            {"repo": name, "number": number, "pin": None, "pins": list(shas), "host_head": None,
+             "state": "AMBIGUOUS"}
+            for name, number, shas in ambiguous
+        ]
+        super().__init__(repo, pr_number, reason, members=members)
+
+
+def _count_word(count: int) -> str:
+    return {2: "two", 3: "three", 4: "four"}.get(count, str(count))
+
+
+def _and_join(items: list[str]) -> str:
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
 
 
 class PRHeadPinError(PRPrePassRefusal):
@@ -663,7 +711,8 @@ def merge_pr_group(
     `expected_heads` pins a member's reviewed head COMMIT by repo. Every pinned
     member is checked before the first merge, so a group whose bytes moved under
     the reads lands nothing at all rather than every member whose head happened
-    to still match.
+    to still match. Every member must be pinned: `expected_heads=None` or `{}` refuses
+    the whole group with `PRUnpinnedError` (exit 4), since there is no unpinned mode.
     """
     group = _load_group(workspace_root, pr_group_id)
     merged: list[CompletedMerge] = []
@@ -692,7 +741,6 @@ def merge_pr_group(
             + ", ".join(member_repos)
             + ")"
         )
-
     # The numbers come from the validated pairs, so no site on this path converts one
     # again: `int()` accepts `True` and `7.9` in silence, and the three reads that used
     # to convert here, in the pin pass and in the merge loop were three chances to
@@ -708,6 +756,13 @@ def merge_pr_group(
             missing=[repo for repo, _ in missing_targets],
             completed=[],
         )
+
+    # EVERY member is pinned, or nothing merges. Refused after the missing-target
+    # check (the more basic error) and before any host read, so a library caller
+    # cannot merge unpinned either.
+    unpinned = [(repo, number) for repo, number in members if repo not in pins]
+    if unpinned:
+        raise PRUnpinnedError(unpinned[0][0], unpinned[0][1], unpinned=unpinned)
 
     # THE PIN PASS. It runs over every member BEFORE the first merge, because a
     # per-call check refuses only the member the adapter has reached -- an

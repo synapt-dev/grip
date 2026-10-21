@@ -123,7 +123,7 @@ class RootOptionCommand(typer.core.TyperCommand):
                 ctx.fail("the workspace root was given twice: as the first argument and with --root/-C")
             args.insert(at, root_value)
         elif self.infer_bare and count == required - 1:
-            from .app import _is_workspace_root, _resolve_workspace_root
+            from .workspace_root import _is_workspace_root, _resolve_workspace_root
 
             found = _resolve_workspace_root()
             if not _is_workspace_root(found):
@@ -277,7 +277,7 @@ class ReviewSubjectCommand(RootOptionCommand):
             return typer.core.TyperCommand.parse_args(self, ctx, args)
         positions, root_value = self._scan(args)
         if not positions and root_value is None:
-            from .app import _is_workspace_root, _resolve_workspace_root
+            from .workspace_root import _is_workspace_root, _resolve_workspace_root
 
             found = _resolve_workspace_root()
             if not _is_workspace_root(found):

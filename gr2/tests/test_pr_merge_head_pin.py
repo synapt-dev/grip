@@ -158,6 +158,8 @@ def test_a_moved_member_refuses_the_whole_group_before_merging_anything(
     assert raised.value.expected == READ_SHA
     assert raised.value.actual == MOVED_SHA
     assert raised.value.repo == "api"
+    assert (raised.value.status, raised.value.exit_code) == ("refused_head_moved", 3)
+    assert [row["state"] for row in raised.value.members] == ["same", "MOVED"]
     # both shas are named in the message the author reads
     assert READ_SHA[:8] in str(raised.value)
     assert MOVED_SHA[:8] in str(raised.value)
@@ -202,13 +204,17 @@ def test_a_pin_for_a_repo_not_in_the_group_refuses_loudly(tmp_path: Path) -> Non
 def test_an_adapter_that_cannot_report_a_head_refuses_rather_than_assumes(
     tmp_path: Path,
 ) -> None:
-    """Unverifiable is not verified."""
+    """Unverifiable is not verified, and a head the host cannot give is never moved."""
+    from gr2.python_cli import pr as pr_mod
+
     adapter = _Pinned({})
 
-    with pytest.raises(PRHeadPinError):
+    with pytest.raises(pr_mod.PRHeadUnreadableError) as raised:
         _merge(tmp_path, ["app"], adapter, expected_heads={"app": READ_SHA})
 
     assert adapter.merged == []
+    assert raised.value.exit_code == 5
+    assert raised.value.status == "refused_unreadable"
 
 
 # --- the pin reaches gh, and the control that proves the assertion can fail ---
@@ -512,6 +518,87 @@ def test_an_unreadable_member_head_refuses_the_group_with_exit_5_and_writes_noth
     events = outbox.read_text() if outbox.exists() else ""
     assert "pr.merge_failed" not in events, events
     assert group_file.read_bytes() == before, "the group file must be byte-identical"
+
+
+def _cli_refusal(tmp_path, capsys, monkeypatch, heads, raises=None):
+    """Run `pr merge --json` with both members pinned to READ_SHA; return
+    (exit code, payload, adapter, group file before, group file, outbox)."""
+    from gr2.python_cli import app as gr2_app
+    from gr2.python_cli import platform as platform_ops
+
+    from .test_pr_merge_missing_target import (
+        GROUP_ID, LANE_NAME, OWNER_UNIT, _run_main, _workspace,
+    )
+
+    workspace = _workspace(tmp_path, ["app", "api"])
+    adapter = _Pinned(heads)
+    _HOST["raises"].update(raises or {})
+    monkeypatch.setattr(platform_ops, "get_platform_adapter", lambda _name: adapter)
+    monkeypatch.setattr(gr2_app, "_merge_verification_targets",
+                        lambda _root: _targets(workspace, ["app", "api"]))
+    group_file = workspace / ".grip" / "pr_groups" / f"{GROUP_ID}.json"
+    before = group_file.read_bytes()
+    outbox = workspace / ".grip" / "events" / "outbox.jsonl"
+    code = _run_main(["pr", "merge", str(workspace), OWNER_UNIT, LANE_NAME, "--json",
+                      "--match-head-commit", f"app={READ_SHA}",
+                      "--match-head-commit", f"api={READ_SHA}"])
+    output = "".join(capsys.readouterr())
+    payload = json.loads(output[output.index("{"):]) if "{" in output else {"raw": output}
+    return code, payload, adapter, before, group_file, outbox
+
+
+def _states(payload) -> dict[str, str]:
+    return {row["repo"]: row["state"] for row in payload.get("members", [])}
+
+
+def test_a_moved_head_refuses_with_exit_3_and_the_table_and_writes_nothing(
+    tmp_path: Path, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """W1: B's host head differs from its pin."""
+    code, payload, adapter, before, group_file, outbox = _cli_refusal(
+        tmp_path, capsys, monkeypatch, {"app": READ_SHA, "api": MOVED_SHA}
+    )
+
+    assert code == 3, payload
+    assert payload["status"] == "refused_head_moved", payload
+    assert adapter.merged == [], "0 merge_pr calls"
+    assert group_file.read_bytes() == before, "the group file must be byte-identical"
+    events = outbox.read_text() if outbox.exists() else ""
+    assert "pr.merge_failed" not in events, events
+    assert _states(payload) == {"app": "same", "api": "MOVED"}, payload
+    api = next(row for row in payload["members"] if row["repo"] == "api")
+    assert (api["pin"], api["host_head"]) == (READ_SHA, MOVED_SHA), api
+
+
+def test_a_moved_first_member_does_not_stop_the_pass_before_the_rest(
+    tmp_path: Path, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """W1-ALL: A moved, B same; the table still lists both."""
+    code, payload, adapter, _before, _file, _outbox = _cli_refusal(
+        tmp_path, capsys, monkeypatch, {"app": MOVED_SHA, "api": READ_SHA}
+    )
+
+    assert code == 3, payload
+    assert adapter.merged == []
+    assert _states(payload) == {"app": "MOVED", "api": "same"}, payload
+
+
+def test_unreadable_wins_over_moved_and_the_table_names_both(
+    tmp_path: Path, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """MIX: A moved, B unreadable: exit 5, and the table names both."""
+    from gr2.python_cli.review import ReviewError
+
+    code, payload, adapter, before, group_file, _outbox = _cli_refusal(
+        tmp_path, capsys, monkeypatch, {"app": MOVED_SHA, "api": READ_SHA},
+        raises={"api": ReviewError("ls-remote failed: HTTP 502")},
+    )
+
+    assert code == 5, payload
+    assert payload["status"] == "refused_unreadable", payload
+    assert adapter.merged == []
+    assert group_file.read_bytes() == before
+    assert _states(payload) == {"app": "MOVED", "api": "UNREADABLE"}, payload
 
 
 def test_the_pin_pass_reads_the_host_not_the_adapter_status(tmp_path: Path) -> None:

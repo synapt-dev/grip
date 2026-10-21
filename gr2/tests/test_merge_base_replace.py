@@ -4,7 +4,8 @@ A replace ref (refs/replace/<sha>) swaps a commit for another on every plain rea
 can name a later base than the real one. A later base drops the branch's own unlanded commits from the range it
 compares: prune then reads a branch carrying unlanded work as squash-merged, and coverage reads a pin as landed. The
 base a review records (git review open, a PR-head pin, a continued lane's fork base) moves the same way, to the head
-itself, so the review covers none of the branch's work. These reads use gitops.real_history_run, as
+itself, so the review covers none of the branch's work; the out-of-set hint, which reads a member's change from its
+merge-base with origin/HEAD, then sees no change at all. These reads use gitops.real_history_run, as
 gitops.is_ancestor already does."""
 from __future__ import annotations
 
@@ -12,7 +13,7 @@ import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
-from gr2.python_cli import app, git_review, grip_cli, prune
+from gr2.python_cli import app, git_review, grip_cli, prune, set_hints
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -181,3 +182,12 @@ def test_continued_lane_fork_base_is_the_real_base_through_a_replaced_integratio
     _with_origin(tmp_path, work)
     _git(work, "checkout", "-q", "feature")
     assert app._start_lane_branch("repo", work, "feature", "main", seed_is_work=False) == (a, None)
+
+
+def test_out_of_set_hint_reads_the_change_from_the_real_base_through_a_replaced_default_branch(tmp_path):
+    # A plain merge-base of the member's head P and origin/HEAD is P itself, so the hint reads the change as empty
+    # (base == head) and skips the member: whatever it moved off is never hinted.
+    work, a, p, _ = _feature_with_replaced_main(tmp_path)
+    _with_origin(tmp_path, work)
+    _git(work, "remote", "set-head", "origin", "main")
+    assert set_hints._merge_base_with_default(work, p) == a

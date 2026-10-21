@@ -69,7 +69,7 @@ def _identifier_first(name: str) -> tuple[bool, str]:
 def _merge_base_with_default(repo: Path, head: str) -> str | None:
     """Where the member's change starts when the root commit's parent does not say: its merge-base with the clone's
     record of the remote default branch (origin/HEAD, which `git clone` sets)."""
-    base = gitops.run(repo, "merge-base", head, "refs/remotes/origin/HEAD")
+    base = gitops.real_history_run(repo, "merge-base", head, "refs/remotes/origin/HEAD")
     return base.stdout.strip() or None if base.returncode == 0 else None
 
 

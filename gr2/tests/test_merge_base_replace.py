@@ -191,3 +191,14 @@ def test_out_of_set_hint_reads_the_change_from_the_real_base_through_a_replaced_
     _with_origin(tmp_path, work)
     _git(work, "remote", "set-head", "origin", "main")
     assert set_hints._merge_base_with_default(work, p) == a
+
+
+
+def test_out_of_set_hint_reads_the_removed_names_from_the_real_base_through_a_replaced_base(tmp_path):
+    # The base commit is replaced by one holding the head's tree, so a plain diff base..head is empty and the name
+    # the change really removed is never hinted.
+    work, a = _init(tmp_path)
+    base = _commit(work, "gone_name")
+    head = _commit(work, "gone_name", remove=True)
+    _git(work, "replace", base, _fake(work, a, a))
+    assert set_hints._removed_names(work, base, head) == {"gone_name"}

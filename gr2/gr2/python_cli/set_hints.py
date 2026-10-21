@@ -28,7 +28,7 @@ MAX_PATHS = 3
 
 
 def _removed_names(repo: Path, base: str, head: str) -> set[str]:
-    diff = gitops.run(repo, "diff", "-U0", "--no-color", "--no-ext-diff", base, head)
+    diff = gitops.real_history_run(repo, "diff", "-U0", "--no-color", "--no-ext-diff", base, head)
     if diff.returncode:
         return set()
     minus: set[str] = set()

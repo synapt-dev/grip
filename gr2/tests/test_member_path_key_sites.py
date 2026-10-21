@@ -58,6 +58,22 @@ def test_a_member_spelled_dot_slash_alpha_keeps_its_pin_and_its_declared_ref(tmp
     assert seen["alpha"] == (pin, "dev")
 
 
+def test_an_unmaterialized_member_spelled_dot_slash_alpha_keeps_its_declared_url(tmp_path):
+    from gr2.python_cli import app as app_mod
+
+    root = tmp_path / "root"
+    root.mkdir()
+    _git(root, "init", "-q", "-b", "main")
+    (root / ".gitmodules").write_text(
+        '[submodule "alpha"]\n\tpath = ./alpha\n\turl = https://example.invalid/x/alpha\n\tbranch = dev\n')
+    _git(root, "update-index", "--add", "--cacheinfo", "160000," + "ab" * 20 + ",alpha")
+    _git(root, "add", ".gitmodules")
+    _git(root, "commit", "-q", "-m", "root")
+    (root / "alpha").mkdir()
+    [entry] = app_mod._scan_existing_repos(root)
+    assert (entry["path"], entry["url"], entry.get("ref")) == ("alpha", "https://example.invalid/x/alpha", "dev")
+
+
 def test_a_grip_toml_dot_slash_alpha_carries_the_review_record_for_alpha(tmp_path, monkeypatch):
     from gr2.python_cli import grip as grip_mod
     from gr2.python_cli import grip_cli

@@ -314,3 +314,78 @@ def test_p11_merge_ref_is_ref_records_the_branch_of_the_same_name(tmp_path):
     assert result.exit_code == 0, result.output
     members = _show(w["ws"], _gr_id(result))["members"]
     assert [m.get("pushed_before_pin") for m in members] == ["refs/heads/feat"]
+
+
+def _hold_head_on_aaa(w: dict) -> None:
+    """A second remote branch, sorting before feat, whose tip is also the head."""
+    _git(w["src"], "push", "-q", "origin", f"{w['head']}:refs/heads/aaa")
+
+
+def _assert_no_guessed_next(result) -> None:
+    """No command answers the ambiguity, so next is null and the check line names both branches."""
+    lines = result.output.splitlines()
+    assert "next: null" in lines, result.output
+    assert ("check: refs/heads/aaa, refs/heads/feat all hold this head; "
+            "--source must be a clone checked out on one of them") in lines, result.output
+
+
+def test_p12_two_branches_at_the_head_without_source_refuse_and_name_both(tmp_path):
+    w = _world(tmp_path)
+    _hold_head_on_aaa(w)
+    result = _pin(w, source=False)
+    assert result.exit_code != 0, result.output
+    assert "pushed_branch_ambiguous" in result.output
+    assert "refs/heads/aaa" in result.output and "refs/heads/feat" in result.output
+    _assert_no_guessed_next(result)
+    assert _review_refs(w["ws"]) == ""
+
+
+def test_p12b_two_branches_at_the_head_with_source_record_its_upstream(tmp_path):
+    w = _world(tmp_path)
+    _hold_head_on_aaa(w)
+    member = _show(w["ws"], _gr_id(_pin(w)))["members"][0]
+    assert member["pushed_before_pin"] == "refs/heads/feat"
+
+
+def test_p12c_detached_source_with_two_branches_at_the_head_refuses(tmp_path):
+    w = _world(tmp_path)
+    _hold_head_on_aaa(w)
+    _git(w["src"], "checkout", "-q", "--detach", w["head"])
+    result = _pin(w)
+    assert result.exit_code != 0, result.output
+    assert "pushed_branch_ambiguous" in result.output
+    _assert_no_guessed_next(result)
+    assert _review_refs(w["ws"]) == ""
+
+
+def test_p12d_source_upstream_on_a_third_branch_with_two_at_the_head_refuses(tmp_path):
+    w = _world(tmp_path)
+    _hold_head_on_aaa(w)
+    _git(w["src"], "push", "-q", "origin", f"{w['base']}:refs/heads/wip")
+    _git(w["src"], "fetch", "-q", "origin")
+    _git(w["src"], "branch", "-q", "--set-upstream-to=origin/wip")
+    result = _pin(w)
+    assert result.exit_code != 0, result.output
+    assert "pushed_branch_ambiguous" in result.output
+    assert "refs/heads/aaa" in result.output and "refs/heads/feat" in result.output
+    assert "refs/heads/wip" in result.output
+    _assert_no_guessed_next(result)
+    assert _review_refs(w["ws"]) == ""
+
+
+def test_p13_text_show_prints_pushed_before_pin(tmp_path):
+    w = _world(tmp_path)
+    rid = _gr_id(_pin(w))
+    shown = runner.invoke(app, ["review", "show", str(w["ws"]), rid])
+    assert shown.exit_code == 0, shown.output
+    assert "  pushed before pin: refs/heads/feat" in shown.output.splitlines()
+
+
+def test_p12e_bidi_override_in_a_branch_name_is_escaped_on_the_check_line(tmp_path):
+    w = _world(tmp_path)
+    _git(w["src"], "push", "-q", "origin", f"{w['head']}:refs/heads/a‮b")
+    result = _pin(w, source=False)
+    assert result.exit_code != 0, result.output
+    assert "‮" not in result.output, result.output
+    assert ("check: 'refs/heads/a\\u202eb', refs/heads/feat all hold this head; "
+            "--source must be a clone checked out on one of them") in result.output.splitlines(), result.output

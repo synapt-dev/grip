@@ -4973,6 +4973,8 @@ def _review_refusal(exc: BaseException) -> tuple[str, str, list[str]]:
             extra = [next_steps.at_base_unreachable()]
         elif exc.refusal == "at_base_tip_unfetchable":  # expected is the ref's tip, observed the remote
             extra = [next_steps.at_base_tip_unfetchable()]
+        elif exc.refusal == "pushed_branch_ambiguous":  # observed is the branches that hold the head
+            extra = next_steps._pushed_branch_ambiguous(str(exc.observed))
         if exc.refusal == "unresolved_merge":  # a member and its unmerged paths, not two values that disagreed
             return exc.refusal, f"{exc.expected}: {exc.observed}", extra
         return exc.refusal, f"expected {exc.expected!r}, observed {exc.observed!r}", extra
@@ -5804,6 +5806,8 @@ def review_show(
         body = str(m["body"]).strip()
         if body:
             typer.echo("  body: " + body.replace("\n", "\n        "))
+        if m.get("pushed_before_pin"):
+            typer.echo(f"  pushed before pin: {next_steps._shown(str(m['pushed_before_pin']))}")
         files = m["files"]
         typer.echo("  files: " + (", ".join(review_diff.printable(f) for f in files) if files else "(none)" if files == []
                                   else f"(not read: {next_steps._shown(str(m.get('files_unread')))}; fetch the head)"))

@@ -10,13 +10,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from . import grip
+from . import grip, layout
 
 
 def _is_workspace_root(path: Path) -> bool:
     """A directory that IS a workspace, of either kind: it holds ``.grip/workspace_spec.toml``,
     or it is a native store root (``grip.toml`` beside a root ``.git``, what ``store init`` makes)."""
-    return (path / ".grip" / "workspace_spec.toml").is_file() or grip._is_native_workspace(path)
+    return (layout.grip_dir(path) / "workspace_spec.toml").is_file() or grip._is_native_workspace(path)
 
 
 def _resolve_workspace_root(workspace_root: Optional[Path] = None) -> Path:

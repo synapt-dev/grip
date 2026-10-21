@@ -5110,18 +5110,18 @@ def _normalize_review_row(raw: object, index: int) -> dict:
     title/body to empty, source resolved to an absolute path when present."""
     if not isinstance(raw, dict):
         raise typer.BadParameter(f"each rows-json entry must be a JSON object, got {type(raw).__name__}")
+    # An entry with no string key is named by its 1-based place in the file.
+    label = repr(raw["key"]) if isinstance(raw.get("key"), str) and raw["key"] else f"#{index}"
     # Type BEFORE presence: a number in a string field is a wrong-type error, not
     # a missing one, and must be named before the string ops downstream see it.
     for f in _ROW_STRING_FIELDS:
         if f in raw and not isinstance(raw[f], str):
             raise typer.BadParameter(
-                f"rows-json entry {raw.get('key', '?')!r} field {f!r} must be a string, "
+                f"rows-json entry {label} field {f!r} must be a string, "
                 f"got {type(raw[f]).__name__}"
             )
     missing = [f for f in _ROW_REQUIRED if not raw.get(f)]
     if missing:
-        # An entry with no key is named by its 1-based place in the file.
-        label = repr(raw["key"]) if raw.get("key") else f"#{index}"
         hint = '; the member is named by "key", not "repo"' if "key" in missing and "repo" in raw else ""
         raise typer.BadParameter(f"rows-json entry {label} is missing {', '.join(missing)}{hint}")
     row = {

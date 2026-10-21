@@ -544,3 +544,20 @@ def test_bind_rows_json_entry_with_no_key_is_named_by_place(tmp_path):
     out = _flat_out(_run_bind_real(ws, f))
     assert "rows-json entry #1 is missing key" in out
     assert "repo" not in out
+
+
+def test_bind_rows_json_keyless_entry_type_error_is_named_by_place(tmp_path):
+    ws = _grip_ws(tmp_path)
+    f = tmp_path / "keyless-type.json"
+    f.write_text(json.dumps([{"repo": "a", "remote": "origin", "base": "aa", "head": 456}]))
+    out = _flat_out(_run_bind_real(ws, f))
+    assert "rows-json entry #1 field 'head' must be a string" in out
+    assert "'?'" not in out
+
+
+def test_bind_rows_json_non_string_key_is_not_used_as_the_label(tmp_path):
+    ws = _grip_ws(tmp_path)
+    f = tmp_path / "int-key.json"
+    f.write_text(json.dumps([{"key": 5, "remote": "origin", "base": "aa", "head": "aa"}]))
+    out = _flat_out(_run_bind_real(ws, f))
+    assert "rows-json entry #1 field 'key' must be a string" in out

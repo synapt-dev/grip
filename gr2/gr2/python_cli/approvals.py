@@ -495,15 +495,22 @@ def since_my_stamp(workspace: Path, review_id: str) -> dict:
     rid = review_id.removeprefix("gr:")
     name = _git(workspace, "config", "user.name")
     current = {m["key"]: m for m in grip.show_review_commit(workspace, rid)["members"]}
-    stamps = []
+    stamps, skipped = [], []
     for pin, _ in grip.list_review_binds(workspace):
-        pinned = {m["key"]: m for m in grip.show_review_commit(workspace, pin)["members"]}
+        try:  # one unreadable bind in the store must not refuse every other review's read; it is named instead
+            pinned = {m["key"]: m for m in grip.show_review_commit(workspace, pin)["members"]}
+        except grip.GripCorruptError as exc:
+            skipped.append({"review_id": "gr:" + pin, "reason": str(exc)})
+            continue
         if not set(pinned) & set(current):
             continue
         for link in count_approvals(workspace, pin)["links"]:
             if link["approver"] == name:
                 stamps.append((_read_link(workspace, link["commit"])["created_at"], pin, pinned))
     result = {"review_id": "gr:" + rid, "approver": name}
+    if skipped:  # an answer measured from an older stamp must not present itself as the newest
+        result |= {"skipped": skipped, "since_may_be_older": True,
+                   "since_may_be_older_reason": "an unreadable bind may hold a newer stamp of yours"}
     if not stamps:
         return {**result, "refused": f"no_stamp: {name} has no stamp on any pin for these members"}
     at, pin, pinned = max(stamps, key=lambda s: s[0])

@@ -511,8 +511,8 @@ def test_an_unreadable_member_head_refuses_the_group_with_exit_5_and_writes_noth
     outbox = workspace / ".grip" / "events" / "outbox.jsonl"
 
     code = _run_main(["pr", "merge", str(workspace), OWNER_UNIT, LANE_NAME, "--json",
-                      "--match-head-commit", f"app={READ_SHA}",
-                      "--match-head-commit", f"api={READ_SHA}"])
+                      "--head", f"app={READ_SHA}",
+                      "--head", f"api={READ_SHA}"])
     output = "".join(capsys.readouterr())
 
     assert code == 5, output
@@ -524,7 +524,7 @@ def test_an_unreadable_member_head_refuses_the_group_with_exit_5_and_writes_noth
     assert group_file.read_bytes() == before, "the group file must be byte-identical"
 
 
-_BOTH_PINNED = ["--match-head-commit", f"app={READ_SHA}", "--match-head-commit", f"api={READ_SHA}"]
+_BOTH_PINNED = ["--head", f"app={READ_SHA}", "--head", f"api={READ_SHA}"]
 
 
 def _cli_refusal(tmp_path, capsys, monkeypatch, heads, raises=None, pins=_BOTH_PINNED,
@@ -641,7 +641,7 @@ def _assert_refused_unpinned(code, payload, adapter, before, group_file, outbox,
 def test_no_pins_on_the_cli_refuses_and_names_every_member(
     tmp_path: Path, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """W4: the ordinary `pr merge` with no --match-head-commit refuses, exit 4."""
+    """W4: the ordinary `pr merge` with no --head refuses, exit 4."""
     result = _cli_refusal(tmp_path, capsys, monkeypatch,
                           {"app": READ_SHA, "api": READ_SHA}, pins=[])
     _assert_refused_unpinned(*result, unpinned=["app", "api"])
@@ -668,7 +668,7 @@ def test_a_partial_pin_set_refuses_unpinned(
     Nothing describes an unpinned mode: there is none, so neither "would merge unpinned"
     nor "or none" appears anywhere in the output."""
     result = _cli_refusal(tmp_path, capsys, monkeypatch, {"app": READ_SHA, "api": READ_SHA},
-                          pins=["--match-head-commit", f"app={READ_SHA}"])
+                          pins=["--head", f"app={READ_SHA}"])
     _assert_refused_unpinned(*result, unpinned=["api"])
     payload = result[1]
     assert "no reviewed head bound for api" in _refusal_reason(payload), payload
@@ -684,8 +684,8 @@ def test_two_disagreeing_pins_for_one_member_refuse_ambiguous_naming_both(
     the other member's valid pin still holds."""
     code, payload, adapter, before, group_file, outbox = _cli_refusal(
         tmp_path, capsys, monkeypatch, {"app": READ_SHA, "api": READ_SHA},
-        pins=["--match-head-commit", f"app={READ_SHA}", "--match-head-commit", f"app={MOVED_SHA}",
-              "--match-head-commit", f"api={READ_SHA}"],
+        pins=["--head", f"app={READ_SHA}", "--head", f"app={MOVED_SHA}",
+              "--head", f"api={READ_SHA}"],
     )
     assert code == 4, payload
     assert payload["status"] == "refused_unpinned", payload
@@ -728,9 +728,9 @@ def test_the_groups_own_refusal_comes_before_ambiguous_pins(
                         lambda _root: _targets(workspace, target_repos))
 
     code = _run_main(["pr", "merge", str(workspace), OWNER_UNIT, LANE_NAME, "--json",
-                      "--match-head-commit", f"app={READ_SHA}",
-                      "--match-head-commit", f"app={MOVED_SHA}",
-                      "--match-head-commit", f"api={READ_SHA}"])
+                      "--head", f"app={READ_SHA}",
+                      "--head", f"app={MOVED_SHA}",
+                      "--head", f"api={READ_SHA}"])
     out, err = capsys.readouterr()
     output = out + err
 
@@ -777,3 +777,53 @@ def test_b2_a_repo_listed_twice_is_named_once_in_the_unpinned_refusal(tmp_path: 
     assert "no reviewed head bound for app, api" in raised.value.reason
     assert [r["repo"] for r in raised.value.members].count("app") == 1
     assert adapter.merged == []
+
+
+# --- the flag's name, as the design gives it -----------------------------------
+
+
+def test_pr_merge_head_flag_is_head(
+    tmp_path: Path, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr2 takes the pin as `--head REPO=SHA`; gh receives it as `--match-head-commit`."""
+    code, payload, adapter, *_ = _cli_refusal(tmp_path, capsys, monkeypatch,
+                                              {"app": READ_SHA, "api": READ_SHA})
+    assert code == 0, payload
+    assert adapter.pins_seen == {"app": READ_SHA, "api": READ_SHA}, adapter.pins_seen
+    recorded = _adapter_argv(monkeypatch, expected_head=READ_SHA)
+    assert recorded[0][recorded[0].index("--match-head-commit") + 1] == READ_SHA
+
+
+def test_pr_merge_old_flag_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr2's own surface has no `--match-head-commit`: the CLI parser rejects it, exit 2."""
+    code, payload, adapter, before, group_file, _ = _cli_refusal(
+        tmp_path, capsys, monkeypatch, {"app": READ_SHA, "api": READ_SHA},
+        pins=["--match-head-commit", f"app={READ_SHA}"])
+    assert code == 2, payload
+    assert "No such option" in payload["stderr"], payload
+    assert adapter.merged == [], "0 merge_pr calls"
+    assert group_file.read_bytes() == before
+
+
+def test_pr_merge_review_and_head_are_exclusive(
+    tmp_path: Path, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--review` and `--head` together refuse before anything merges."""
+    from gr2.python_cli import platform as platform_ops
+
+    from .test_pr_merge_missing_target import GROUP_ID, _run_main, _workspace
+
+    workspace = _workspace(tmp_path, ["app", "api"])
+    adapter = _Pinned({"app": READ_SHA, "api": READ_SHA})
+    monkeypatch.setattr(platform_ops, "get_platform_adapter", lambda _name: adapter)
+    group_file = workspace / ".grip" / "pr_groups" / f"{GROUP_ID}.json"
+    before = group_file.read_bytes()
+    code = _run_main(["pr", "merge", str(workspace), "--review", "r1",
+                      "--head", f"app={READ_SHA}"])
+    output = "".join(capsys.readouterr())
+    assert code == 2, output
+    assert "--review and --head are exclusive" in output, output
+    assert adapter.merged == [], "0 merge_pr calls"
+    assert group_file.read_bytes() == before

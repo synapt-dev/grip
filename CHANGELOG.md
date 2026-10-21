@@ -48,6 +48,10 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Changed
 
+- **`gr2`: `gr2 pr merge`'s pin option is `--head [REPO=]SHA`, repeatable.** It was `--match-head-commit`
+  from 2.0.0a6; the old name is removed, with no alias, and is now an unknown option (exit 2). `--review`
+  given with `--head` refuses, exit 2, before anything merges. gr2 still passes gh its own
+  `--match-head-commit` when it merges.
 - **`gr2`: a full-mode store commit records each member's own commit as its gitlink.** Plain `git status` at
   the root now agrees with `gr2 store status`. What the gitlink and `grip.toml` do not already say (the schema,
   the kind, the layer for an unpushed pin and the records about the pin) is kept under `.grip/fields/<name>/`,

@@ -97,7 +97,7 @@ before.
 - **New type `PRReview`**, one review on a PR: `user` and `state`.
 - **`merge_pr(..., *, method, expected_head=None)`** gains `expected_head`. When it is given, the adapter
   must merge only if the PR's head is still that commit, and refuse otherwise; `gr2 pr merge
-  --match-head-commit` relies on it.
+  --head` relies on it.
 - **`PRStatus.head_oid`** is new (default `None`): the PR's current head commit, which gr2 compares against
   the reviewed head.
 

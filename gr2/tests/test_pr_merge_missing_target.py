@@ -193,7 +193,7 @@ def test_an_unreadable_host_head_on_the_pin_read_refuses_with_exit_5_and_no_trac
     )
 
     code = _run_main(["pr", "merge", str(workspace), OWNER_UNIT, LANE_NAME,
-                      "--match-head-commit", f"app={READ_SHA}"])
+                      "--head", f"app={READ_SHA}"])
     output = "".join(capsys.readouterr())
 
     assert code == 5, output

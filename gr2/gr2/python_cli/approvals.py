@@ -654,7 +654,7 @@ def approve_pr_lane(lane: Path) -> dict:
             next_step="close this lane with `gr2 review close` and check the PR out again, then stamp the new head")
     name = grip.review_author_name(lane)
     if not name:
-        raise ApprovalRefused("approval_identity_missing")
+        raise ApprovalRefused("approval_identity_missing: neither GIT_AUTHOR_NAME nor the lane's user.name is set")
     check_approver_name(name)
     # The PR head's author, and every commit author in base..head, as the pinned path reads its range.
     authors = {_git(lane, "show", "-s", "--format=%an", "--end-of-options", record["head"])}

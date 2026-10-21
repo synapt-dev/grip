@@ -1152,6 +1152,20 @@ def test_stamp_on_a_checkout_pr_lane_reads_git_author_name_before_the_lane_user_
     assert [link["approver"]["name"] for link in back["links"]] == ["Env Name"], back
 
 
+def test_stamp_on_a_checkout_pr_lane_with_no_approver_name_says_what_to_set(review_world, monkeypatch):
+    """With GIT_AUTHOR_NAME unset (the autouse fixture) and the lane's user.name empty, the PR-lane stamp refuses
+    and names both places the approver is read from, as the pinned stamp's refusal does."""
+    from typer.testing import CliRunner
+
+    world = review_world
+    ws, app_mod, lane = _checked_out_lane(world, monkeypatch)
+    _run(lane, "config", "user.name", "")
+    stamped = CliRunner().invoke(app_mod.app, ["review", "stamp", str(lane)])
+    assert stamped.exit_code != 0
+    said = f"{stamped.output}{stamped.exception}"
+    assert "approval_identity_missing" in said and "GIT_AUTHOR_NAME" in said and "user.name" in said, said
+
+
 def _plant_pr_lane_stamp(store, link, parent):
     """Write a checkout-pr stamp the way approve_pr_lane does, without its name check (an older writer)."""
     from gr2.python_cli import approvals

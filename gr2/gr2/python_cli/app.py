@@ -1234,21 +1234,21 @@ def _parse_head_pins(
             repo, sha = members[0], text
         else:
             raise ValueError(
-                f"--match-head-commit {text!r} names no repo, and this group has "
+                f"--head {text!r} names no repo, and this group has "
                 f"{len(members)} members ({', '.join(members)}); pass REPO=SHA so "
                 "the pin cannot land on the wrong member"
             )
         if repo not in members:
             raise ValueError(
-                f"--match-head-commit {repo!r} is not a member of this group "
+                f"--head {repo!r} is not a member of this group "
                 f"({', '.join(members) or 'none'}); a pin has to name one of them, so a "
                 "typo cannot leave the member it meant unpinned"
             )
         if not sha:
-            raise ValueError(f"--match-head-commit {entry!r} carries no commit sha")
+            raise ValueError(f"--head {entry!r} carries no commit sha")
         if not re.fullmatch(r"[0-9a-f]{40}", sha):
             raise ValueError(
-                f"--match-head-commit {entry!r} pins {sha!r}, which is not 40 lowercase "
+                f"--head {entry!r} pins {sha!r}, which is not 40 lowercase "
                 "hex characters; pass the full commit as `git rev-parse` prints it"
             )
         # Parse every entry before refusing: raising at the first conflict dropped
@@ -1262,7 +1262,7 @@ def _parse_head_pins(
     if conflicted:
         raise _UnpinnedPins(
             {name: pin for name, pin in pins.items() if name not in conflicted},
-            "--match-head-commit pins "
+            "--head pins "
             + "; ".join(
                 f"{repo} with different commits ({', '.join(s[:8] for s in shas)})"
                 for repo, shas in conflicted.items()
@@ -1278,7 +1278,7 @@ def _parse_head_pins(
         unpinned = [member for member in distinct_members if member not in pins]
         raise _UnpinnedPins(
             pins,
-            f"--match-head-commit pins {len(pins)} of {len(distinct_members)} members; "
+            f"--head pins {len(pins)} of {len(distinct_members)} members; "
             f"{', '.join(unpinned)} would merge unpinned. Pin every member or none: a "
             "partial pin reads as protection for the whole group and is not."
         )
@@ -6741,9 +6741,9 @@ def pr_merge(
         "-m",
         help="merge/squash/rebase. Defaults to a merge commit.",
     ),
-    match_head_commit: list[str] = typer.Option(
+    head: list[str] = typer.Option(
         None,
-        "--match-head-commit",
+        "--head",
         help=(
             "Pin a member's reviewed head COMMIT: REPO=SHA, or a bare SHA when the "
             "group has one member. Repeatable. The merge refuses before merging ANY "
@@ -6754,11 +6754,13 @@ def pr_merge(
     root: Optional[Path] = ROOT_OPTION,
 ) -> None:
     """Merge grouped PRs for a lane, or for the current review. A review's PRs are
-    pinned to its reviewed commits unless --match-head-commit names other pins.
+    pinned to its reviewed commits unless --head names other pins.
 
     To land a pinned review into its members' remotes instead, use `gr2 review merge`."""
     workspace_root = workspace_root.resolve()
     _refuse_review_beside_unit(owner_unit, review)
+    if review is not None and head:
+        _refuse("--review and --head are exclusive; give one or the other")
     subject_targets = None
     if owner_unit is None:
         target, members = resolve_review_subject(workspace_root, review)
@@ -6776,15 +6778,15 @@ def pr_merge(
         owner_unit, resolved_lane = str(group.get("owner_unit")), str(group.get("lane_name"))
         subject_targets = {slug: MergeVerificationTarget(repo_root=checkout, remote=m["remote"])
                            for slug, (m, checkout) in on_host.items()}
-        if not match_head_commit:
-            match_head_commit = [f"{slug}={m['commit']}" for slug, (m, _) in on_host.items()]
+        if not head:
+            head = [f"{slug}={m['commit']}" for slug, (m, _) in on_host.items()]
     else:
         resolved_lane = _resolve_lane_name(workspace_root, owner_unit, lane_name)
         group_path, group = _find_pr_group(workspace_root, owner_unit, resolved_lane)
     adapter = platform_ops.get_platform_adapter(str(group.get("platform", "github")))
     pending_conflict: _UnpinnedPins | None = None
     try:
-        expected_heads = _parse_head_pins(match_head_commit, group)
+        expected_heads = _parse_head_pins(head, group)
     except _UnpinnedPins as exc:
         # The library refuses what is left unpinned, before any read or write, and its
         # refusal names every unpinned member; a repo pinned twice is refused below,

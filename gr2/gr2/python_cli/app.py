@@ -6762,6 +6762,21 @@ def pr_merge(
             "merged_receipts": completed,
             "state_path": str(group_path),
         }
+    except pr_ops.PRPrePassRefusal as exc:
+        # Refused before the first merge: nothing happened, so nothing is written.
+        payload = {
+            "status": exc.status,
+            "pr_group_id": group["pr_group_id"],
+            "owner_unit": owner_unit,
+            "lane_name": resolved_lane,
+            "merged": [],
+            "refused": [{"repo": exc.repo, "number": exc.pr_number, "reason": exc.reason}],
+        }
+        if json_output:
+            typer.echo(json.dumps(payload, indent=2))
+        else:
+            typer.echo(f"merge refused for {exc.repo}#{exc.pr_number}: {exc.reason}")
+        raise typer.Exit(code=exc.exit_code)
     except pr_ops.PRMergeError as exc:
         completed = [item.as_dict() for item in exc.completed]
         merged = [str(item["repo"]) for item in completed]

@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from .events import EventType, emit, emit_after_outcome
+from .review import ReviewError, host_pr_head_oid
 from .merge_verification import (
     CompletedMerge,
     MergeVerificationTarget,
@@ -154,6 +155,37 @@ class PRHeadPinError(PRMergeError):
             "and read it again, or pass the head you actually read."
         )
         super().__init__(repo, pr_number, reason, completed=completed)
+
+
+class PRPrePassRefusal(PRMergeError):
+    """The pre-pass refused before the first merge: nothing happened.
+
+    The CLI prints the refusal, exits with `exit_code` and writes nothing: no
+    event, no group_state change, because no merge was attempted.
+    """
+
+    status = "refused"
+    exit_code = 1
+
+    def __init__(self, repo: str, pr_number: int, reason: str) -> None:
+        super().__init__(repo, pr_number, reason, completed=[])
+
+
+class PRHeadUnreadableError(PRPrePassRefusal):
+    """The host's current PR head could not be read, so the answer is unknown.
+
+    An unreadable head is not a moved head and not a matching one: refuse.
+    """
+
+    status = "refused_unreadable"
+    exit_code = 5
+
+    def __init__(self, repo: str, pr_number: int, reason: str) -> None:
+        super().__init__(
+            repo,
+            pr_number,
+            f"the host's current head could not be read ({reason}); nothing merged",
+        )
 
 
 class PRMergeTargetError(PRMergeError):
@@ -664,21 +696,13 @@ def merge_pr_group(
             continue
         number = int(pr_info["pr_number"])
         try:
-            actual = adapter.pr_status(repo, number, **routing[repo]).head_oid
-        except AdapterError as exc:
-            # A platform error on the head read is a merge failure like any other:
-            # record it and raise the error the merge verb's CLI turns into a sentence.
-            _record_merge_failure(
-                workspace_root=workspace_root,
-                group=group,
-                actor=actor,
-                repo=repo,
-                number=number,
-                reason=str(exc),
-                completed=merged,
-                operation_acknowledged=False,
-            )
-            raise PRMergeError(repo, number, str(exc), completed=merged) from exc
+            # The host's CURRENT head, through ls-remote, so no local fetch can
+            # lie about it.
+            actual = host_pr_head_oid(targets[repo].repo_root, number, remote=targets[repo].remote)
+        except ReviewError as exc:
+            # Unreadable is UNKNOWN, never moved: refuse, and record nothing,
+            # because nothing happened.
+            raise PRHeadUnreadableError(repo, number, str(exc)) from exc
         if actual != expected:
             raise PRHeadPinError(
                 repo,

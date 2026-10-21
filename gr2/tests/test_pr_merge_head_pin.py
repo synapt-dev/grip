@@ -29,6 +29,25 @@ from gr2.python_cli.pr import PRHeadPinError, merge_pr_group
 READ_SHA = "a" * 40
 MOVED_SHA = "b" * 40
 
+# What the host's ls-remote serves: the newest double's heads, or a per-repo error.
+_HOST: dict[str, dict] = {"heads": {}, "raises": {}}
+
+
+@pytest.fixture(autouse=True)
+def _host_heads(monkeypatch: pytest.MonkeyPatch):
+    """The pin pass reads the host's head, not the adapter's: serve the double's."""
+    from gr2.python_cli import pr as pr_mod
+
+    _HOST["heads"], _HOST["raises"] = {}, {}
+
+    def host_pr_head_oid(root: Path, number: int, *, remote: str = "origin") -> str | None:
+        if root.name in _HOST["raises"]:
+            raise _HOST["raises"][root.name]
+        return _HOST["heads"].get(root.name)
+
+    monkeypatch.setattr(pr_mod, "host_pr_head_oid", host_pr_head_oid)
+    yield
+
 
 class _Pinned:
     """A two-call adapter double: pr_status for the pre-check, merge_pr for the act."""
@@ -37,6 +56,7 @@ class _Pinned:
 
     def __init__(self, heads: dict[str, str]) -> None:
         self.heads = heads
+        _HOST["heads"] = heads
         self.merged: list[str] = []
         self.pins_seen: dict[str, str | None] = {}
         self.status_calls: list[str] = []
@@ -423,53 +443,87 @@ def test_internal_type_error_is_not_retried_without_pin(tmp_path: Path) -> None:
     assert adapter.pins_seen == {"app": READ_SHA}
 
 
-class _StatusRaises(_Pinned):
-    """The pin pass's head read fails; merge_pr records any call it gets."""
-
-    def __init__(self, error: Exception) -> None:
-        super().__init__({"app": READ_SHA, "api": READ_SHA})
-        self.error = error
-
-    def pr_status(self, repo: str, number: int) -> PRStatus:
-        self.status_calls.append(repo)
-        raise self.error
-
-
-def test_a_platform_error_on_the_pin_read_is_a_recorded_merge_failure(
+def test_a_platform_error_on_the_pin_read_refuses_unreadable_and_records_nothing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from gr2.python_cli import pr as pr_mod
+    from gr2.python_cli.review import ReviewError
 
     records: list[dict] = []
-    real = pr_mod._record_merge_failure
+    monkeypatch.setattr(pr_mod, "_record_merge_failure", lambda **kw: records.append(kw))
+    adapter = _Pinned({"app": READ_SHA, "api": READ_SHA})
+    _HOST["raises"]["app"] = ReviewError("ls-remote: HTTP 502: bad gateway")
 
-    def spy(**kwargs: object) -> None:
-        records.append(dict(kwargs))
-        real(**kwargs)
-
-    monkeypatch.setattr(pr_mod, "_record_merge_failure", spy)
-    adapter = _StatusRaises(AdapterError("HTTP 502: bad gateway"))
-
-    with pytest.raises(pr_mod.PRMergeError) as raised:
+    with pytest.raises(pr_mod.PRHeadUnreadableError) as raised:
         _merge(tmp_path, ["app", "api"], adapter,
                expected_heads={"app": READ_SHA, "api": READ_SHA})
 
     assert adapter.merged == [], "no member may merge after the pin read failed"
     assert raised.value.completed == []
+    assert raised.value.exit_code == 5
+    assert raised.value.status == "refused_unreadable"
     assert "502" in str(raised.value)
-    assert len(records) == 1, records
-    assert records[0]["repo"] == "app"
-    assert records[0]["reason"] == "HTTP 502: bad gateway"
-    assert records[0]["completed"] == []
-    assert records[0]["operation_acknowledged"] is False
+    assert records == [], "an unreadable head is not a merge failure: nothing happened"
 
 
 def test_a_non_platform_error_on_the_pin_read_is_not_swallowed(tmp_path: Path) -> None:
-    """The control: the catch is no wider than AdapterError."""
-    adapter = _StatusRaises(KeyError("head_oid"))
+    """The control: the catch is no wider than ReviewError."""
+    adapter = _Pinned({"app": READ_SHA, "api": READ_SHA})
+    _HOST["raises"]["app"] = KeyError("head_oid")
 
     with pytest.raises(KeyError, match="head_oid"):
         _merge(tmp_path, ["app", "api"], adapter,
                expected_heads={"app": READ_SHA, "api": READ_SHA})
 
     assert adapter.merged == []
+
+
+def test_an_unreadable_member_head_refuses_the_group_with_exit_5_and_writes_nothing(
+    tmp_path: Path, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both pinned; B's head cannot be read. Unknown is not moved and not matching."""
+    from gr2.python_cli import app as gr2_app
+    from gr2.python_cli import platform as platform_ops
+    from gr2.python_cli.review import ReviewError
+
+    from .test_pr_merge_missing_target import (
+        GROUP_ID, LANE_NAME, OWNER_UNIT, _run_main, _workspace,
+    )
+
+    workspace = _workspace(tmp_path, ["app", "api"])
+    adapter = _Pinned({"app": READ_SHA, "api": READ_SHA})
+    _HOST["raises"]["api"] = ReviewError("ls-remote failed: HTTP 502")
+    monkeypatch.setattr(platform_ops, "get_platform_adapter", lambda _name: adapter)
+    monkeypatch.setattr(gr2_app, "_merge_verification_targets",
+                        lambda _root: _targets(workspace, ["app", "api"]))
+    group_file = workspace / ".grip" / "pr_groups" / f"{GROUP_ID}.json"
+    before = group_file.read_bytes()
+    outbox = workspace / ".grip" / "events" / "outbox.jsonl"
+
+    code = _run_main(["pr", "merge", str(workspace), OWNER_UNIT, LANE_NAME, "--json",
+                      "--match-head-commit", f"app={READ_SHA}",
+                      "--match-head-commit", f"api={READ_SHA}"])
+    output = "".join(capsys.readouterr())
+
+    assert code == 5, output
+    assert adapter.merged == [], "0 merge_pr calls"
+    assert json.loads(output[output.index("{"):])["status"] == "refused_unreadable", output
+    assert "api" in output and "could not be read" in output, output
+    events = outbox.read_text() if outbox.exists() else ""
+    assert "pr.merge_failed" not in events, events
+    assert group_file.read_bytes() == before, "the group file must be byte-identical"
+
+
+def test_the_pin_pass_reads_the_host_not_the_adapter_status(tmp_path: Path) -> None:
+    """READ-SOURCE: pr_status raises, the host serves the pins: the merge succeeds."""
+
+    class _StatusRaises(_Pinned):
+        def pr_status(self, repo: str, number: int) -> PRStatus:
+            raise AdapterError("pr_status must not be the head's source")
+
+    adapter = _StatusRaises({"app": READ_SHA, "api": READ_SHA})
+
+    _merge(tmp_path, ["app", "api"], adapter,
+           expected_heads={"app": READ_SHA, "api": READ_SHA})
+
+    assert adapter.merged == ["app", "api"]

@@ -1646,7 +1646,7 @@ def _coverage_of(path: Path, pin: str, upstream: str) -> str:
     listed, is answered from the combined diff alone, which includes that content."""
     if gitops.is_ancestor(path, pin, upstream) is True:
         return COVERAGE_REACHABLE
-    base = _store_git(path, "merge-base", pin, upstream, check=False).stdout.strip()
+    base = gitops.real_history_run(path, "merge-base", pin, upstream).stdout.strip()
     if not base:
         return COVERAGE_UNCOVERED
     theirs = _patch_ids(path, "--reverse", f"{base}..{upstream}")

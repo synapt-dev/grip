@@ -237,7 +237,7 @@ def _squash_merged(
     patch-id as a single first-parent commit on `target` -- the squash case
     `git cherry` cannot see, because a squash gives the combined change a new
     commit whose per-commit patch-ids never match the branch's originals."""
-    mb = git(repo, "merge-base", target, branch)
+    mb = gitops.real_history_run(repo, "merge-base", target, branch)
     if mb.returncode != 0 or not mb.stdout.strip():
         return (False, None)
     base = mb.stdout.strip()

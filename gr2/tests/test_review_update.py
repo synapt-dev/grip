@@ -247,7 +247,8 @@ def test_u10_a_stamp_on_a_moved_base_names_update_and_the_review(one):
     move_main(one, "alpha")
     m = one["members"]["alpha"]
     with pytest.raises(approvals.ApprovalRefused) as exc:
-        approvals._refuse_moved_base(one["author"], "alpha", str(m["remote"]), m["base"], one["review"])
+        approvals._refuse_moved_base(one["author"], "alpha", str(m["remote"]), m["base"], one["review"],
+                                     m["repo"], m["head"])
     assert "gr2 review update" in exc.value.next_step and one["review"] in exc.value.next_step, exc.value.next_step
 
 

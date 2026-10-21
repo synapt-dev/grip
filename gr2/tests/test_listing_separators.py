@@ -49,11 +49,12 @@ def _repo(tmp_path, quote_path="true"):
 def test_a1_base_moved_names_a_default_branch_with_a_line_separator(tmp_path, sep):
     ap = importlib.import_module("gr2.python_cli.approvals")
     origin, repo, _, one, two = _repo(tmp_path)
+    side = git(repo, "commit-tree", f"{one}^{{tree}}", "-p", one, "-m", "side")
     branch = f"ma{sep}in"
     git(repo, "push", "-q", str(origin), f"{two}:refs/heads/{branch}")
     git(origin, "symbolic-ref", "HEAD", f"refs/heads/{branch}")
     with pytest.raises(ap.ApprovalRefused) as refused:
-        ap._refuse_moved_base(repo, "m", str(origin), one, "gr:x")
+        ap._refuse_moved_base(repo, "m", str(origin), one, "gr:x", repo, side)
     assert f"({branch} is now {two[:12]})" in str(refused.value)
 
 

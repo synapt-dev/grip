@@ -92,7 +92,7 @@ def test_a_spec_declared_path_with_a_dotdot_part_does_not_run_the_hook(ws: Path)
 
 
 @pytest.mark.parametrize("declared, plain", [
-    ("./alpha", "alpha"), ("a//b", "a/b"), ("a/./b", "a/b"), ("alpha/", "alpha"), ("alpha", "alpha"),
+    ("./alpha", "alpha"), ("a//b", "a/b"), ("a/./b", "a/b"), ("alpha/", "alpha"), ("/alpha", "alpha"), ("alpha", "alpha"),
 ])
 def test_a_spec_declared_path_is_keyed_as_its_plain_member_path(ws: Path, declared: str, plain: str) -> None:
     """A hand-written spec spells the member's path the ways git accepts for a gitlink. validate_spec refuses those

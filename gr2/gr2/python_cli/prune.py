@@ -161,8 +161,9 @@ def _short_remote(symref: str, remote: str) -> str:
 
 
 def _patch_id(repo: Path, *diff_args: str) -> str | None:
-    """Stable patch-id of `git diff <diff_args>`; None if the diff is empty."""
-    diff = git(repo, "diff", *diff_args)
+    """Stable patch-id of `git diff <diff_args>`, read in the real history (a replace ref swaps a commit's tree and
+    parents on a plain diff); None if the diff is empty."""
+    diff = gitops.real_history_run(repo, "diff", *diff_args)
     if diff.returncode != 0:
         raise PruneError(f"git diff {' '.join(diff_args)} failed in {repo}: {diff.stderr.strip()}")
     if not diff.stdout.strip():
@@ -176,8 +177,10 @@ def _patch_id(repo: Path, *diff_args: str) -> str | None:
 def _cherry_merged(repo: Path, target: str, branch: str) -> tuple[bool, int]:
     """Patch-id equivalence via `git cherry`: no '+' line means every commit
     unique to `branch` is already present in `target` by patch-id (covers
-    plain/fast-forward/rebase/cherry-pick merges, and the empty-ahead case)."""
-    proc = git(repo, "cherry", target, branch)
+    plain/fast-forward/rebase/cherry-pick merges, and the empty-ahead case). Read
+    in the real history: a replace ref or graft that puts a branch commit under
+    the target would otherwise hide it from cherry and read it as landed."""
+    proc = gitops.real_history_run(repo, "cherry", target, branch)
     if proc.returncode != 0:
         raise PruneError(
             f"git cherry {target} {branch} failed in {repo}: {proc.stderr.strip()}"
@@ -204,8 +207,10 @@ def _target_squash_patch_ids(repo: Path, target: str) -> dict[str, str]:
     land on the target's first-parent mainline, so that is the only line worth
     scanning; the cap bounds a pathologically deep history and its miss is the
     SAFE direction for a deletion (a branch squashed older than the window reads
-    as not-merged and is left alone)."""
-    rev = git(
+    as not-merged and is left alone). The walk and each commit's parent are read in
+    the real history: a replace ref that puts a branch commit on the target's
+    mainline would otherwise offer that commit's own patch-id as a squash."""
+    rev = gitops.real_history_run(
         repo,
         "rev-list",
         "--first-parent",
@@ -222,7 +227,8 @@ def _target_squash_patch_ids(repo: Path, target: str) -> dict[str, str]:
         # such a commit cannot be the squash of a feature branch, so skip it
         # rather than error. This also keeps the verb usable inside a shallow
         # review clone, where the oldest commits are grafted.
-        if not _ref_exists(repo, f"{sha}^"):
+        parent = gitops.real_history_run(repo, "rev-parse", "--verify", "--quiet", f"{sha}^^{{commit}}")
+        if parent.returncode != 0:
             continue
         pid = _patch_id(repo, f"{sha}^", sha)
         if pid is not None:

@@ -1,4 +1,4 @@
-"""prune's squash check and the pin coverage read take their merge-base in the real history.
+"""prune's cherry and squash checks and the pin coverage read take their history in the real history.
 
 A replace ref (refs/replace/<sha>) swaps a commit for another on every plain read git makes, so a plain `git merge-base`
 can name a later base than the real one. A later base drops the branch's own unlanded commits from the range it
@@ -57,6 +57,21 @@ def test_squash_check_does_not_drop_unlanded_work_through_a_replaced_target(tmp_
     assert prune._squash_merged(work, "main", "feature", target_ids) == (False, None)
 
 
+def test_cherry_check_does_not_read_unlanded_work_as_upstream_through_a_replaced_target(tmp_path):
+    # feature: A - P (adds p). main: A - S (adds s). p never landed.
+    work, _ = _init(tmp_path)
+    _git(work, "checkout", "-q", "-b", "feature")
+    p = _commit(work, "p")
+    _git(work, "checkout", "-q", "main")
+    s = _commit(work, "s")
+    assert prune._cherry_merged(work, "main", "feature") == (False, 1)
+    # refs/replace/S -> a commit with S's tree on top of P: a plain walk of main now reaches P, so plain
+    # `git cherry main feature` has no commit unique to feature and prints no '+' line.
+    _git(work, "replace", s, _fake(work, s, p))
+    assert _git(work, "cherry", "main", "feature") == ""
+    assert prune._cherry_merged(work, "main", "feature") == (False, 1)
+
+
 def test_coverage_does_not_read_a_pin_as_landed_through_a_replaced_pin(tmp_path):
     # pin: A - P (adds p) - Q (adds q). upstream: A - B (adds p) - R (removes p) - S (adds q). p landed, then was
     # reverted, so the pin's work is not on upstream.
@@ -74,3 +89,48 @@ def test_coverage_does_not_read_a_pin_as_landed_through_a_replaced_pin(tmp_path)
     _git(work, "replace", q, _fake(work, q, b))
     assert _git(work, "merge-base", q, s) == b
     assert grip_cli._coverage_of(work, q, s) == grip_cli.COVERAGE_UNCOVERED
+
+
+def _unlanded_feature(tmp_path: Path) -> tuple[Path, str, str, str]:
+    # feature: A - P (adds p). main: A - S (adds s). p never landed; main is checked out.
+    work, a = _init(tmp_path)
+    _git(work, "checkout", "-q", "-b", "feature")
+    p = _commit(work, "p")
+    _git(work, "checkout", "-q", "main")
+    s = _commit(work, "s")
+    assert prune.list_merged_branches(work, "main")[0] == []
+    return work, a, p, s
+
+
+def test_prune_does_not_delete_unlanded_work_put_on_the_target_mainline_by_a_replace_ref(tmp_path):
+    work, _, p, s = _unlanded_feature(tmp_path)
+    # refs/replace/S -> a commit with S's tree on top of P: a plain first-parent walk of main now passes P, whose
+    # own patch-id is exactly feature's aggregate diff.
+    _git(work, "replace", s, _fake(work, s, p))
+    assert p in _git(work, "rev-list", "--first-parent", "main").split()
+    assert prune.list_merged_branches(work, "main")[0] == []
+    report = prune.prune(work, target="main", execute=True)
+    assert report.deleted == []
+    assert _git(work, "rev-parse", "feature") == p
+
+
+def test_squash_map_does_not_read_a_replaced_target_commit_as_the_feature_squash(tmp_path):
+    work, a, p, s = _unlanded_feature(tmp_path)
+    # refs/replace/S -> a commit with P's tree on top of A: the first-parent walk still names S and A, but a plain
+    # `git diff S^ S` now shows the p change, feature's aggregate diff.
+    _git(work, "replace", s, _fake(work, p, a))
+    assert _git(work, "diff", f"{s}^", s, "--name-only") == "p"
+    assert prune.list_merged_branches(work, "main")[0] == []
+
+
+def test_squash_map_reads_a_replaced_root_as_a_root(tmp_path):
+    work, a, _, _ = _unlanded_feature(tmp_path)
+    # refs/replace/A -> a commit with A's tree whose parent is an unrelated root X: a plain `A^` now resolves, but
+    # the real A has no parent, so a real diff A^ A has nothing to read.
+    tree = _git(work, "rev-parse", f"{a}^{{tree}}")
+    x = subprocess.run(["git", "-C", str(work), "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+                        "commit-tree", tree, "-m", "unrelated root"],
+                       check=True, capture_output=True, text=True).stdout.strip()
+    _git(work, "replace", a, _fake(work, a, x))
+    assert _git(work, "rev-parse", f"{a}^") == x
+    assert prune.list_merged_branches(work, "main")[0] == []

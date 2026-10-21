@@ -663,7 +663,22 @@ def merge_pr_group(
         if expected is None:
             continue
         number = int(pr_info["pr_number"])
-        actual = adapter.pr_status(repo, number, **routing[repo]).head_oid
+        try:
+            actual = adapter.pr_status(repo, number, **routing[repo]).head_oid
+        except AdapterError as exc:
+            # A platform error on the head read is a merge failure like any other:
+            # record it and raise the error the merge verb's CLI turns into a sentence.
+            _record_merge_failure(
+                workspace_root=workspace_root,
+                group=group,
+                actor=actor,
+                repo=repo,
+                number=number,
+                reason=str(exc),
+                completed=merged,
+                operation_acknowledged=False,
+            )
+            raise PRMergeError(repo, number, str(exc), completed=merged) from exc
         if actual != expected:
             raise PRHeadPinError(
                 repo,

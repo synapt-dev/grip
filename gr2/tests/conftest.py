@@ -54,6 +54,27 @@ def _children_get_closed_stdin(request: pytest.FixtureRequest):
         os.close(devnull)
 
 
+# These modules fake git by replacing `subprocess.run`. When stdin is not a terminal (CI, a box, the
+# fixture above), a timed git call leads its own process group and goes through `gitops._run_group`, which
+# uses `subprocess.Popen`, so their stub is never reached and real git answers instead. They are kept on
+# the plain `subprocess.run` path they were written for; every other module stays on the production path,
+# and test_gitops_spawn_timeout_group.py holds the parity row between the two. A module whose `run` stub
+# sits on a timed call and is missing here fails under CI (as these nine did) rather than passing.
+_STUBS_SUBPROCESS_RUN = frozenset({
+    "test_review_merge_target_moved", "test_review_merge_gate_lost_ack", "test_review_merge_push_failed",
+    "test_git_error_redaction", "test_sync_ssh_rewrite", "test_sync_status_probe",
+    "test_ancestry_unmeasurable_rows", "test_exec_apostrophe_and_oserror", "test_review_merge_feature_moved_next",
+})
+
+
+@pytest.fixture(autouse=True)
+def _run_stubs_keep_the_plain_spawn(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch):
+    if request.module.__name__.rsplit(".", 1)[-1] in _STUBS_SUBPROCESS_RUN:
+        from gr2.python_cli import gitops
+        monkeypatch.setattr(gitops, "_own_group", lambda env: False)
+    yield
+
+
 def pytest_enter_pdb(config, pdb):
     # Only when fd 0 is still our /dev/null: under the default fd capture,
     # pytest has already handed pdb the terminal by the time this hook runs.

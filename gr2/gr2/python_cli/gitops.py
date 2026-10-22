@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import os
 import re
+import signal
 import subprocess
+import sys
 import unicodedata
 from pathlib import Path
 from urllib.parse import quote, unquote, urlsplit
@@ -327,6 +329,64 @@ def _repo_dir(args, cwd: Path | None) -> Path | None:
     return here
 
 
+_POSIX = os.name == "posix"  # sessions and killpg exist only here
+
+
+def _own_group(env: dict | None) -> bool:
+    """True when git cannot prompt, so it may lead its own session without losing the terminal.
+
+    A process outside the terminal's foreground group that reads /dev/tty gets SIGTTIN and stops, so a call that
+    could prompt (a credential or host-key question) keeps today's group and today's single-pid kill. Off POSIX
+    there is no session or killpg, so every call keeps today's kill."""
+    if not _POSIX:
+        return False
+    if (os.environ if env is None else env).get("GIT_TERMINAL_PROMPT") == "0":
+        return True
+    stdin = sys.stdin
+    try:
+        return stdin is None or not stdin.isatty()
+    except (AttributeError, ValueError):
+        return True
+
+
+def _kill_group(pid: int) -> None:
+    # macOS refuses killpg with EPERM when the group's only member is a zombie (git exited at the deadline):
+    # nothing live is left to kill, so that is the same as a group already gone.
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
+def _run_group(argv: list[str], *, cwd: Path | None, input, env: dict | None, text: bool,
+               timeout: float | None) -> subprocess.CompletedProcess:
+    """subprocess.run, except git leads its own session and an expiry kills the whole group.
+
+    Killing git alone leaves what it started (an upload-pack, ssh, a credential helper) running, reparented."""
+    with subprocess.Popen(argv, cwd=cwd, env=env, text=text, start_new_session=True,
+                          stdin=subprocess.PIPE if input is not None else None,
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE) as proc:
+        try:
+            stdout, stderr = proc.communicate(input, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _kill_group(proc.pid)
+            proc.kill()
+            # A descendant in its own session can hold the pipes open forever, so the drain is bounded (as run() waits).
+            try:
+                proc.communicate(timeout=1)
+            except subprocess.TimeoutExpired:
+                for pipe in (proc.stdout, proc.stderr):
+                    if pipe and not pipe.closed:
+                        pipe.close()
+                proc.wait()
+            raise
+        except BaseException:
+            # An interrupt (Ctrl-C) no longer reaches git's own session from the terminal, so it is killed here.
+            _kill_group(proc.pid)
+            raise
+    return subprocess.CompletedProcess(proc.args, proc.returncode, stdout, stderr)
+
+
 def _spawn(argv: list[str], *, cwd: Path | None, input, binary: bool, env: dict | None,
            timeout: float | None, raise_timeout: bool) -> subprocess.CompletedProcess:
     """The one place gr2 starts git: an expiry is rc 124 with empty output unless the caller asks for the raise.
@@ -338,8 +398,12 @@ def _spawn(argv: list[str], *, cwd: Path | None, input, binary: bool, env: dict 
     if command == "clone":
         timeout = None
     try:
-        proc = subprocess.run(argv, cwd=cwd, input=input, env=_child_env(env), capture_output=True, text=not binary,
-                              check=False, timeout=timeout)
+        child_env = _child_env(env)
+        if timeout is not None and _own_group(child_env):
+            proc = _run_group(argv, cwd=cwd, input=input, env=child_env, text=not binary, timeout=timeout)
+        else:
+            proc = subprocess.run(argv, cwd=cwd, input=input, env=child_env, capture_output=True, text=not binary,
+                                  check=False, timeout=timeout)
         # `config` (which credential_values runs to read the remote urls) is not in NETWORK, so this cannot recurse.
         if proc.returncode == 0 or binary or command not in NETWORK:
             return proc

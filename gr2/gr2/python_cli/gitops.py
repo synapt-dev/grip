@@ -852,13 +852,20 @@ def conflicting_files(path: Path) -> list[str]:
     return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
 
 
+def _cache_git(cache_repo_root: Path, args: list[str]):
+    """Every git run against a repo cache goes through here, with the cache's hooks switched off. A config allowlist
+    cannot see an executable file such as <cache>/hooks/reference-transaction, which the refresh fetch would run with no
+    config key at all; `core.hooksPath=/dev/null` names a path that cannot hold a hook, so git runs none and errors on
+    none."""
+    return run_argv(["git", "-c", "core.hooksPath=/dev/null", "--git-dir", str(cache_repo_root), *args])
+
+
 def _refuse_planted_cache_remotes(cache_repo_root: Path) -> None:
     """A repo cache holds one remote, origin. Any `remotes.*` group key or any other remote's key is state gr2
     never writes, so the cache is refused as corrupt, naming the KEY (never its value, which may be a URL)."""
     from .grip import GripCorruptError  # lazy, as _shown_arg
 
-    proc = run_argv(
-        ["git", "--git-dir", str(cache_repo_root), "config", "--null", "--name-only", "--get-regexp", r"^remotes?\."]
+    proc = _cache_git(cache_repo_root, ["config", "--null", "--name-only", "--get-regexp", r"^remotes?\."]
     )
     if proc.returncode not in (0, 1):
         raise GripCorruptError(f"cannot read repo cache config {cache_repo_root}: {(proc.stderr or '').strip()[:160]}")
@@ -895,7 +902,7 @@ _CACHE_ALLOWED_KEYS = frozenset(
 def _refuse_cache_keys_outside_allowlist(cache_repo_root: Path) -> None:
     from .grip import GripCorruptError  # lazy, as _shown_arg
 
-    proc = run_argv(["git", "--git-dir", str(cache_repo_root), "config", "--local", "--list", "--null", "--name-only"])
+    proc = _cache_git(cache_repo_root, ["config", "--local", "--list", "--null", "--name-only"])
     if proc.returncode != 0:
         raise GripCorruptError(f"cannot read repo cache config {cache_repo_root}: {(proc.stderr or '').strip()[:160]}")
     disallowed = sorted({key for key in (proc.stdout or "").split("\0") if key and key not in _CACHE_ALLOWED_KEYS})
@@ -928,7 +935,8 @@ def ensure_repo_cache(url: str, cache_repo_root: Path, *, local_source: Path | N
     effective_url = _effective_remote_url(url)
 
     if cache_repo_root.exists():
-        if not is_git_dir(cache_repo_root):
+        bare_proc = _cache_git(cache_repo_root, ["rev-parse", "--is-bare-repository"])
+        if bare_proc.returncode != 0 or bare_proc.stdout.strip() != "true":
             raise SystemExit(f"repo cache path exists but is not a git dir: {cache_repo_root}")
 
         # A cache path names a repo by its last path segment, so it can already hold a mirror of ANOTHER repo with
@@ -936,12 +944,12 @@ def ensure_repo_cache(url: str, cache_repo_root: Path, *, local_source: Path | N
         # refreshed such a mirror from its own origin. Read origin before the heal (set-url would overwrite it) and
         # leave a mirror whose origin is neither url nor effective_url untouched: callers then find this repo's
         # objects missing from it and fall back to the remote.
-        origin_proc = run_argv(["git", "--git-dir", str(cache_repo_root), "config", "--get-all", "remote.origin.url"])
+        origin_proc = _cache_git(cache_repo_root, ["config", "--get-all", "remote.origin.url"])
         if origin_proc.stdout.splitlines() not in ([url], [effective_url]):
             return False
 
         if effective_url != url:
-            remote_proc = run_argv(["git", "--git-dir", str(cache_repo_root), "remote", "set-url", "origin", effective_url])
+            remote_proc = _cache_git(cache_repo_root, ["remote", "set-url", "origin", effective_url])
             if remote_proc.returncode != 0:
                 raise SystemExit(
                     f"failed to repoint repo cache origin to {_shown_arg(effective_url)}:\n"
@@ -957,8 +965,7 @@ def ensure_repo_cache(url: str, cache_repo_root: Path, *, local_source: Path | N
             raise SystemExit(f"refusing to refresh repo cache {cache_repo_root}: url is option-shaped or holds a control character")
         _refuse_planted_cache_remotes(cache_repo_root)
         _refuse_cache_keys_outside_allowlist(cache_repo_root)
-        proc = run_argv(
-            ["git", "--git-dir", str(cache_repo_root), "fetch", "--prune", "--", effective_url, "+refs/*:refs/*"]
+        proc = _cache_git(cache_repo_root, ["fetch", "--prune", "--", effective_url, "+refs/*:refs/*"]
         )
         if proc.returncode != 0:
             raise SystemExit(f"failed to refresh repo cache {cache_repo_root}:\n{proc.stderr or proc.stdout}")
@@ -986,8 +993,7 @@ def ensure_repo_cache(url: str, cache_repo_root: Path, *, local_source: Path | N
         # later refresh (`remote update`), not necessarily the raw spec url --
         # an unreachable SSH url here would just move today's seed failure
         # to every future refresh instead.
-        remote_proc = run_argv(
-            ["git", "--git-dir", str(cache_repo_root), "remote", "set-url", "origin", effective_url],
+        remote_proc = _cache_git(cache_repo_root, ["remote", "set-url", "origin", effective_url],
         )
         if remote_proc.returncode != 0:
             raise SystemExit(

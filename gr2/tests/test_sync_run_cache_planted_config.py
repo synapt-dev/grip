@@ -6,6 +6,7 @@ so this key passes it and the refresh fetch runs the hook."""
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -115,18 +116,31 @@ def _hook(path: Path, marker: Path) -> None:
     path.chmod(0o755)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="GAP: the config allowlist cannot see a hook file; the refresh fetch runs <cache>/hooks/reference-transaction",
-)
+def _tip(git_dir: Path) -> str:
+    return gitops.run_argv(["git", "--git-dir", str(git_dir), "rev-parse", "refs/heads/" + _branch(git_dir)]).stdout.strip()
+
+
+def _branch(git_dir: Path) -> str:
+    return gitops.run_argv(["git", "--git-dir", str(git_dir), "symbolic-ref", "--short", "HEAD"]).stdout.strip()
+
+
 def test_a_hook_file_in_the_cache_does_not_run(tmp_path: Path) -> None:
-    # No config key names this hook; git finds it at <cache>/hooks/reference-transaction on its own.
+    # No config key names this hook; git finds it at <cache>/hooks/reference-transaction on its own. gr2 runs git on
+    # a cache with its hooks switched off, so the refresh goes through and the hook never fires.
     src, cache = _made_cache(tmp_path)
     marker = tmp_path / "fired"
     _hook(cache / "hooks" / "reference-transaction", marker)
     refusal = _refusal(src, cache)
     assert not marker.exists(), "repo cache refresh ran a hook file planted in the cache's hooks directory"
-    assert refusal, "repo cache refresh with a planted hook file was not refused"
+    assert refusal == "", refusal
+    assert _tip(cache) == _tip(src / ".git"), "repo cache with a planted hook file was not refreshed"
+
+
+def test_a_cache_with_no_hooks_dir_still_refreshes(tmp_path: Path) -> None:
+    src, cache = _made_cache(tmp_path)
+    shutil.rmtree(cache / "hooks", ignore_errors=True)
+    assert _refusal(src, cache) == ""
+    assert _tip(cache) == _tip(src / ".git"), "repo cache with no hooks directory was not refreshed"
 
 
 def test_a_url_rewrite_for_the_origin_is_refused_by_name_not_value(tmp_path: Path) -> None:

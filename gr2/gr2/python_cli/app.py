@@ -5099,6 +5099,7 @@ _ROW_REQUIRED = ("key", "remote", "base", "head")
 # Every field of a rows-json entry is a string; a JSON number/bool/null/object
 # in any of them must refuse cleanly, not traceback downstream on a string op.
 _ROW_STRING_FIELDS = ("key", "remote", "base", "head", "path", "ref", "title", "body", "source", "range", "visibility")
+_ROW_ALLOWED = set(_ROW_STRING_FIELDS)
 
 
 def _normalize_review_row(raw: object, index: int) -> dict:
@@ -5121,6 +5122,11 @@ def _normalize_review_row(raw: object, index: int) -> dict:
     if missing:
         hint = '; the member is named by "key", not "repo"' if "key" in missing and "repo" in raw else ""
         raise typer.BadParameter(f"rows-json entry {label} is missing {', '.join(missing)}{hint}")
+    # A key bind does not read (range_patch for range, a typo) would drop silently; one plain line, not a panel.
+    unknown = sorted(raw.keys() - _ROW_ALLOWED)
+    if unknown:
+        typer.echo(f"rows-json entry {label}: unknown field(s) {unknown}; allowed: {sorted(_ROW_ALLOWED)}", err=True)
+        raise typer.Exit(2)
     row = {
         "key": raw["key"], "remote": raw["remote"], "base": raw["base"], "head": raw["head"],
         "path": raw.get("path") or raw["key"], "ref": raw.get("ref", "refs/heads/dev"),

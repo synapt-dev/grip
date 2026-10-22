@@ -361,6 +361,14 @@ def _placed_clone(tmp_path: Path, lane: Path, key: str) -> str:
     return _git(lane / key, "rev-parse", "HEAD")
 
 
+def _skip_unless_case_sensitive(tmp_path: Path) -> None:
+    """Rows that clone into two names differing only in case need a disk that keeps them apart; ask the disk."""
+    probe = tmp_path / "case-probe"
+    probe.mkdir()
+    if (tmp_path / "CASE-PROBE").exists():
+        pytest.skip("case-insensitive filesystem: the fixture's case-only names are one directory here")
+
+
 def _selection(downstream: dict[str, str]) -> dict:
     return {"status": "ran", "changed": ["demo-core", "demo-web"], "upstream": [],
             "downstream": list(downstream), "pins": dict(downstream)}
@@ -519,6 +527,8 @@ def test_a_symlinked_key_at_the_lane_root_is_not_a_placed_clone(tmp_path: Path):
 def test_a_key_git_reads_as_dotgit_is_not_a_placed_clone(tmp_path: Path, key: str):
     """A recorded key fsck would refuse as a name for .git (any case, its NTFS forms, its HFS+ forms) is never the
     review's, even as a real clone at its pin; on a filesystem that reads it as .git it would be the lane's own."""
+    if key.lower() == ".git":
+        _skip_unless_case_sensitive(tmp_path)
     runner = make_cli_runner()
     lane = _multi_member_lane(tmp_path)
     pin = _placed_clone(tmp_path, lane, key)
@@ -542,6 +552,7 @@ def test_a_key_named_dotgit_is_not_placed_at_the_lane_root(tmp_path: Path):
 
 def test_a_key_that_differs_from_a_member_only_in_case_is_not_placed(tmp_path: Path):
     """A case-insensitive filesystem reads `Demo-core` as the member `demo-core`, so the key is never placed."""
+    _skip_unless_case_sensitive(tmp_path)
     runner = make_cli_runner()
     lane = _multi_member_lane(tmp_path)
     pin = _placed_clone(tmp_path, lane, "Demo-core")
@@ -558,6 +569,7 @@ def test_a_key_that_differs_from_a_member_only_in_case_is_not_placed(tmp_path: P
 
 def test_two_keys_that_differ_only_in_case_are_neither_placed(tmp_path: Path):
     """Two recorded keys a case-insensitive filesystem reads as one directory: neither is the review's."""
+    _skip_unless_case_sensitive(tmp_path)
     runner = make_cli_runner()
     lane = _multi_member_lane(tmp_path)
     pins = {key: _placed_clone(tmp_path, lane, key) for key in ("demo-api", "Demo-API")}

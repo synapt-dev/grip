@@ -580,3 +580,20 @@ def test_a_mixed_case_key_with_no_twin_is_still_placed(tmp_path: Path):
     result = runner.invoke(gr2_app.app, ["review", "close", str(lane), "--json"])
     assert result.exit_code == 0, _text(result)
     assert not lane.exists()
+
+
+@pytest.mark.parametrize("key", [".grip-open-gr-reconstruct.json", ".GRIP-Open-GR-Reconstruct.JSON",
+                                 "demo-core.grip-review-run.log", "Demo-Core.Grip-Review-Run.LOG",
+                                 "demo-api.grip-review-run.log"])
+def test_a_key_named_as_a_file_the_review_writes_is_not_placed(tmp_path: Path, key: str):
+    """A recorded key a case-insensitive filesystem reads as a file the review writes at the lane root (its legacy
+    marker, or the run log of a member or of another recorded key) is never the review's, even as a real clone at
+    its pin; the plain keys recorded around it still are."""
+    lane = _multi_member_lane(tmp_path)
+    pins = {k: _placed_clone(tmp_path, lane, k) for k in ("demo-zz", key, "demo-api")}
+    receipt = {"kind": "review-run", "downstream": _selection(pins)}
+    assert open_gr_review._run_placed_members(lane, receipt, {"demo-core", "demo-web"}) == ["demo-zz", "demo-api"]
+    _run_receipt(lane, _selection(pins))
+    result = make_cli_runner().invoke(gr2_app.app, ["review", "close", str(lane), "--json"])
+    assert result.exit_code != 0 and "work at the lane root" in _text(result), _text(result)
+    assert (lane / key / ".git").is_dir()

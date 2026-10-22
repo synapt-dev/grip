@@ -600,6 +600,22 @@ def test_a_stamp_after_a_half_land_counts_and_the_rerun_finishes(slice2, monkeyp
     assert rerun == {"alpha": "already_merged", "beta": "merged"}, rerun
 
 
+def test_an_unstamped_rerun_after_a_half_land_refuses_only_the_unmerged_member_and_names_the_stamp(slice2):
+    # With approvals required and no stamp, the rerun refuses: the landed member stays already_merged with no
+    # refusal of its own; the member yet to land is refused for the missing approval and its next line is the stamp.
+    record_set(slice2)
+    _half_land(slice2)
+    again = _rerun_with_one_approval(slice2)
+    assert again.exit_code == merge_gate.EXIT_PARTIAL == 4, again.output
+    rows = {m["key"]: m for m in json.loads(next(l for l in again.output.splitlines() if l.startswith("{")))["members"]}
+    assert rows["alpha"]["state"] == "already_merged", rows["alpha"]
+    assert rows["alpha"]["refused"] is None, rows["alpha"]
+    assert rows["beta"]["refusal"]["code"] == "approvals_insufficient", rows["beta"]
+    assert rows["beta"]["refused"] == "approvals_insufficient: 0 of 1", rows["beta"]
+    assert rows["beta"]["next"].startswith("next: "), rows["beta"]
+    assert f"gr2 review stamp {slice2['author']} {slice2['review']}" in rows["beta"]["next"], rows["beta"]
+
+
 def test_a_stamp_after_every_member_landed_still_refuses_head_already_on_target(slice2, monkeypatch):
     record_set(slice2)
     done = runner.invoke(app, ["review", "merge", slice2["review"], "--from", "feat", "--into", "main", "--approvals", "0"])

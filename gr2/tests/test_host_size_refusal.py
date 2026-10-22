@@ -49,7 +49,7 @@ def test_a_second_member_holds_path(tmp_path):
         _member(tmp_path, "data", {"assets/big.bin": BIG}),
     ]
     got = host_size_refusal(_size_line("assets/big.bin"), pushed)
-    assert got == ("assets/big.bin", "0.02 MB", ("data",))
+    assert got == ("assets/big.bin", "0.02 MB", ("data",), "0.01 MB")
 
 
 def test_b_no_pushed_commit_holds_path(tmp_path):
@@ -58,7 +58,7 @@ def test_b_no_pushed_commit_holds_path(tmp_path):
         _member(tmp_path, "data", {"assets/small.bin": BIG}),
     ]
     got = host_size_refusal(_size_line("assets/big.bin"), pushed)
-    assert got == ("assets/big.bin", "0.02 MB", ())
+    assert got == ("assets/big.bin", "0.02 MB", (), "0.01 MB")
 
 
 def test_c_non_size_refusal(tmp_path):
@@ -77,7 +77,7 @@ def test_d_path_with_space(tmp_path):
         _member(tmp_path, "data", {"raw data/big file.bin": BIG}),
     ]
     got = host_size_refusal(_size_line("raw data/big file.bin"), pushed)
-    assert got == ("raw data/big file.bin", "0.02 MB", ("data",))
+    assert got == ("raw data/big file.bin", "0.02 MB", ("data",), "0.01 MB")
 
 
 def test_e1_two_hold_path_only_one_over(tmp_path):
@@ -86,7 +86,7 @@ def test_e1_two_hold_path_only_one_over(tmp_path):
         _member(tmp_path, "data", {"assets/big.bin": BIG}),
     ]
     got = host_size_refusal(_size_line("assets/big.bin"), pushed)
-    assert got == ("assets/big.bin", "0.02 MB", ("data",))
+    assert got == ("assets/big.bin", "0.02 MB", ("data",), "0.01 MB")
 
 
 def test_e2_both_over_in_push_order(tmp_path):
@@ -95,7 +95,7 @@ def test_e2_both_over_in_push_order(tmp_path):
         _member(tmp_path, "api", {"assets/big.bin": BIG + "x"}),
     ]
     got = host_size_refusal(_size_line("assets/big.bin"), pushed)
-    assert got == ("assets/big.bin", "0.02 MB", ("web", "api"))
+    assert got == ("assets/big.bin", "0.02 MB", ("web", "api"), "0.01 MB")
 
 
 def test_e3_neither_over_member_not_determined(tmp_path):
@@ -104,7 +104,7 @@ def test_e3_neither_over_member_not_determined(tmp_path):
         _member(tmp_path, "data", {"assets/big.bin": SMALL + "y"}),
     ]
     got = host_size_refusal(_size_line("assets/big.bin"), pushed)
-    assert got == ("assets/big.bin", "0.02 MB", ())
+    assert got == ("assets/big.bin", "0.02 MB", (), "0.01 MB")
 
 
 def test_f_replace_ref_to_big_blob_does_not_make_member_over(tmp_path):
@@ -114,4 +114,4 @@ def test_f_replace_ref_to_big_blob_does_not_make_member_over(tmp_path):
     _git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam", "big")
     _git(repo, "update-ref", f"refs/replace/{pushed[0][2]}", _git(repo, "rev-parse", "HEAD"))
     got = host_size_refusal(_size_line("assets/big.bin"), pushed)
-    assert got == ("assets/big.bin", "0.02 MB", ())
+    assert got == ("assets/big.bin", "0.02 MB", (), "0.01 MB")

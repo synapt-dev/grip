@@ -2725,8 +2725,8 @@ _HOST_SIZE_LINE = re.compile(
 _HOST_MB = 1024 * 1024
 
 
-def host_size_refusal(stderr: str, pushed) -> tuple[str, str, tuple[str, ...]] | None:
-    """Name the file a host refused for size: (path, "<N> MB", members).
+def host_size_refusal(stderr: str, pushed) -> tuple[str, str, tuple[str, ...], str] | None:
+    """Name the file a host refused for size: (path, "<N> MB", members, "<L> MB" the host's limit).
 
     ``pushed`` is a list of (member name, repo path, commit sha). ``members``
     holds every pushed member, in push order, whose blob at the path is over
@@ -2753,11 +2753,17 @@ def host_size_refusal(stderr: str, pushed) -> tuple[str, str, tuple[str, ...]] |
             if blob_size.isdigit() and int(blob_size) > limit:
                 over.append(member)
             break
-    return (path, size, tuple(over))
+    return (path, size, tuple(over), f"{m.group('limit')} MB")
+
+
+def host_size_line(path: str, member: str | None, size: str, limit: str) -> str:
+    """gr2's one line for a push the host refused for size; ``member`` None keeps "a member not determined"."""
+    who = f"member {member}" if member else "a member not determined"
+    return f"push refused by the host for size: {path} in {who} is {size} (host limit {limit}); nothing moved"
 
 
 def _atomic_push(root: Path, refspecs: list[tuple[str, str]], verify: bool = True,
-                 leases: dict[str, str] | None = None) -> bool:
+                 leases: dict[str, str] | None = None, members: list[tuple[str, str]] = ()) -> bool:
     """ONE `git push --atomic` of every (commit, ref), so the remote moves all of them or none. A refusal names
     each rejected ref with git's reason, plus the remote's own lines (a pre-receive hook declines every ref in the
     push, so only its message says which one it refused).
@@ -2782,6 +2788,10 @@ def _atomic_push(root: Path, refspecs: list[tuple[str, str]], verify: bool = Tru
         held = {}  # an unreadable answer proves nothing landed: the refusal below names the push's own rejection
     if listed.returncode == 0 and all(held.get(ref) == sha for sha, ref in refspecs):
         return True
+    # `members` is (name, pin) for each member riding this push; its pin was fetched into the root, so it is read there.
+    found = host_size_refusal(proc.stderr or "", [(name, str(root), pin) for name, pin in members])
+    if found is not None:
+        raise RuntimeError(host_size_line(found[0], ", ".join(found[2]) or None, found[1], found[3]) + "\n" + proc.stderr)
     rejected = [line.split("\t") for line in gitops.for_each_ref_rows(proc.stdout) if line.startswith("!")]
     named = "; ".join(f"{parts[1].split(':', 1)[1]} {parts[2]}" for parts in rejected if len(parts) >= 3)
     remote = " | ".join(line.strip() for line in proc.stderr.splitlines() if line.startswith("remote:"))
@@ -3038,7 +3048,8 @@ def _native_store_push(root: Path, to: str | None = None, atomic: bool = False, 
         landed_by_another = _atomic_push(root, [(tip, f"refs/heads/{branch}"), (tip, _shadow_ref(root)),
                                                 *[(pin, ref) for _, pin, ref in same_repo],
                                                 *([rewound_ref] if rewound_ref else [])],
-                                         verify=recurse != "none", leases=leases)
+                                         verify=recurse != "none", leases=leases,
+                                         members=[(name, pin) for name, pin, _ in same_repo])
         for ref in leases:
             _store_git(root, "update-ref", "-m", "store push: tracking", _tracking_ref(ref), tip)
         if shadow != tip:

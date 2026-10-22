@@ -178,3 +178,59 @@ def test_worktree_config_is_refused_by_name(tmp_path: Path) -> None:
     assert not marker.exists(), "repo cache refresh ran a hook planted through config.worktree"
     assert "config key extensions.worktreeconfig" in refusal, refusal
     assert str(hooks) not in refusal, refusal
+
+
+def _src_with_a_file(tmp_path: Path) -> Path:
+    # A file, so a blobless clone of src really lacks a blob.
+    src = tmp_path / "src"
+    _git("init", "-q", str(src))
+    (src / "f.txt").write_text("one\n")
+    _git("-C", str(src), "add", "f.txt")
+    _commit(src, "one")
+    return src
+
+
+def _keys(cache: Path) -> list[str]:
+    keys = _git("--git-dir", str(cache), "config", "--local", "--list", "--name-only").splitlines()
+    print(f"{cache.name} keys: {keys}")
+    return keys
+
+
+def _seeded_from(src: Path, local_source: Path, tmp_path: Path) -> Path:
+    cache = tmp_path / "cache" / "a.git"
+    assert gitops.ensure_repo_cache(str(src), cache, local_source=local_source) is True
+    assert _git("--git-dir", str(cache), "config", "--get", "remote.origin.url") == str(src)
+    _commit(src, "two")
+    return cache
+
+
+def test_a_cache_gr2_seeded_from_a_local_checkout_refreshes(tmp_path: Path) -> None:
+    src = _src_with_a_file(tmp_path)
+    checkout = tmp_path / "checkout"
+    _git("clone", "-q", str(src), str(checkout))
+    cache = _seeded_from(src, checkout, tmp_path)
+    _keys(cache)
+    assert _refusal(src, cache) == ""
+    assert _git("--git-dir", str(cache), "rev-parse", "HEAD") == _git("-C", str(src), "rev-parse", "HEAD")
+
+
+def test_a_cache_gr2_seeded_from_a_blobless_checkout_refreshes(tmp_path: Path) -> None:
+    src = _src_with_a_file(tmp_path)
+    _git("-C", str(src), "config", "uploadpack.allowFilter", "true")
+    checkout = tmp_path / "checkout"
+    _git("clone", "-q", "--filter=blob:none", f"file://{src}", str(checkout))
+    assert _git("-C", str(checkout), "config", "--get", "remote.origin.promisor") == "true"
+    cache = _seeded_from(src, checkout, tmp_path)
+    keys = _keys(cache)
+    assert not [key for key in keys if key.endswith(".promisor") or key.endswith(".partialclonefilter")], keys
+    assert _refusal(src, cache) == ""
+    assert _git("--git-dir", str(cache), "rev-parse", "HEAD") == _git("-C", str(src), "rev-parse", "HEAD")
+
+
+def test_a_cache_after_gc_and_maintenance_refreshes(tmp_path: Path) -> None:
+    src, cache = _made_cache(tmp_path)
+    _git("--git-dir", str(cache), "gc", "--auto")
+    _git("--git-dir", str(cache), "maintenance", "run", "--auto")
+    _keys(cache)
+    assert _refusal(src, cache) == ""
+    assert _git("--git-dir", str(cache), "rev-parse", "HEAD") == _git("-C", str(src), "rev-parse", "HEAD")

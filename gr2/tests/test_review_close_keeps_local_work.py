@@ -7,6 +7,7 @@ must not turn the clean-lane control into a dirty-work refusal.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -609,3 +610,113 @@ def test_a_key_named_as_a_file_the_review_writes_is_not_placed(tmp_path: Path, k
     result = make_cli_runner().invoke(gr2_app.app, ["review", "close", str(lane), "--json"])
     assert result.exit_code != 0 and "work at the lane root" in _text(result), _text(result)
     assert (lane / key / ".git").is_dir()
+
+
+@pytest.mark.parametrize("role", ["upstream", "downstream"])
+@pytest.mark.parametrize("bad", [7, None, True, ["demo-api"], {"demo-api": 1}], ids=repr)
+def test_a_receipt_naming_a_non_string_member_key_is_refused_as_corrupt(tmp_path: Path, bad, role):
+    """A receipt is JSON anyone can edit: a list or dict where a member key belongs raised TypeError
+    out of close, and an int, null or bool was dropped silently. Either way close refuses it, named,
+    and nothing in the lane moves."""
+    runner = make_cli_runner()
+    lane = _multi_member_lane(tmp_path)
+    pin = _placed_clone(tmp_path, lane, "demo-api")
+    selection = _selection({"demo-api": pin})
+    selection[role].append(bad)
+    _run_receipt(lane, selection)
+    result = runner.invoke(gr2_app.app, ["review", "close", str(lane), "--json"])
+    assert result.exception is None or isinstance(result.exception, SystemExit), repr(result.exception)
+    assert result.exit_code != 0, _text(result)
+    assert "corrupt run receipt" in _text(result) and "Traceback" not in _text(result), _text(result)
+    assert (lane / "demo-api" / ".git").is_dir() and (lane / review_run._RECEIPT_NAME).is_file()
+    assert review_allocation.allocation_path(tmp_path / "workspace", lane).is_file()
+
+
+_DEEP = b"[" * 100000 + b"]" * 100000
+
+
+@pytest.mark.parametrize("raw", [b"[]\n", b"{not json\n", b'{"kind": "review-run", "result": "\xff"}\n', b'"review-run"\n',
+                                 _DEEP, b'{"kind": "review-run", "result": ' + _DEEP + b"}\n"],
+                         ids=["list", "not-json", "not-utf8", "string", "too-deep", "too-deep-in-an-object"])
+def test_a_run_receipt_that_is_not_a_json_object_is_refused_as_corrupt(tmp_path: Path, raw: bytes):
+    """Close read a receipt it could not parse as {} for the root check, then parsed it again to keep it and
+    raised out of close with a traceback (JSONDecodeError, UnicodeDecodeError, AttributeError). Now it
+    refuses the receipt by name before anything moves."""
+    runner = make_cli_runner()
+    lane = _multi_member_lane(tmp_path)
+    (lane / review_run._RECEIPT_NAME).write_bytes(raw)
+    result = runner.invoke(gr2_app.app, ["review", "close", str(lane), "--json"])
+    assert result.exception is None or isinstance(result.exception, SystemExit), repr(result.exception)
+    assert result.exit_code == 2, _text(result)
+    assert "corrupt run receipt" in _text(result) and "Traceback" not in _text(result), _text(result)
+    assert (lane / review_run._RECEIPT_NAME).read_bytes() == raw
+    assert (lane / "demo-core" / ".git").exists() and (lane / "demo-web" / ".git").exists()
+    assert review_allocation.allocation_path(tmp_path / "workspace", lane).is_file()
+
+
+@pytest.mark.parametrize("field", ["gr_commit", "created"])
+def test_a_receipt_whose_key_fields_are_not_strings_still_closes(tmp_path: Path, field: str):
+    """An int gr_commit raised TypeError where close keys the kept evidence; a field that is not a string
+    keys it by the default instead, and the receipt is kept."""
+    runner = make_cli_runner()
+    lane = _multi_member_lane(tmp_path)
+    receipt = {"kind": "review-run", "created": "2026-10-13T00:00:00+00:00", "result": "green", field: 7}
+    (lane / review_run._RECEIPT_NAME).write_text(json.dumps(receipt) + "\n")
+    result = runner.invoke(gr2_app.app, ["review", "close", str(lane), "--json"])
+    assert result.exit_code == 0, _text(result)
+    assert not lane.exists()
+    archive = review_allocation.allocation_path(tmp_path / "workspace", lane).with_suffix("")
+    prefix = "unknown-" if field == "gr_commit" else "unknown-no-timestamp"
+    kept = [p for p in archive.rglob(review_run._RECEIPT_NAME) if p.parent.name.startswith(prefix)]
+    assert len(kept) == 1 and json.loads(kept[0].read_text())[field] == 7, list(archive.rglob("*"))
+
+
+_MEMBER_LOG = "demo-web" + review_run._OUTPUT_LOG_NAME
+
+
+@pytest.mark.parametrize("fields, carried", [
+    ({"members": 7}, False),
+    ({"members": [1, {"key": "demo-web", "output_log": _MEMBER_LOG}]}, True),
+    ({"output_log": 7}, False),
+    ({"members": [{"key": "demo-core", "output_log": 7}, {"key": "demo-web", "output_log": _MEMBER_LOG}]}, True),
+], ids=["members-int", "members-entry-int", "output-log-int", "member-output-log-int"])
+def test_a_receipt_whose_log_fields_are_the_wrong_type_still_closes(tmp_path: Path, fields: dict, carried: bool):
+    """A receipt that parsed as an object but held members: 7, a member that is not an object, or an output_log
+    that is not a string raised out of close after the archive dir was made. Each such field is skipped, as a
+    wrong-typed gr_commit is: close exits 0, keeps the receipt byte for byte, and still carries a well-formed
+    sibling's log."""
+    runner = make_cli_runner()
+    lane = _multi_member_lane(tmp_path)
+    raw = (json.dumps({"kind": "review-run", "created": "2026-10-13T00:00:00+00:00", "result": "green",
+                       "gr_commit": "abc", **fields}) + "\n").encode()
+    (lane / review_run._RECEIPT_NAME).write_bytes(raw)
+    (lane / _MEMBER_LOG).write_text("member log\n")
+    result = runner.invoke(gr2_app.app, ["review", "close", str(lane), "--json"])
+    assert result.exit_code == 0 and "Traceback" not in _text(result), _text(result)
+    assert not lane.exists()
+    archive = review_allocation.allocation_path(tmp_path / "workspace", lane).with_suffix("")
+    kept = list(archive.rglob(review_run._RECEIPT_NAME + ".original"))
+    assert len(kept) == 1 and kept[0].read_bytes() == raw, list(archive.rglob("*"))
+    assert json.loads((kept[0].parent / review_run._RECEIPT_NAME).read_text())["kind"] == "review-run"
+    log = kept[0].parent / _MEMBER_LOG
+    assert (log.read_text() == "member log\n") if carried else not log.exists()
+
+
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root reads a mode-000 file")
+def test_an_unreadable_run_receipt_is_refused_before_anything_is_written(tmp_path: Path):
+    """A receipt close cannot read is corrupt, not missing: read as missing, close went on to copy it into the
+    archive and raised PermissionError there, leaving a half-written archive dir. Now it refuses first."""
+    runner = make_cli_runner()
+    lane = _multi_member_lane(tmp_path)
+    receipt = lane / review_run._RECEIPT_NAME
+    receipt.write_text(json.dumps({"kind": "review-run", "gr_commit": "abc", "created": "c"}) + "\n")
+    receipt.chmod(0)
+    try:
+        result = runner.invoke(gr2_app.app, ["review", "close", str(lane), "--json"])
+    finally:
+        receipt.chmod(0o644)
+    assert result.exit_code == 2, _text(result)
+    assert "corrupt run receipt" in _text(result) and "Traceback" not in _text(result), _text(result)
+    assert (lane / "demo-core" / ".git").exists() and (lane / "demo-web" / ".git").exists()
+    alloc = review_allocation.allocation_path(tmp_path / "workspace", lane)
+    assert alloc.is_file() and not alloc.with_suffix("").exists(), list(alloc.parent.rglob("*"))

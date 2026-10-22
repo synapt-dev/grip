@@ -548,8 +548,8 @@ def since_my_stamp(workspace: Path, review_id: str) -> dict:
     """What moved since this reviewer's newest stamp: the reviewer is grip.review_author_name (the identity
     `approve` writes), the stamp the newest by created_at on any pin sharing a member key with this one. Per member:
     the stamped and current heads, the commits and the changed paths between them. Each member is measured from my
-    newest stamp on a pin holding that member, and an older pin is read even after its base moved. Reads; writes no
-    ref."""
+    newest stamp on a pin holding that member, and its row names that pin and stamp time (stamped_review, stamped_at;
+    None when I have none); an older pin is read even after its base moved. Reads; writes no ref."""
     workspace = workspace.resolve()
     rid = review_id.removeprefix("gr:")
     name = grip.review_author_name(workspace)
@@ -576,9 +576,11 @@ def since_my_stamp(workspace: Path, review_id: str) -> dict:
     members = []
     for key, m in sorted(current.items()):
         mine = [s for s in stamps if key in s[2]]  # my stamps on this member, not only on the newest pin
-        was = max(mine, key=lambda s: s[0])[2][key] if mine else {}
+        own = max(mine, key=lambda s: s[0]) if mine else None
+        was = own[2][key] if own else {}
         then, now = was.get("head"), m["head"]
-        row = {"key": key, "stamped_head": then, "current_head": now, "changed": then != now,
+        row = {"key": key, "stamped_review": "gr:" + own[1] if own else None, "stamped_at": own[0] if own else None,
+               "stamped_head": then, "current_head": now, "changed": then != now,
                "range": None, "commits": [], "paths": []}
         repo = (workspace / m["path"]).resolve()
         if then is None:  # not in the stamped pin: everything this pin reviews is new to the reviewer

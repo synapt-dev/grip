@@ -4,6 +4,7 @@ import hashlib
 import json
 import subprocess
 import sys
+import traceback
 from pathlib import Path
 
 import pytest
@@ -573,7 +574,8 @@ def _missing_remote(tmp_path):
 def _refuses_by_key(caught, reason):
     text = str(caught.value)
     assert text == reason + ": m", text
-    assert "sekretword" not in text and caught.value.__cause__ is None, text
+    full = "".join(traceback.format_exception(caught.value))
+    assert "sekretword" not in full, full
 
 
 def test_remote_tips_on_a_missing_remote_names_the_member_not_git(tmp_path):

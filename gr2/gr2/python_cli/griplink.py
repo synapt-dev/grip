@@ -1,8 +1,8 @@
 """Full mode on the griplink root: a STOOK and a SHADOW.
 
-Step 1: commit, push and checkout. Step 2: status, record, pin and follow. Functions over gitops.run; no verb is
-wired yet, the top-level names come with the CLI surface. Ported from the prototype that carried the design, whose
-rows ran on real git.
+Step 1: commit, push and checkout. Step 2: status, record, pin and follow. Step 3: pull. Functions over
+gitops.run; no verb is wired yet, the top-level names come with the CLI surface. Ported from the prototype that
+carried the design, whose rows ran on real git.
 
 The shape, one level:
   refs/heads/main                             the SHADOW: a standard commit
@@ -249,13 +249,15 @@ def _one_branch(root: Path) -> None:
         raise GriplinkRefusal(f"{branch or 'a detached HEAD'}: {ONE_BRANCH}", 3)
 
 
-def _cut(root: Path, msg: str, parents: list[str]) -> tuple[str, str]:
+def _cut(root: Path, msg: str, parents: list[str], names: dict[str, str] | None = None,
+         extra_stook_parents: tuple[str, ...] = ()) -> tuple[str, str]:
     """Write the STOOK (the names, its own chain) and the SHADOW (every branch followed to its sha, the shas as
-    parents) from the index, which is staged against the shadow."""
+    parents) from the index, which is staged against the shadow. A pull's merge passes the merged names and the
+    remote STOOK as a second parent of ours."""
     base = _git(root, "write-tree")
-    stook_tree = _with_fields(root, base, dict(_stook_fields(root)))
+    stook_tree = _with_fields(root, base, dict(_stook_fields(root) if names is None else names))
     args = ["commit-tree", stook_tree]
-    for p in dict.fromkeys(x for x in [_cur(root, STOOK)] if x):
+    for p in dict.fromkeys(x for x in [_cur(root, STOOK), *extra_stook_parents] if x):
         args += ["-p", p]
     stook = _git(root, *args, input=msg + "\n")
     resolved = {p: _follow(root, v) for p, v in _fields(root, stook_tree).items()}
@@ -343,13 +345,17 @@ def _field_tree(root: Path, overlay: dict, deleted: dict) -> str:
 
 
 def _gripcommit_tree(root: Path, pin: str, overlay: dict, deleted: dict, msg: str) -> str:
+    return _gripcommit_from_field(root, pin, _field_tree(root, overlay, deleted), msg)
+
+
+def _gripcommit_from_field(root: Path, pin: str, field_tree: str, msg: str) -> str:
     def split(ident: str) -> tuple[str, str]:
         parts = ident.rsplit(" ", 2)
         return parts[0], " ".join(parts[1:])
 
     (a_id, a_date), (c_id, c_date) = split(_git(root, "var", "GIT_AUTHOR_IDENT")), split(_git(root, "var", "GIT_COMMITTER_IDENT"))
     return _mktree(root, [
-        ("040000", "tree", _field_tree(root, overlay, deleted), GC_TREE),
+        ("040000", "tree", field_tree, GC_TREE),
         ("040000", "tree", _mktree(root, [("160000", "commit", pin, "0000001")]), GC_PARENTS),
         ("100644", "blob", _blob(root, a_id), GC_AUTHOR), ("100644", "blob", _blob(root, c_id), GC_COMMITTER),
         ("100644", "blob", _blob(root, a_date), GC_ADATE), ("100644", "blob", _blob(root, c_date), GC_CDATE),
@@ -495,29 +501,36 @@ def _is_the_change(mrepo: Path, path: str, overlay: list[tuple[str, str, str]], 
     return False
 
 
-def checkout(root: Path) -> dict[str, int]:
-    """Each member at its pin, its workspace change applied and staged, not committed. Returns {member: paths}.
+def _change_in(root: Path, shadow: str | None, m: str) -> tuple[list[tuple[str, str, str]], list[str]]:
+    """The workspace change a shadow applies to member m: (overlay as (path, mode, blob), deleted paths)."""
+    overlay: list[tuple[str, str, str]] = []
+    deleted: list[str] = []
+    s = _links(root, _tree_of(root, shadow)).get(m) if shadow else None
+    e = _ls_tree(root, s) if s else {}
+    head = _git(root, "cat-file", "blob", e[HEADF][2]) if HEADF in e else ""
+    if head and not head.startswith(REFP):  # in a shadow the head is always a sha
+        ft = _ls_tree(root, _git(root, "rev-parse", f"{head}:{GC_TREE}"))
+        if FT_OVERLAY in ft:
+            overlay = [(p, mode, b) for p, (mode, _, b) in _ls_tree(root, ft[FT_OVERLAY][2], recursive=True).items()]
+        if FT_DELETED in ft:
+            deleted = list(_ls_tree(root, ft[FT_DELETED][2], recursive=True))
+    return overlay, deleted
 
-    Everything is read and checked before any member moves: each name, each url, each path and mode of each workspace
-    change (the root's remote wrote them), and each member checkout that already exists, which must hold no
-    uncommitted work. Then git writes every file: update-index takes the path first (git's own path check), then
-    checkout-index writes it; a deletion goes through git rm. Python never writes inside a member."""
-    gm = str(root / ".gitmodules")
+
+def _plan(root: Path, rev: str, committed_from: str | None = None) -> list[tuple]:
+    """Read and check what a checkout of shadow `rev` would write, writing nothing: each name, each url, each path and
+    mode of each workspace change (the root's remote wrote them), and each member checkout that already exists, which
+    must hold no uncommitted work, hold the pin, and have no untracked file in the way. Returns the checkout's plan,
+    [(member, url, pin, overlay, deleted)]. A pull runs it on the remote shadow before it moves any ref."""
+    gm = ["-f", str(root / ".gitmodules")] if rev == "HEAD" else ["--blob", f"{rev}:.gitmodules"]
     plan = []
-    for m, s in _links(root, _git(root, "rev-parse", "HEAD^{tree}")).items():
+    for m, s in _links(root, _git(root, "rev-parse", f"{rev}^{{tree}}")).items():
         _check_name(m)
-        url = _git(root, "config", "-f", gm, f"submodule.{m}.url")
+        url = _git(root, "config", *gm, f"submodule.{m}.url")
         _check_url(m, url)
         e = _ls_tree(root, s)
-        overlay: list[tuple[str, str, str]] = []
-        deleted: list[str] = []
-        head = _git(root, "cat-file", "blob", e[HEADF][2]) if HEADF in e else ""
-        if head and not head.startswith(REFP):  # in a shadow the head is always a sha
-            ft = _ls_tree(root, _git(root, "rev-parse", f"{head}:{GC_TREE}"))
-            if FT_OVERLAY in ft:
-                overlay = [(p, mode, b) for p, (mode, _, b) in _ls_tree(root, ft[FT_OVERLAY][2], recursive=True).items()]
-            if FT_DELETED in ft:
-                deleted = list(_ls_tree(root, ft[FT_DELETED][2], recursive=True))
+        overlay, deleted = _change_in(root, rev, m)
+        was_overlay, was_deleted = _change_in(root, committed_from, m) if committed_from else ([], [])
         for p, mode, _ in overlay:
             _check_path(m, p)
             if mode not in _MODES:
@@ -529,7 +542,8 @@ def checkout(root: Path) -> dict[str, int]:
         if (mrepo / ".git").exists():
             raw = gitops.out_bytes(mrepo, "status", "--porcelain=v1", "-z", "--untracked-files=all")
             entries = [e for e in raw.decode("utf-8", "surrogateescape").split("\0") if len(e) > 3 and e[2] == " "]
-            dirty = [e[3:] for e in entries if not e.startswith("??") and not _is_the_change(mrepo, e[3:], overlay, deleted)]
+            dirty = [e[3:] for e in entries if not e.startswith("??") and not _is_the_change(mrepo, e[3:], overlay, deleted)
+                     and not _is_the_change(mrepo, e[3:], was_overlay, was_deleted)]
             if dirty:
                 raise GriplinkRefusal(f"{m}: uncommitted work in {', '.join(dirty)}; nothing was checked out. next: "
                                       "commit it into the workspace with gr2 commit, or discard it yourself", 3)
@@ -558,6 +572,19 @@ def checkout(root: Path) -> dict[str, int]:
                                       "checked out. next: move them aside, or add them in the member and commit "
                                       "them into the workspace with gr2 commit", 3)
         plan.append((m, url, e[PIN][2], overlay, deleted))
+    return plan
+
+
+def checkout(root: Path, committed_from: str | None = None) -> dict[str, int]:
+    """Each member at its pin, its workspace change applied and staged, not committed. Returns {member: paths}.
+
+    Everything is read and checked before any member moves (_plan). Then git writes every file: update-index takes the
+    path first (git's own path check), then checkout-index writes it; a deletion goes through git rm. Python never
+    writes inside a member.
+
+    `committed_from` (a pull) is the shadow the members were checked out from: its change is committed, so a member
+    holding exactly it is not uncommitted work."""
+    plan = _plan(root, "HEAD", committed_from)
     applied = {}
     for m, url, pin, overlay, deleted in plan:
         mrepo = member_dir(root, m)
@@ -664,3 +691,254 @@ def push(root: Path, remote: str = "origin", allow_rewind: bool = False) -> dict
     return {"shadow": _git(root, "rev-parse", MAIN),
             "members": [r.split("/")[-2] for r in send if r.startswith(NS + "/__members__/")],
             "records": [r.split("/")[-1] for r in send if r.startswith(NS + "/__records__/")]}
+
+
+# ---- pull (step 3) -----------------------------------------------------------------------------------------------
+EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+
+def uncommitted(root: Path) -> list[str]:
+    """Members whose work is not in a commit yet: unstaged tracked changes, or a staged change that is neither its
+    STOOK's tip nor what the shadow applied."""
+    out = sorted(unstaged(root))
+    for m, s in _links(root, _git(root, "write-tree")).items():
+        if m in out or not (member_dir(root, m) / ".git").exists():
+            continue
+        overlay, deleted = _staged_change(root, m, _ls_tree(root, s)[PIN][2])
+        if not overlay and not deleted:
+            continue
+        have = _field_tree(root, overlay, deleted)
+        tips = [_cur(root, member_ref(m))]
+        e = _ls_tree(root, _links(root, _git(root, "rev-parse", "HEAD^{tree}")).get(m))
+        if HEADF in e:
+            tips.append(_git(root, "cat-file", "blob", e[HEADF][2]))
+        if not any(t and not t.startswith(REFP) and _try(root, "rev-parse", f"{t}:{GC_TREE}") == have for t in tips):
+            out.append(m)
+    return out
+
+
+def _overlay_of(root: Path, c: str | None, sub: str) -> str:
+    return (_try(root, "rev-parse", "-q", "--verify", f"{c}:{GC_TREE}/{sub}") if c else None) or EMPTY_TREE
+
+
+def _gc_pin(root: Path, c: str) -> str:
+    return _ls_tree(root, _git(root, "rev-parse", f"{c}:{GC_PARENTS}"))["0000001"][2]
+
+
+def _merge_member(root: Path, m: str, mine: str, theirs: str) -> str:
+    """Both sides moved one member's chain: a 3-way merge of the two changes, the way git merges two branches. The base
+    is the chains' merge base, else the pin (an empty change). A real conflict is refused by path, never guessed. The
+    result is a GripCommit with both tips as parents; the caller moves the ref only once the whole pull is decided."""
+    if _gc_pin(root, mine) != _gc_pin(root, theirs):
+        raise GriplinkRefusal(f"{m}: both sides changed it on different pins ({_gc_pin(root, mine)[:12]}, "
+                              f"{_gc_pin(root, theirs)[:12]}); nothing was pulled. next: promote one side, then pull "
+                              "again", 3)
+    mb = _try(root, "merge-base", mine, theirs)
+    side = lambda t: _git(root, "commit-tree", t, input="side\n")  # noqa: E731
+    merged = {}
+    for sub in (FT_OVERLAY, FT_DELETED):
+        b, o, t = _overlay_of(root, mb, sub), _overlay_of(root, mine, sub), _overlay_of(root, theirs, sub)
+        if o == t or t == b:
+            merged[sub] = o
+            continue
+        if o == b:
+            merged[sub] = t
+            continue
+        r = gitops.run(root, "merge-tree", "--write-tree", "-z", "--name-only", "--no-messages",
+                       f"--merge-base={side(b)}", side(o), side(t))
+        if r.returncode == 1:
+            paths = sorted({p for p in (r.stdout or "").split("\0")[1:] if p})
+            raise GriplinkRefusal(f"{m}: a real conflict in {', '.join(repr(p) for p in paths)}: both sides changed the "
+                                  "same lines; nothing was pulled", 3)
+        if r.returncode:
+            raise GriplinkRefusal(f"{m}: git could not merge the two changes: {(r.stderr or '').strip()}; nothing was "
+                                  "pulled", 5)
+        merged[sub] = (r.stdout or "").split("\0")[0]
+    ft = dict(_ls_tree(root, _git(root, "rev-parse", f"{mine}:{GC_TREE}")))
+    for sub, tr in merged.items():
+        if tr == EMPTY_TREE:
+            ft.pop(sub, None)
+        else:
+            ft[sub] = ("040000", "tree", tr)
+    msg = f"merge {m}: {mine[:12]} and {theirs[:12]}"
+    field = _mktree(root, [(x, y, z, n) for n, (x, y, z) in ft.items()])
+    return _git(root, "commit-tree", _gripcommit_from_field(root, _gc_pin(root, mine), field, msg),
+                "-p", mine, "-p", theirs, input=msg + "\n")
+
+
+def _pins(root: Path, rev: str | None) -> dict[str, str]:
+    return {m: _ls_tree(root, s)[PIN][2] for m, s in _links(root, _tree_of(root, rev)).items()} if rev else {}
+
+
+def _member_has(root: Path, m: str, *shas: str) -> Path:
+    """The member's checkout, holding every sha (fetched from the member's url when missing)."""
+    mrepo = member_dir(root, m)
+    if not (mrepo / ".git").exists():
+        raise GriplinkRefusal(f"{m}: no checkout to read its pins in; nothing was pulled. next: gr2 checkout, then pull "
+                              "again", 3)
+    missing = [s for s in shas if not _has(mrepo, f"{s}^{{commit}}")]
+    if missing:
+        url = _git(root, "config", "-f", str(root / ".gitmodules"), f"submodule.{m}.url")
+        _check_url(m, url)
+        gitops.run(mrepo, "fetch", "-q", "--no-tags", "--no-write-fetch-head", "--", url, *missing)
+        if any(not _has(mrepo, f"{s}^{{commit}}") for s in missing):
+            raise GriplinkRefusal(f"{m}: its remote does not serve {', '.join(s[:12] for s in missing)}; nothing was "
+                                  "pulled", 5)
+    return mrepo
+
+
+def _decide_pins(root: Path, base: str | None, mine: str, theirs: str) -> dict[str, str]:
+    """{member: pin} where both sides moved the pin to different shas: the one that contains the other, read in the
+    member's own git. A plain-git merge of the gitlink never stands in: what it does depends on what the checkout has
+    fetched. Neither contains the other: refused by member."""
+    b, o, t = _pins(root, base), _pins(root, mine), _pins(root, theirs)
+    out = {}
+    for m in sorted(set(o) & set(t)):
+        if o[m] == t[m] or o[m] == b.get(m) or t[m] == b.get(m):
+            continue
+        mrepo = _member_has(root, m, o[m], t[m])
+        if _anc(mrepo, o[m], t[m]) is True:
+            out[m] = t[m]
+        elif _anc(mrepo, t[m], o[m]) is True:
+            out[m] = o[m]
+        else:
+            raise GriplinkRefusal(f"{m}: both sides moved its pin and neither contains the other ({o[m][:12]}, "
+                                  f"{t[m][:12]}); nothing was pulled. next: merge them in the member, promote, then pull "
+                                  "again", 3)
+    return out
+
+
+def _merged_names(root: Path, their_stook: str | None) -> dict[str, str]:
+    """The STOOK's names after a merge, per field: whichever side changed it from the merge base; then the name edits
+    not yet cut. A name both sides changed since the base to different values is refused by member, naming both
+    values, as a record is (spec 13.2). The base is the two STOOKs' merge base."""
+    ours = _fields(root, _tree_of(root, STOOK))
+    if not their_stook:
+        names = dict(ours)
+    else:
+        theirs = _fields(root, _tree_of(root, their_stook))
+        mb = _try(root, "merge-base", STOOK, their_stook) if _cur(root, STOOK) else None
+        base = _fields(root, _tree_of(root, mb)) if mb else {}
+        names = {}
+        both = sorted(p for p in set(ours) | set(theirs)
+                      if ours.get(p) != base.get(p) and theirs.get(p) != base.get(p) and ours.get(p) != theirs.get(p))
+        if both:
+            def said(v: str | None) -> str:
+                if v is None:
+                    return "removed"
+                return f"follows {v.strip()[len(REFP):]}" if v.startswith(REFP) else f"pinned {v.strip()[:12]}"
+            def who(f: str) -> str:
+                m, rest = f.split(".griplink/", 1)
+                return f"{m} record {rest.split('/')[1]}" if rest.startswith(RECS + "/") else m
+            raise GriplinkRefusal("; ".join(f"{who(f)}: both sides changed its name (ours {said(ours.get(f))}, theirs "
+                                            f"{said(theirs.get(f))})" for f in both)
+                                  + "; nothing was pulled. next: pin or follow it, then pull again", 3)
+        for p in set(ours) | set(theirs):
+            v = ours.get(p) if ours.get(p) != base.get(p) else theirs.get(p)
+            if v is not None:
+                names[p] = v
+    names.update(_pending(root))
+    return names
+
+
+def pull(root: Path, remote: str = "origin") -> dict:
+    """Fetch the remote root, then fast-forward or merge, as git pull does. Refused, with nothing changed: work not in
+    a commit (a checkout would overwrite it); a record moved on both sides (a record merge is not built); a member
+    chain or pin both sides moved that cannot be merged, by member (and path); any other root conflict, with git's
+    words; a remote shadow whose checkout would be refused (a name, url, path or mode gr2 will not write, a pin the
+    member cannot hold, an untracked file in the way), by member. Every ref is decided and the remote's content
+    checked before any moves. Then each member is checked out at the new shadow."""
+    _one_branch(root)
+    if remote.startswith("-") or gitops.unsafe_in_identifier(remote):
+        raise GriplinkRefusal(f"{remote!r}: not a remote gr2 passes to git; nothing was pulled", 3)
+    left = uncommitted(root)
+    if left:
+        raise GriplinkRefusal(f"your changes in {', '.join(left)} are not committed and the checkout would overwrite "
+                              "them; nothing was pulled. next: gr2 commit -a, then pull again", 3)
+    rg = f"refs/remotes/{remote}/grip"
+    listed = gitops.run(root, "ls-remote", remote, MAIN)
+    if listed.returncode:
+        raise GriplinkRefusal(f"cannot read the remote shadow from {remote}: {(listed.stderr or '').strip()}; nothing "
+                              "was pulled", 5)
+    if not listed.stdout.strip():
+        return {"how": "up to date", "shadow": _git(root, "rev-parse", "HEAD"), "merged": [], "updated": []}
+    fetched = gitops.run(root, "fetch", "-q", "--no-recurse-submodules", "--no-tags", remote,
+                         f"+{MAIN}:refs/remotes/{remote}/main", f"+{NS}/*:{rg}/*")
+    if fetched.returncode:
+        raise GriplinkRefusal(f"cannot read the remote shadow from {remote}: {(fetched.stderr or '').strip()}; nothing "
+                              "was pulled", 5)
+    theirs = _git(root, "rev-parse", f"refs/remotes/{remote}/main")
+    mine = _git(root, "rev-parse", "HEAD")
+    their_stook = _cur(root, f"{rg}/STOOK")
+    updates, merged = [], []
+    for r in gitops.for_each_ref_rows(_git(root, "for-each-ref", "--format=%(refname)", f"{rg}/__members__/",
+                                           f"{rg}/__records__/")):
+        local, their = NS + r[len(rg):], _git(root, "rev-parse", r)
+        parts = local[len(NS) + 1:].split("/")
+        name = parts[1]
+        _check_name(name)
+        here = _cur(root, local)
+        if not here or _anc(root, here, their) is True:
+            if here != their:
+                updates.append((local, their))
+            continue
+        back = _anc(root, their, here)
+        if back is True:
+            continue
+        if back is None:
+            raise GriplinkRefusal(f"{name}: cannot tell how {here[:12]} and {their[:12]} relate; nothing was pulled", 5)
+        if parts[0] == "__records__":
+            raise GriplinkRefusal(f"record {name}: both sides moved it, and a record merge is not built yet; nothing was "
+                                  "pulled", 3)
+        updates.append((local, _merge_member(root, name, here, their)))
+        merged.append(name)
+    up = _anc(root, theirs, mine)
+    ff = _anc(root, mine, theirs)
+    if up is None or ff is None:
+        raise GriplinkRefusal(f"cannot tell how the shadows {mine[:12]} and {theirs[:12]} relate; nothing was pulled", 5)
+    if up:
+        for local, sha in updates:
+            _git(root, "update-ref", local, sha)
+        return {"how": "up to date", "shadow": mine, "merged": merged, "updated": [u[0] for u in updates]}
+    if ff:
+        for m, pin in _pins(root, theirs).items():
+            _member_has(root, m, pin) if (member_dir(root, m) / ".git").exists() else None
+        _plan(root, theirs, committed_from=mine)  # the remote's content, checked before any ref moves
+        for local, sha in updates:
+            _git(root, "update-ref", local, sha)
+        for ref in (MAIN, SHADOW):
+            _git(root, "update-ref", ref, theirs)
+        if their_stook:
+            _git(root, "update-ref", STOOK, their_stook)
+        _git(root, "reset", "-q", "--soft", theirs)
+        _git(root, "read-tree", theirs)
+        _git(root, "checkout-index", "-a", "-f")
+        how = "fast-forward"
+    else:
+        pins = _decide_pins(root, _try(root, "merge-base", mine, theirs), mine, theirs)
+        for m, pin in _pins(root, theirs).items():
+            _member_has(root, m, pin) if (member_dir(root, m) / ".git").exists() else None
+        _plan(root, theirs, committed_from=mine)  # the remote's content, checked before any ref moves
+        names = _merged_names(root, their_stook)
+        r = gitops.run(root, "merge", "-q", "--no-commit", "--no-ff", "--no-verify", theirs)
+        un = [p for p in (gitops.run(root, "diff", "--name-only", "-z", "--diff-filter=U").stdout or "").split("\0") if p]
+        pin_paths = {f"{m}.griplink/{PIN}": pin for m, pin in pins.items()}
+        real = [p for p in un if not _is_field(p) and p not in pin_paths]
+        if (r.returncode and not un) or real:
+            said = ((r.stderr or "") + (r.stdout or "")).strip()
+            gitops.run(root, "merge", "--abort")
+            raise GriplinkRefusal(f"the root merge stopped: {said}; nothing was pulled", 3)
+        for p in un:
+            if _is_field(p):  # a head both sides named: the cut writes every head again from the merged names
+                _git(root, "checkout", "--ours", "--", p)
+                _git(root, "add", "--", p)
+        for p, pin in pin_paths.items():  # gr2's answer, whatever git did with the gitlink
+            _git(root, "update-index", "--add", "--cacheinfo", f"160000,{pin},{p}")
+        for local, sha in updates:
+            _git(root, "update-ref", local, sha)
+        _git(root, "merge", "--quit")  # the cut's soft reset refuses mid-merge; the two parents go to the cut
+        _cut(root, f"pull: merge {theirs[:12]}", [mine, theirs], names=names,
+             extra_stook_parents=(their_stook,) if their_stook else ())
+        how = "merged"
+    checkout(root, committed_from=mine)
+    return {"how": how, "shadow": _git(root, "rev-parse", "HEAD"), "merged": merged, "updated": [u[0] for u in updates]}

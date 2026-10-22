@@ -464,7 +464,7 @@ next: gr2 review publish '<workspace>' '<review>' --remote '<remote>'
 
 ### self_approval
 
-next: a different approver stamps it from their own workspace, after receiving it there: gr2 review receive <their-workspace> '<review>' --remote <member-remote>, then gr2 review stamp <their-workspace> '<review>'
+next: a different approver stamps it from their own workspace, after receiving it there: gr2 review receive <their-workspace> '<review>' --remote <member-remote>, then gr2 review stamp <their-workspace> '<review>'; with no other approver: gr2 review merge '<workspace>' '<review>' --approvals 0
 
 ### target_deleted_at_push
 

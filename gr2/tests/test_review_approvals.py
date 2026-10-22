@@ -10,6 +10,11 @@ import pytest
 
 from typer.testing import CliRunner
 
+try:
+    from typer._click.utils import strip_ansi
+except ImportError:  # older Typer
+    from click.utils import strip_ansi
+
 from gr2.python_cli import approvals, check_records, merge_gate, next_steps, set_check
 from gr2.python_cli.app import app
 
@@ -96,6 +101,76 @@ def test_default_approve_counts_two_names_and_refuses_the_author(world):
     assert git(remote, "rev-parse", "main") == base
     print(json.dumps({"proof": "approve_plus_count", "identities": ["Author A", "Approver B", "Approver C"],
                       "review": rid, "tip": tip, "count": observed["count"], "signed": False}))
+
+
+def test_author_alone_is_told_the_solo_merge_and_the_printed_command_merges(world):
+    """An author alone in a workspace reads the self-stamp refusal; its next line names the explicit zero, and that
+    command, run as printed, merges with no approver and says where the zero came from."""
+    import shlex
+    refused = runner.invoke(app, ["review", "approve"])
+    assert refused.exit_code == 2 and "self_approval" in refused.output, refused.output
+    advice = next(x for x in refused.output.splitlines() if x.startswith("next: "))
+    assert "a different approver" in advice, advice  # the second-approver path is still the first one named
+    solo = advice.split("with no other approver: ", 1)[1]
+    argv = shlex.split(solo)
+    assert argv[:3] == ["gr2", "review", "merge"] and argv[-2:] == ["--approvals", "0"], argv
+    check_records.run_check(world["member"], str(world["remote"]), world["head"], "test", [sys.executable, "-c", "pass"])
+    merged = runner.invoke(app, argv[1:])
+    assert merged.exit_code == 0, merged.output
+    receipt = json.loads(merged.stdout)
+    assert receipt["approvals"]["required"] == 0 and receipt["approvals"]["source"] == "--approvals", receipt
+    assert git(world["remote"], "rev-list", "--parents", "-n", "1", "main").split()[1:] == [world["base"], world["head"]]
+
+
+def test_author_alone_under_an_approvals_floor_is_not_told_the_solo_merge(world):
+    """Under grip.toml [approvals] required = 1, --approvals 0 lowers nothing, so the self-stamp refusal names the
+    floor instead of a solo merge that would refuse."""
+    set_policy(world, 1)
+    refused = runner.invoke(app, ["review", "approve"])
+    assert refused.exit_code == 2 and "self_approval" in refused.output, refused.output
+    advice = next(x for x in refused.output.splitlines() if x.startswith("next: "))
+    assert "a different approver" in advice, advice
+    assert "--approvals 0" not in advice and "no other approver" not in advice, advice
+    assert "requires 1 approval(s) (grip.toml [approvals] required)" in advice, advice
+
+
+def test_author_alone_in_a_review_open_lane_reads_the_floor_of_the_store(world, tmp_path):
+    """A `review open` lane stamps against the store it was opened from, so the self-stamp refusal reads that store's
+    grip.toml: under a floor of 1 the lane is not told the solo merge (the lane itself has no grip.toml)."""
+    set_policy(world, 1)
+    lane = tmp_path / "lane"
+    opened = runner.invoke(app, ["review", "open", str(world["workspace"]), "gr:" + world["rid"], "--lane-dir", str(lane)])
+    assert opened.exit_code == 0, opened.output
+    refused = runner.invoke(app, ["review", "stamp", str(lane)])
+    assert refused.exit_code == 2 and "self_approval" in refused.output, refused.output
+    advice = next(x for x in refused.output.splitlines() if x.startswith("next: "))
+    assert "--approvals 0" not in advice and "requires 1 approval(s)" in advice, advice
+
+
+def test_author_alone_in_a_review_open_lane_is_told_a_solo_merge_that_runs_as_printed(world, tmp_path):
+    """With no floor, the lane's solo line names the store and the review id, and runs as printed."""
+    import shlex
+    lane = tmp_path / "lane"
+    opened = runner.invoke(app, ["review", "open", str(world["workspace"]), "gr:" + world["rid"], "--lane-dir", str(lane)])
+    assert opened.exit_code == 0, opened.output
+    refused = runner.invoke(app, ["review", "stamp", str(lane)])
+    assert refused.exit_code == 2 and "self_approval" in refused.output, refused.output
+    advice = next(x for x in refused.output.splitlines() if x.startswith("next: "))
+    argv = shlex.split(advice.split("with no other approver: ", 1)[1])
+    assert "<review id>" not in argv and argv[-2:] == ["--approvals", "0"], argv
+    check_records.run_check(world["member"], str(world["remote"]), world["head"], "test", [sys.executable, "-c", "pass"])
+    merged = runner.invoke(app, argv[1:])
+    assert merged.exit_code == 0, merged.output
+
+
+def test_review_help_names_the_solo_path_in_step_three():
+    out = runner.invoke(app, ["review", "--help"])
+    assert out.exit_code == 0, out.output
+    # CI forces colour (GITHUB_ACTIONS), and a style can split "--approvals"; rich also draws panel borders.
+    text = " ".join(strip_ansi(out.output).replace("\u2502", " ").split())
+    step3 = text[text.index("3. gr2 review stamp"):text.index("4. gr2 check run")]
+    assert "no other approver" in step3 and "--approvals 0" in step3, step3
+    assert "no approvals required in grip.toml" in step3, step3
 
 
 def test_default_merge_reads_workspace_policy_and_counts_two_approvers(world):

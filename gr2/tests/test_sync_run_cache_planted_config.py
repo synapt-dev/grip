@@ -234,3 +234,59 @@ def test_a_cache_after_gc_and_maintenance_refreshes(tmp_path: Path) -> None:
     _keys(cache)
     assert _refusal(src, cache) == ""
     assert _git("--git-dir", str(cache), "rev-parse", "HEAD") == _git("-C", str(src), "rev-parse", "HEAD")
+
+
+# The user's own global config changes what `clone --mirror` writes, so these rows set their own global file.
+def _user_global(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str) -> None:
+    path = tmp_path / "user-gitconfig"
+    path.write_text(text)
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(path))
+
+
+def _refreshes(src: Path, tmp_path: Path) -> None:
+    cache = tmp_path / "cache" / "a.git"
+    assert gitops.ensure_repo_cache(str(src), cache) is True
+    _commit(src, "two")
+    _keys(cache)
+    assert _refusal(src, cache) == ""
+    assert _git("--git-dir", str(cache), "rev-parse", "HEAD") == _git("-C", str(src), "rev-parse", "HEAD")
+
+
+def test_a_cache_made_under_a_reftable_default_refreshes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    print(_git("--version"))
+    probe = tmp_path / "probe"
+    if subprocess.run(["git", "init", "-q", "--ref-format=reftable", str(probe)], capture_output=True).returncode:
+        pytest.skip("this git cannot make a reftable repo")
+    _user_global(tmp_path, monkeypatch, "[init]\n\tdefaultRefFormat = reftable\n")
+    src = tmp_path / "src"
+    _git("init", "-q", str(src))
+    _commit(src, "one")
+    _refreshes(src, tmp_path)
+
+
+def test_a_cache_made_under_a_user_template_refreshes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    template = tmp_path / "template"
+    template.mkdir()
+    (template / "config").write_text("[gc]\n\tauto = 0\n")
+    _user_global(tmp_path, monkeypatch, f"[init]\n\ttemplateDir = {template}\n")
+    src = tmp_path / "src"
+    _git("init", "-q", str(src))
+    _commit(src, "one")
+    _refreshes(src, tmp_path)
+
+
+def test_a_cache_of_a_sha256_source_refreshes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _user_global(tmp_path, monkeypatch, "")
+    src = tmp_path / "src"
+    _git("init", "-q", "--object-format=sha256", str(src))
+    _commit(src, "one")
+    _refreshes(src, tmp_path)
+
+
+def test_a_refused_cache_names_its_path_and_how_to_reseed(tmp_path: Path) -> None:
+    src, cache = _made_cache(tmp_path)
+    _git("--git-dir", str(cache), "config", "gc.auto", "0")
+    refusal = _refusal(src, cache)
+    print(refusal)
+    assert "config key gc.auto" in refusal, refusal
+    assert f"removing {cache} makes gr2 seed a fresh one" in refusal, refusal

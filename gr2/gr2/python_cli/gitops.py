@@ -898,21 +898,41 @@ _CACHE_ALLOWED_KEYS = frozenset(
         # gr2 writes this itself on every review mirror (the review read lane and open-gr), so a later blobless read
         # of the mirror may filter; a boolean, it names no program.
         "uploadpack.allowfilter",
+        # A user's init.defaultRefFormat or a sha256 source makes `clone --mirror` write these; held to the values
+        # below, since any other value names a format this check has not seen.
+        "extensions.refstorage",
+        "extensions.objectformat",
     }
 )
+_CACHE_ALLOWED_VALUES = {
+    "extensions.refstorage": frozenset({"files", "reftable"}),
+    "extensions.objectformat": frozenset({"sha1", "sha256"}),
+}
 
 
 def _refuse_cache_keys_outside_allowlist(cache_repo_root: Path) -> None:
     from .grip import GripCorruptError  # lazy, as _shown_arg
 
-    proc = _cache_git(cache_repo_root, ["config", "--local", "--list", "--null", "--name-only"])
+    proc = _cache_git(cache_repo_root, ["config", "--local", "--list", "--null"])
     if proc.returncode != 0:
         raise GripCorruptError(f"cannot read repo cache config {cache_repo_root}: {(proc.stderr or '').strip()[:160]}")
-    disallowed = sorted({key for key in (proc.stdout or "").split("\0") if key and key not in _CACHE_ALLOWED_KEYS})
+    # With --null each entry is "key\nvalue" (or a bare key); a key whose value is outside its listed values is
+    # refused like an unlisted key.
+    entries = [entry.partition("\n") for entry in (proc.stdout or "").split("\0") if entry]
+    disallowed = sorted(
+        {
+            key
+            for key, _, value in entries
+            if key not in _CACHE_ALLOWED_KEYS or value.lower() not in _CACHE_ALLOWED_VALUES.get(key, {value.lower()})
+        }
+    )
     if disallowed:
         key = disallowed[0]
         shown = ascii(key) if unsafe_in_identifier(key) else key
-        raise GripCorruptError(f"repo cache {cache_repo_root} holds a config key gr2 does not allow: config key {shown}")
+        raise GripCorruptError(
+            f"repo cache {cache_repo_root} holds a config key gr2 does not allow: config key {shown}; a cache holds"
+            f" objects only, so removing {cache_repo_root} makes gr2 seed a fresh one"
+        )
 
 
 def ensure_repo_cache(url: str, cache_repo_root: Path, *, local_source: Path | None = None) -> bool:
@@ -987,7 +1007,8 @@ def ensure_repo_cache(url: str, cache_repo_root: Path, *, local_source: Path | N
     seed_source = str(local_source) if seed_from_local else effective_url
 
     cache_repo_root.parent.mkdir(parents=True, exist_ok=True)
-    proc = clone("--mirror", "--", seed_source, str(cache_repo_root))
+    # An empty template, so a user's init.templateDir config (gc.auto, hooks) is not copied into the cache.
+    proc = clone("--mirror", "--template=", "--", seed_source, str(cache_repo_root))
     if proc.returncode != 0:
         raise SystemExit(f"failed to seed repo cache {_shown_arg(seed_source)} -> {cache_repo_root}:\n{proc.stderr or proc.stdout}")
 

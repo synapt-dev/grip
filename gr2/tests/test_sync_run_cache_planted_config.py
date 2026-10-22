@@ -9,6 +9,8 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from gr2.python_cli import gitops
 
 
@@ -105,3 +107,44 @@ def test_include_path_is_refused_not_followed(tmp_path: Path) -> None:
     refusal = _refusal(src, cache)
     assert "config key include.path" in refusal, refusal
     assert str(included) not in refusal, refusal
+
+
+def _hook(path: Path, marker: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"#!/bin/sh\ntouch '{marker}'\ncat >/dev/null\n")
+    path.chmod(0o755)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="GAP: the config allowlist cannot see a hook file; the refresh fetch runs <cache>/hooks/reference-transaction",
+)
+def test_a_hook_file_in_the_cache_does_not_run(tmp_path: Path) -> None:
+    # No config key names this hook; git finds it at <cache>/hooks/reference-transaction on its own.
+    src, cache = _made_cache(tmp_path)
+    marker = tmp_path / "fired"
+    _hook(cache / "hooks" / "reference-transaction", marker)
+    refusal = _refusal(src, cache)
+    assert not marker.exists(), "repo cache refresh ran a hook file planted in the cache's hooks directory"
+    assert refusal, "repo cache refresh with a planted hook file was not refused"
+
+
+def test_a_url_rewrite_for_the_origin_is_refused_by_name_not_value(tmp_path: Path) -> None:
+    src, cache = _made_cache(tmp_path)
+    _git("--git-dir", str(cache), "config", "url.https://rewrite.invalid/x.insteadOf", str(src))
+    refusal = _refusal(src, cache)
+    assert "config key url.https://rewrite.invalid/x.insteadof" in refusal, refusal
+    assert str(src) not in refusal, refusal
+
+
+def test_worktree_config_is_refused_by_name(tmp_path: Path) -> None:
+    src, cache = _made_cache(tmp_path)
+    marker = tmp_path / "fired"
+    hooks = tmp_path / "planted-hooks"
+    _hook(hooks / "reference-transaction", marker)
+    _git("--git-dir", str(cache), "config", "extensions.worktreeConfig", "true")
+    (cache / "config.worktree").write_text(f"[core]\n\thooksPath = {hooks}\n")
+    refusal = _refusal(src, cache)
+    assert not marker.exists(), "repo cache refresh ran a hook planted through config.worktree"
+    assert "config key extensions.worktreeconfig" in refusal, refusal
+    assert str(hooks) not in refusal, refusal

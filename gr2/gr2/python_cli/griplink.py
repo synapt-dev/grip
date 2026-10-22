@@ -1,7 +1,8 @@
 """Full mode on the griplink root: a STOOK and a SHADOW.
 
-Step 1: commit, push and checkout, as functions over gitops.run. No verb is wired yet; the top-level names come
-with the CLI surface. Ported from the prototype that carried the design, whose rows ran on real git.
+Step 1: commit, push and checkout. Step 2: status, record, pin and follow. Functions over gitops.run; no verb is
+wired yet, the top-level names come with the CLI surface. Ported from the prototype that carried the design, whose
+rows ran on real git.
 
 The shape, one level:
   refs/heads/main                             the SHADOW: a standard commit
@@ -13,6 +14,8 @@ The shape, one level:
   <m>.griplink/001.2_pin    160000 gitlink: always a sha, the member's real commit (the base)
   <m>.griplink/002.2_head   in the STOOK "ref: refs/dev.synapt.grip/__members__/<m>/STOOK" (a branch) or a sha;
                             in the SHADOW the sha the branch pointed at when the shadow was cut; absent while empty
+  <m>.griplink/005.2r_records/<id>/002.2_head   the same, for a record: "ref: refs/dev.synapt.grip/__records__/<id>"
+                            or a sha; the record's chain lives at that ref
 
 A member's change stays in the workspace (its GripCommit chain) until it is promoted; the member's own git is
 never written here. The shadow's parents are the previous shadow, then every sha its heads resolved to, so a plain
@@ -32,7 +35,7 @@ NS = "refs/dev.synapt.grip"
 STOOK = NS + "/STOOK"
 SHADOW = NS + "/SHADOW"
 MAIN = "refs/heads/main"
-HEADF = "002.2_head"
+HEADF, RECS = "002.2_head", "005.2r_records"
 REFP = "ref: "
 PIN = "001.2_pin"
 GC_TREE, GC_PARENTS = "001.2_tree.griptree", "002.2r_parents"
@@ -43,6 +46,7 @@ FT_SCHEMA, FT_KIND, FT_REF, FT_OVERLAY, FT_DELETED = (
 FIELD_SCHEMA = "dev.synapt.grip.field.v1alpha1"
 EMPTY_BLOB = "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
 ONE_BRANCH = "full mode carries one root branch for now; more than one comes later"
+REC_KIND, REC_ID, REC_TEXT, REC_COMMIT = "001.2_kind", "002.2_id", "003.2_record", "005.2_commit"
 
 
 class GriplinkRefusal(RuntimeError):
@@ -133,6 +137,10 @@ def member_ref(m: str) -> str:
     return f"{NS}/__members__/{m}/STOOK"
 
 
+def record_ref(rid: str) -> str:
+    return f"{NS}/__records__/{rid}"
+
+
 def rewound_ref(tip: str) -> str:
     return f"{NS}/rewound/{tip}"
 
@@ -172,8 +180,16 @@ def _links(root: Path, tree: str) -> dict[str, str]:
 
 
 def _is_field(path: str) -> bool:
+    """A griplink's head, or a record's head under it (one level only)."""
     parts = path.split("/")
-    return len(parts) == 2 and parts[0].endswith(".griplink") and parts[1] == HEADF
+    return parts[-1] == HEADF and parts[0].endswith(".griplink") and (
+        len(parts) == 2 or (len(parts) == 4 and parts[1] == RECS))
+
+
+def _show(path: str) -> str:
+    """How a field is named in a message: its member, and its record under the member."""
+    parts = path.split("/")
+    return parts[0][: -len(".griplink")] + (f"/{parts[2]}" if len(parts) == 4 else "")
 
 
 def _fields(root: Path, tree: str | None) -> dict[str, str]:
@@ -386,6 +402,84 @@ def commit(root: Path, message: str, stage_all: bool = False) -> dict:
     return {"moved": moved, "stook": stook, "shadow": shadow}
 
 
+def status(root: Path) -> dict:
+    """What a commit would cut, and what it would not take. {"moved": entries whose name now resolves to another sha
+    than the shadow holds ("api", or "api/r1" for a record), "unstaged": {member: tracked paths not staged}}."""
+    now = {p: _follow(root, v) for p, v in _stook_fields(root).items()}
+    then = _fields(root, _tree_of(root, "HEAD"))
+    moved = sorted(_show(p) for p in set(now) | set(then) if now.get(p) != then.get(p))
+    return {"moved": moved, "unstaged": unstaged(root)}
+
+
+def status_lines(found: dict) -> list[str]:
+    """status as a reader sees it: "shadow = stook" or "shadow BEHIND the stook: <entries>", then each member's
+    unstaged tracked changes, as git status names them."""
+    lines = ["status: " + ("shadow BEHIND the stook: " + ", ".join(found["moved"]) if found["moved"] else
+                           "shadow = stook")]
+    lines += [f'{m}: changes not staged for commit: {" ".join(ps)} (use "git add" inside {m}, or "gr2 commit -a")'
+              for m, ps in found["unstaged"].items()]
+    return lines
+
+
+def record(root: Path, m: str, rid: str, text: str = "", kind: str = "review") -> str:
+    """Append to record <rid>'s chain under member <m>, like a commit: the record names the member's pin. A new entry
+    follows the record's branch; a pinned one stays pinned (moving a branch never re-attaches a detached head).
+    Returns the record's new tip."""
+    _check_name(m)
+    _check_name(rid)
+    links = _links(root, _git(root, "write-tree"))
+    if m not in links:
+        raise GriplinkRefusal(f"{m}: not a member of this workspace; nothing was recorded", 3)
+    for path in _stook_fields(root):  # the chain is __records__/<id>, so one id under two members would share it
+        parts = path.split("/")
+        if len(parts) == 4 and parts[1] == RECS and parts[2] == rid and parts[0] != f"{m}.griplink":
+            raise GriplinkRefusal(f"{rid}: a record of {parts[0][: -len('.griplink')]}; one record id belongs to one "
+                                  "member; nothing was recorded", 3)
+    pin = _ls_tree(root, links[m])[PIN][2]
+    tree = _mktree(root, [("100644", "blob", _blob(root, kind), REC_KIND), ("100644", "blob", _blob(root, rid), REC_ID),
+                          ("100644", "blob", _blob(root, text), REC_TEXT), ("100644", "blob", _blob(root, pin), REC_COMMIT)])
+    old = _cur(root, record_ref(rid))
+    tip = _git(root, "commit-tree", tree, *(["-p", old] if old else []), input="record\n")
+    _git(root, "update-ref", record_ref(rid), tip, *([old] if old else []))
+    path = f"{m}.griplink/{RECS}/{rid}/{HEADF}"
+    if path not in _stook_fields(root):
+        _set_field(root, path, REFP + record_ref(rid))
+    return tip
+
+
+def _entry(root: Path, m: str, rid: str | None) -> tuple[str, str]:
+    """The field path and the branch an entry follows: member <m>'s head, or record <rid>'s under it."""
+    _check_name(m)
+    if rid is not None:
+        _check_name(rid)
+    if m not in _links(root, _git(root, "write-tree")):
+        raise GriplinkRefusal(f"{m}: not a member of this workspace; nothing was changed", 3)
+    if rid is None:
+        return f"{m}.griplink/{HEADF}", member_ref(m)
+    path = f"{m}.griplink/{RECS}/{rid}/{HEADF}"
+    if path not in _stook_fields(root):
+        raise GriplinkRefusal(f"{m}/{rid}: no such record under {m}; nothing was changed", 3)
+    return path, record_ref(rid)
+
+
+def pin(root: Path, m: str, rid: str | None = None) -> str:
+    """The entry's head becomes the sha its branch points at now (detached: it stops following). Returns the sha."""
+    path, branch = _entry(root, m, rid)
+    sha = _cur(root, branch)
+    if not sha:
+        raise GriplinkRefusal(f"{_show(path)}: its branch holds nothing yet, so there is no sha to pin; nothing was "
+                              "changed", 3)
+    _set_field(root, path, sha)
+    return sha
+
+
+def follow(root: Path, m: str, rid: str | None = None) -> str:
+    """The entry's head follows its branch again. Returns the branch."""
+    path, branch = _entry(root, m, rid)
+    _set_field(root, path, REFP + branch)
+    return branch
+
+
 def _is_the_change(mrepo: Path, path: str, overlay: list[tuple[str, str, str]], deleted: list[str]) -> bool:
     """True when a member's uncommitted state at `path` is exactly what the workspace change applies there (staged and
     in the work tree), as after gr2 commit, which leaves the member's own git alone: checking out again loses nothing."""
@@ -495,7 +589,7 @@ def size_sentence(found: tuple[str, str, tuple[str, ...]]) -> str:
 
 
 def push(root: Path, remote: str = "origin", allow_rewind: bool = False) -> dict:
-    """One atomic push of main, SHADOW, STOOK and every member ref that is ahead; never forced. Refused, with nothing
+    """One atomic push of main, SHADOW, STOOK and every member and record ref that is ahead; never forced. Refused, with nothing
     pushed: (1) "fetch first" when the remote's shadow is not an ancestor of ours after a fresh fetch; (2) an entry
     that would move back from what the remote's shadow recorded, by entry (--allow-rewind is the recorded
     exception). A remote whose shadow cannot be read (ls-remote or the fetch fails) refuses at exit 5. When git
@@ -531,18 +625,18 @@ def push(root: Path, remote: str = "origin", allow_rewind: bool = False) -> dict
                 continue
             forward = _anc(root, old[path], sha)
             if forward is None:
-                raise GriplinkRefusal(f"{path.split('/')[0][: -len('.griplink')]}: cannot tell whether {sha[:12]} "
-                                      f"descends from {old[path][:12]}, which the remote shadow recorded; nothing was "
-                                      "pushed", 5)
+                raise GriplinkRefusal(f"{_show(path)}: cannot tell whether {sha[:12]} descends from {old[path][:12]}, "
+                                      "which the remote shadow recorded; nothing was pushed", 5)
             if not forward and allow_rewind:
-                rewound.append((path.split("/")[0][: -len(".griplink")], old[path], sha))
+                rewound.append((_show(path), old[path], sha))
             elif not forward:
                 raise GriplinkRefusal(
-                    f"{path.split('/')[0][: -len('.griplink')]}: {sha[:12]} does not descend from {old[path][:12]}, "
-                    "which the remote shadow recorded (a rewind; --allow-rewind records one); nothing was pushed", 3)
+                    f"{_show(path)}: {sha[:12]} does not descend from {old[path][:12]}, which the remote shadow "
+                    "recorded (a rewind; --allow-rewind records one); nothing was pushed", 3)
     listed = gitops.run(root, "ls-remote", remote, NS + "/*")
     rem = dict(reversed(line.split("\t")) for line in (listed.stdout or "").splitlines() if "\t" in line)
-    subs = [r for r in gitops.for_each_ref_rows(_git(root, "for-each-ref", "--format=%(refname)", NS + "/__members__/"))]
+    subs = [r for prefix in ("/__members__/", "/__records__/") for r in gitops.for_each_ref_rows(
+        _git(root, "for-each-ref", "--format=%(refname)", NS + prefix))]
     send = []
     for r in subs:
         here, there = _git(root, "rev-parse", r), rem.get(r)
@@ -563,7 +657,11 @@ def push(root: Path, remote: str = "origin", allow_rewind: bool = False) -> dict
     if proc.returncode:
         said = (proc.stderr or proc.stdout or "").strip()
         from .grip_cli import host_size_refusal  # the parser lives with today's push; step 1 is its first caller
-        found = host_size_refusal(proc.stderr or "", [(r.split("/")[-2], root, _git(root, "rev-parse", r)) for r in send])
+        # only member refs go to the size parser: a record is not a member, and a wrong member is worse than none
+        found = host_size_refusal(proc.stderr or "", [(r.split("/")[-2], root, _git(root, "rev-parse", r))
+                                                      for r in send if r.startswith(NS + "/__members__/")])
         raise GriplinkRefusal((size_sentence(found) + "\n" if found else "") + said, 5)
     _git(root, "update-ref", f"refs/remotes/{remote}/main", _git(root, "rev-parse", MAIN))
-    return {"shadow": _git(root, "rev-parse", MAIN), "members": [r.split("/")[-2] for r in send]}
+    return {"shadow": _git(root, "rev-parse", MAIN),
+            "members": [r.split("/")[-2] for r in send if r.startswith(NS + "/__members__/")],
+            "records": [r.split("/")[-1] for r in send if r.startswith(NS + "/__records__/")]}

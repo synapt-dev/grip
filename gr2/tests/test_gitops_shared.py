@@ -188,7 +188,7 @@ def _spawns_in_source(src: str):
 # with no git degrades to a less specific version string instead of failing).
 # gitops.start is the one long-lived spawn (a streaming `cat-file --batch`): the same flags as _spawn and the same
 # missing-git error, but a Popen whose lifetime the caller owns, which subprocess.run cannot hold.
-GIT_SPAWNS = {("python_cli/gitops.py", "_spawn"), ("python_cli/gitops.py", "start"),
+GIT_SPAWNS = {("python_cli/gitops.py", "_spawn"), ("python_cli/gitops.py", "_run_group"), ("python_cli/gitops.py", "start"),
               ("python_cli/version.py", "_clone_short_sha")}
 # Where a spawn's argv is not a literal because it IS someone else's command: a user's check, test or install
 # command, a venv or pip step, a hook, a plugin, a launched agent, or the hosting platform's CLI.
@@ -295,6 +295,7 @@ def test_a_clone_is_unbounded_whichever_helper_runs_it(monkeypatch, tmp_path, ar
     seen = []
     monkeypatch.setattr(gitops.subprocess, "run", lambda a, **kw: seen.append((a, kw.get("timeout")))
                         or subprocess.CompletedProcess(a, 0, "", ""))
+    monkeypatch.setattr(gitops, "_own_group", lambda env: False)
     gitops.run_argv(argv)
     gitops.run(tmp_path, *argv[1:])
     gitops.clone("src", "dst")
@@ -329,6 +330,7 @@ def _one_member_merge(monkeypatch, tmp_path, merge_tree):
         assert "merge-tree" in argv
         return merge_tree(argv)
     monkeypatch.setattr(gitops.subprocess, "run", spawn)
+    monkeypatch.setattr(gitops, "_own_group", lambda env: False)
     code, receipt = merge_gate.review_merge(tmp_path, rid, into="main", feature="feat", required_approvals=0)
     return code, receipt["members"][0]["refused"], calls
 

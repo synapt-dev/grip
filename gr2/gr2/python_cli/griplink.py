@@ -583,7 +583,7 @@ def checkout(root: Path) -> dict[str, int]:
 
 
 def size_sentence(found: tuple[str, str, tuple[str, ...]]) -> str:
-    path, size, members = found
+    path, size, members = found[:3]
     who = ", ".join(members) if members else "a member not determined"
     return f"the host refused {path} ({size}) for its size, in {who}; nothing was pushed"
 

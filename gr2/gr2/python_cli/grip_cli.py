@@ -2763,7 +2763,7 @@ def host_size_line(path: str, member: str | None, size: str, limit: str) -> str:
 
 
 def _atomic_push(root: Path, refspecs: list[tuple[str, str]], verify: bool = True,
-                 leases: dict[str, str] | None = None) -> bool:
+                 leases: dict[str, str] | None = None, members: list[tuple[str, str]] = ()) -> bool:
     """ONE `git push --atomic` of every (commit, ref), so the remote moves all of them or none. A refusal names
     each rejected ref with git's reason, plus the remote's own lines (a pre-receive hook declines every ref in the
     push, so only its message says which one it refused).
@@ -2788,10 +2788,10 @@ def _atomic_push(root: Path, refspecs: list[tuple[str, str]], verify: bool = Tru
         held = {}  # an unreadable answer proves nothing landed: the refusal below names the push's own rejection
     if listed.returncode == 0 and all(held.get(ref) == sha for sha, ref in refspecs):
         return True
-    found = host_size_refusal(proc.stderr or "", [])
+    # `members` is (name, pin) for each member riding this push; its pin was fetched into the root, so it is read there.
+    found = host_size_refusal(proc.stderr or "", [(name, str(root), pin) for name, pin in members])
     if found is not None:
-        # The root push carries no member checkout to read, so the member is not determined here.
-        raise RuntimeError(host_size_line(found[0], None, found[1], found[3]) + "\n" + proc.stderr)
+        raise RuntimeError(host_size_line(found[0], ", ".join(found[2]) or None, found[1], found[3]) + "\n" + proc.stderr)
     rejected = [line.split("\t") for line in gitops.for_each_ref_rows(proc.stdout) if line.startswith("!")]
     named = "; ".join(f"{parts[1].split(':', 1)[1]} {parts[2]}" for parts in rejected if len(parts) >= 3)
     remote = " | ".join(line.strip() for line in proc.stderr.splitlines() if line.startswith("remote:"))
@@ -3048,7 +3048,8 @@ def _native_store_push(root: Path, to: str | None = None, atomic: bool = False, 
         landed_by_another = _atomic_push(root, [(tip, f"refs/heads/{branch}"), (tip, _shadow_ref(root)),
                                                 *[(pin, ref) for _, pin, ref in same_repo],
                                                 *([rewound_ref] if rewound_ref else [])],
-                                         verify=recurse != "none", leases=leases)
+                                         verify=recurse != "none", leases=leases,
+                                         members=[(name, pin) for name, pin, _ in same_repo])
         for ref in leases:
             _store_git(root, "update-ref", "-m", "store push: tracking", _tracking_ref(ref), tip)
         if shadow != tip:

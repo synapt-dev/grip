@@ -167,7 +167,8 @@ def test_a_size_refusal_prints_the_sentence_then_gits_own_words_at_exit_5(world)
         griplink.push(ws)
     first, rest = str(exc.value).split("\n", 1)
     assert exc.value.code == 5
-    assert first == "the host refused src/f1.py (101.00 MB) for its size, in a member not determined; nothing was pushed"
+    assert first == ("push refused by the host for size: src/f1.py in a member not determined is 101.00 MB "
+                     "(host limit 100.00 MB); nothing moved")
     assert "remote: error: File src/f1.py is 101.00 MB; this exceeds GitHub's file size limit of 100.00 MB" in rest, rest
 
 

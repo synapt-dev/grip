@@ -583,9 +583,8 @@ def checkout(root: Path) -> dict[str, int]:
 
 
 def size_sentence(found: tuple[str, str, tuple[str, ...]]) -> str:
-    path, size, members = found[:3]
-    who = ", ".join(members) if members else "a member not determined"
-    return f"the host refused {path} ({size}) for its size, in {who}; nothing was pushed"
+    from .grip_cli import host_size_line
+    return host_size_line(found[0], ", ".join(found[2]) or None, found[1], found[3])
 
 
 def push(root: Path, remote: str = "origin", allow_rewind: bool = False) -> dict:

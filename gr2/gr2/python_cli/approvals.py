@@ -188,7 +188,7 @@ def review_open_lane(lane: Path) -> tuple[Path, str, dict[str, Path]] | None:
 
 
 def _context(workspace: Path, review_id: str, member_dirs: dict[str, Path] | None = None,
-             merged: frozenset[str] = frozenset(), approver: str | None = None) -> tuple[dict, set[str]]:
+             merged: frozenset[str] = frozenset(), approver: str | None = None, *, check_base: bool = True) -> tuple[dict, set[str]]:
     """`member_dirs` (key -> checkout) reads the members from a review lane instead of the workspace's own clones.
     `merged` names members the merge gate measured as already merged into their target: their base moved by their
     own merge, so it is not read as a moved base.
@@ -196,7 +196,8 @@ def _context(workspace: Path, review_id: str, member_dirs: dict[str, Path] | Non
     With `approver` (a stamp), the refusals that need only the bind come before any member checkout is read: the
     bind's own author stamping, then a moved base (one remote read per member, in bind order; only the refused
     member's checkout is read, for the already-on-target case). A commit author stamping needs each member's
-    head, so the caller refuses it after the loop. Without it (a count), every local refusal comes first."""
+    head, so the caller refuses it after the loop. Without it (a count), every local refusal comes first.
+    `check_base=False` skips the moved-base refusal, for reading an older pin's stamps."""
     from . import merge_gate
     workspace = workspace.resolve()
     if merge_gate._toplevel(workspace) != workspace or not merge_gate._store_inside(workspace, workspace):
@@ -225,7 +226,7 @@ def _context(workspace: Path, review_id: str, member_dirs: dict[str, Path] | Non
         members.append({"key": m["key"], "remote": m["remote"], "head_commit": m["head"], "head_tree": tree})
         repos[m["key"]] = repo
     # A count: every local refusal comes first; then one remote read per member, before any approval is pushed.
-    if approver is None:
+    if approver is None and check_base:
         _refuse_moved_bases(workspace, view, merged, rid, lambda m: repos[m["key"]])
     return {"review_id": "gr:" + rid, "author": author, "members": members}, authors
 
@@ -496,8 +497,8 @@ def _refuse_split(workspace: Path, root: dict, tips: dict[str, str | None]) -> N
 
 
 def count_approvals(workspace: Path, review_id: str, member_dirs: dict[str, Path] | None = None,
-                    merged: frozenset[str] = frozenset()) -> dict:
-    root, authors = _context(workspace, review_id, member_dirs, merged)
+                    merged: frozenset[str] = frozenset(), *, check_base: bool = True) -> dict:
+    root, authors = _context(workspace, review_id, member_dirs, merged, check_base=check_base)
     tips = _remote_tips(workspace, root)
     if len(set(tips.values())) != 1:
         _refuse_split(workspace, root, tips)
@@ -546,7 +547,9 @@ def approve(workspace: Path, review_id: str | None = None, member_dirs: dict[str
 def since_my_stamp(workspace: Path, review_id: str) -> dict:
     """What moved since this reviewer's newest stamp: the reviewer is grip.review_author_name (the identity
     `approve` writes), the stamp the newest by created_at on any pin sharing a member key with this one. Per member:
-    the stamped and current heads, the commits and the changed paths between them. Reads; writes no ref."""
+    the stamped and current heads, the commits and the changed paths between them. Each member is measured from my
+    newest stamp on a pin holding that member, and an older pin is read even after its base moved. Reads; writes no
+    ref."""
     workspace = workspace.resolve()
     rid = review_id.removeprefix("gr:")
     name = grip.review_author_name(workspace)
@@ -560,7 +563,7 @@ def since_my_stamp(workspace: Path, review_id: str) -> dict:
             continue
         if not set(pinned) & set(current):
             continue
-        for link in count_approvals(workspace, pin)["links"]:
+        for link in count_approvals(workspace, pin, check_base=False)["links"]:
             if link["approver"] == name:
                 stamps.append((_read_link(workspace, link["commit"])["created_at"], pin, pinned))
     result = {"review_id": "gr:" + rid, "approver": name}
@@ -572,7 +575,9 @@ def since_my_stamp(workspace: Path, review_id: str) -> dict:
     at, pin, pinned = max(stamps, key=lambda s: s[0])
     members = []
     for key, m in sorted(current.items()):
-        then, now = (pinned.get(key) or {}).get("head"), m["head"]
+        mine = [s for s in stamps if key in s[2]]  # my stamps on this member, not only on the newest pin
+        was = max(mine, key=lambda s: s[0])[2][key] if mine else {}
+        then, now = was.get("head"), m["head"]
         row = {"key": key, "stamped_head": then, "current_head": now, "changed": then != now,
                "range": None, "commits": [], "paths": []}
         repo = (workspace / m["path"]).resolve()
@@ -587,11 +592,22 @@ def since_my_stamp(workspace: Path, review_id: str) -> dict:
             if ancestry:
                 row["range"] = f"{then}..{now}"
                 row["commits"] = _git(repo, "rev-list", "--reverse", row["range"]).splitlines()
-            # A rebased head has no range; the paths are still the diff between the two trees.
-            row["paths"] = sorted(_git(repo, "diff", "--name-only", then, now).splitlines())
+            # Per file, the stamped range's change against the current one: a rebase onto a moved base keeps
+            # the base's own files out, and a rebased head with no range still names what its change moved.
+            row["paths"] = _moved_paths(repo, (was["base"], then), (m["base"], now))
         members.append(row)
     return {**result, "stamped_review": "gr:" + pin, "stamped_at": at,
             "changed": any(r["changed"] for r in members), "members": members}
+
+
+def _moved_paths(repo: Path, stamped: tuple[str, str], current: tuple[str, str]) -> list[str]:
+    """The paths whose change in the stamped range (base, head) differs from their change in the current one. A path
+    the new base also changed differs in its index line, so it is named: the reviewer has not read that merge."""
+    def change(base: str, head: str, *path: str) -> str:
+        args = ("diff", "--no-ext-diff", "--no-textconv", "--no-color", "--no-renames", base, head)
+        return _git(repo, *args, *(("--", ":(literal)" + path[0]) if path else ("--name-only", "-z")), raw=True)
+    paths = {p for side in (stamped, current) for p in change(*side).split("\0") if p}
+    return sorted(p for p in paths if change(*stamped, p) != change(*current, p))
 
 
 # ---- a PR-head review: the lane `review checkout-pr` (or `review open`) made, stamped by its (repo, head) record

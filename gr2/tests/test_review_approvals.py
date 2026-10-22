@@ -445,7 +445,7 @@ def test_lease_race_refuses_then_a_fresh_attempt_appends(world, monkeypatch):
 
 def test_count_refuses_a_tip_that_moves_during_the_walk(monkeypatch):
     root, _ = _sample_link()
-    monkeypatch.setattr(approvals, "_context", lambda *args: (root, {"Author A"}))
+    monkeypatch.setattr(approvals, "_context", lambda *args, **kw: (root, {"Author A"}))
     measurements = iter(({"remote.git": "b" * 40}, {"remote.git": "c" * 40}))
     monkeypatch.setattr(approvals, "_remote_tips", lambda *args: next(measurements))
     monkeypatch.setattr(approvals, "_walk", lambda *args: [])
@@ -456,7 +456,7 @@ def test_count_refuses_a_tip_that_moves_during_the_walk(monkeypatch):
 def test_count_refuses_divergence_without_writes(monkeypatch):
     root, _ = _sample_link()
     tips = {"alpha.git": "b" * 40, "beta.git": "c" * 40}
-    monkeypatch.setattr(approvals, "_context", lambda *args: (root, {"Author A"}))
+    monkeypatch.setattr(approvals, "_context", lambda *args, **kw: (root, {"Author A"}))
     monkeypatch.setattr(approvals, "_remote_tips", lambda *args: tips)
     monkeypatch.setattr(approvals, "_walk", lambda *args: [])
     monkeypatch.setattr(approvals, "_ancestors", lambda workspace, tip: {tip})  # unrelated fake tips: a fork
@@ -1247,7 +1247,7 @@ def _five(monkeypatch, tips):
     root, _ = _sample_link()
     root = {**root, "members": [{**root["members"][0], "key": k, "remote": k + ".git"} for k in FIVE]}
     reads = iter(tips if isinstance(tips, list) else [tips, tips])
-    monkeypatch.setattr(approvals, "_context", lambda *args: (root, {"Author A"}))
+    monkeypatch.setattr(approvals, "_context", lambda *args, **kw: (root, {"Author A"}))
     monkeypatch.setattr(approvals, "_remote_tips", lambda *args: next(reads))
     monkeypatch.setattr(approvals, "_walk", lambda *args: [{"approver": "Approver B"}])
     # fake tips are unrelated commits: each is its own only ancestor, so two of them are a fork

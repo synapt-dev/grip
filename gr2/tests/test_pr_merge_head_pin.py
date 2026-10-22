@@ -613,18 +613,20 @@ def test_unreadable_wins_over_moved_and_the_table_names_both(
 
 
 def test_the_pin_pass_reads_the_host_not_the_adapter_status(tmp_path: Path) -> None:
-    """READ-SOURCE: pr_status raises, the host serves the pins: the merge succeeds."""
+    """READ-SOURCE: pr_status says OPEN with a POISONED head found nowhere else; the host serves the pins."""
+    poisoned = "f" * 40
 
-    class _StatusRaises(_Pinned):
+    class _StatusPoisoned(_Pinned):
         def pr_status(self, repo: str, number: int) -> PRStatus:
-            raise AdapterError("pr_status must not be the head's source")
+            return PRStatus(ref=PRRef(repo=repo, number=number), state="OPEN", head_oid=poisoned)
 
-    adapter = _StatusRaises({"app": READ_SHA, "api": READ_SHA})
+    adapter = _StatusPoisoned({"app": READ_SHA, "api": READ_SHA})
 
     _merge(tmp_path, ["app", "api"], adapter,
            expected_heads={"app": READ_SHA, "api": READ_SHA})
 
     assert adapter.merged == ["app", "api"]
+    assert poisoned not in adapter.pins_seen.values(), "the poisoned pr_status head must never be the pinned head"
 
 
 def _assert_refused_unpinned(code, payload, adapter, before, group_file, outbox, unpinned):

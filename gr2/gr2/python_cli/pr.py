@@ -153,6 +153,21 @@ class PRPrePassRefusal(PRMergeError):
         super().__init__(repo, pr_number, reason, completed=[])
 
 
+class ClosedMembersError(PRPrePassRefusal):
+    """A recorded PR is closed on the host, so NOTHING merged.
+
+    A recorded number is only a claim about the host; a PR closed since it was
+    recorded must not be merged by number. `closed` names every closed member.
+    """
+
+    status = "refused_closed"
+
+    def __init__(self, closed: list[tuple[str, int]]) -> None:
+        self.closed = list(closed)
+        repo, number = self.closed[0]
+        super().__init__(repo, number, ", ".join(f"{r}#{n} is closed" for r, n in self.closed))
+
+
 class PRHeadUnreadableError(PRPrePassRefusal):
     """The host's current PR head could not be read, so the answer is unknown.
 
@@ -491,6 +506,19 @@ def member_routing(adapter: PlatformAdapter, repo: str, member: Mapping[str, obj
     return {"target": adapter.resolve_target(str(remote))}  # type: ignore[attr-defined]
 
 
+def closed_members(adapter: PlatformAdapter, group: Mapping[str, object]) -> list[tuple[str, int]]:
+    """Read each recorded PR's state on the host, once per member, and return the closed ones.
+    A recorded number is only a claim about the host; a PR closed since it was recorded must
+    not be merged by number, nor block a new group for the same review forever."""
+    closed = []
+    for member in group.get("prs", []):  # type: ignore[union-attr]
+        repo, number = str(member["repo"]), int(member["pr_number"])
+        status = adapter.pr_status(repo, number, **member_routing(adapter, repo, member))
+        if str(status.state).upper() == "CLOSED":
+            closed.append((repo, number))
+    return closed
+
+
 def group_routing(adapter: PlatformAdapter, group: Mapping[str, object]) -> dict[str, dict[str, RemoteTarget]]:
     """Every member's routing, decided for the whole group before the first adapter call."""
     return {str(m["repo"]): member_routing(adapter, str(m["repo"]), m) for m in group["prs"]}  # type: ignore[index]
@@ -773,6 +801,10 @@ def merge_pr_group(
     # earlier member merges first, and half of a group that nobody read lands.
     require_adapter_capability(adapter, "merge_pr")
     routing = group_routing(adapter, group)
+    # A closed member is refused after the refusals above and before the pin reads.
+    closed = closed_members(adapter, group)
+    if closed:
+        raise ClosedMembersError(closed)
     # Read EVERY pinned member before refusing, so the refusal names the whole
     # group, not just the first member that differs.
     members: list[dict[str, Any]] = []

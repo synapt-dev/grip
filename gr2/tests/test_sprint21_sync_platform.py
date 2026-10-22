@@ -1012,8 +1012,8 @@ def test_pr_merge_reports_partial_failure_and_preserves_state(tmp_path: Path, mo
                 raise AdapterError("merge conflict")
             return _merge_receipt(repo, number, method)
 
-        def pr_status(self, repo: str, number: int) -> PRStatus:  # pragma: no cover
-            raise AssertionError("pr_status should not be called")
+        def pr_status(self, repo: str, number: int) -> PRStatus:
+            return PRStatus(ref=PRRef(repo=repo, number=number), state="OPEN")
 
         def list_prs(self, repo: str, *, head_branch: str | None = None) -> list[PRRef]:  # pragma: no cover
             return []

@@ -905,9 +905,12 @@ def _pr_create_for_review(workspace_root, review, platform, base_branch, draft, 
     THE REMOTE, since the remote branch, not the checkout, is what the PR carries. The base is --base or
     the member's tracked branch. A second group for one review is refused."""
     target, members = resolve_review_subject(workspace_root, review)
-    if pr_ops.review_pr_groups(workspace_root, target):
-        _refuse(f"a PR group for review {target} already exists; read it with `gr2 pr status`")
     adapter = platform_ops.get_platform_adapter(platform)
+    existing = pr_ops.review_pr_groups(workspace_root, target)
+    if any(len(pr_ops.closed_members(adapter, group)) < len(group.get("prs", [])) for _, group in existing):
+        _refuse(f"a PR group for review {target} already exists; read it with `gr2 pr status`")
+    for path, _ in existing:  # every recorded PR is closed: the new group replaces the record
+        path.unlink()
     v2 = adapter if platform_ops.adapter_api_version(adapter) >= 2 else None
     on_host = _review_members_on_host(workspace_root, members, v2)
     from . import review_members
@@ -6788,6 +6791,17 @@ def pr_merge(
             "merged_receipts": completed,
             "state_path": str(group_path),
         }
+    except pr_ops.ClosedMembersError as exc:
+        reviewed_heads = {slug: m["commit"] for slug, (m, _) in on_host.items()} if subject_targets is not None else {}
+        named = []
+        for repo, number in exc.closed:
+            sha = reviewed_heads.get(repo)
+            others = [p for p in (adapter.pr_for_head(repo, sha) if sha else [])
+                      if str(p.get("state", "")).lower() == "open" and p.get("number") != number]
+            alt = f", and #{others[0]['number']} is open at its reviewed head" if others else ""
+            named.append(f"{repo}#{number} is closed{alt}")
+        raise SystemExit(f"refusing to merge PR group {group['pr_group_id']}: " + "; ".join(named)
+                         + ". next: reopen the recorded PR, or open a new group with `gr2 pr create`")
     except pr_ops.PRPrePassRefusal as exc:
         # Refused before the first merge: nothing happened, so nothing is written.
         payload = {

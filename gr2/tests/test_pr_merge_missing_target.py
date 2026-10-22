@@ -31,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from gr2.python_cli import app as gr2_app
 from gr2.python_cli.merge_verification import MergeVerificationTarget
-from gr2.python_cli.platform import MergeMethod
+from gr2.python_cli.platform import MergeMethod, PRRef, PRStatus
 from gr2.python_cli.pr import (
     PRHeadPinError,
     PRMergeError,
@@ -50,6 +50,9 @@ class _NeverCalled:
     """An adapter that fails loudly: this refusal must precede every merge call."""
 
     name = "github"
+
+    def pr_status(self, repo: str, number: int) -> PRStatus:
+        return PRStatus(ref=PRRef(repo=repo, number=number), state="OPEN")
 
     def merge_pr(self, *args: object, **kwargs: object) -> object:
         raise AssertionError("an adapter call means the refusal did not run first")

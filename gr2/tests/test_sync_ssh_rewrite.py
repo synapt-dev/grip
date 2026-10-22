@@ -202,7 +202,7 @@ class TestEnsureRepoCacheRefreshRepointsSshOrigin:
         def fake_run(cmd, *args, **kwargs):
             cmd = gitops_mod.logical_argv(cmd)  # the command as written, without the shared flags
             recorded.append(list(cmd))
-            if cmd[:2] == ["git", "--git-dir"] and "fetch" in cmd:
+            if cmd[:1] == ["git"] and "--git-dir" in cmd and "fetch" in cmd:  # any flag order, e.g. the hooks-off -c
                 return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
             return real_run(cmd, *args, **kwargs)
 
@@ -239,7 +239,7 @@ class TestEnsureRepoCacheRefreshRepointsSshOrigin:
         def fake_run(cmd, *args, **kwargs):
             cmd = gitops_mod.logical_argv(cmd)  # the command as written, without the shared flags
             recorded.append(list(cmd))
-            if cmd[:2] == ["git", "--git-dir"] and "fetch" in cmd:
+            if cmd[:1] == ["git"] and "--git-dir" in cmd and "fetch" in cmd:  # any flag order, e.g. the hooks-off -c
                 return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
             return real_run(cmd, *args, **kwargs)
 

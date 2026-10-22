@@ -15,6 +15,14 @@ import pytest
 from gr2.python_cli import gitops
 
 
+@pytest.fixture(autouse=True)
+def _no_host_git_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A host /etc/gitconfig or ~/.gitconfig that sets core.hooksPath would keep a cache hook from running even with
+    # gr2's hooks-off flag removed, so the hook rows could not fail. Measure with git's own defaults.
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+
+
 def _git(*args: str) -> str:
     return subprocess.run(["git", *args], check=True, capture_output=True, text=True).stdout.strip()
 

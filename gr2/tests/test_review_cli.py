@@ -26,6 +26,8 @@ import sys
 
 from pathlib import Path
 
+import pytest
+
 from typer.testing import CliRunner
 
 from gr2.python_cli import grip
@@ -445,12 +447,24 @@ def test_bind_rows_json_rejects_empty_list(tmp_path):
 # "Traceback").
 
 
-def _run_bind_real(ws: Path, rows_json: Path) -> subprocess.CompletedProcess:
+def _run_bind_real(ws: Path, rows_json: Path, columns: int | None = None) -> subprocess.CompletedProcess:
+    env = None
+    if columns is not None:
+        env = {**os.environ, "COLUMNS": str(columns)}
     return subprocess.run(
         [sys.executable, "-m", "gr2.python_cli.app", "review", "bind",
          str(ws), "--rows-json", str(rows_json)],
-        capture_output=True, text=True,
+        capture_output=True, text=True, env=env,
     )
+
+
+def _flat(text: str) -> str:
+    """The error panel word-wraps at the terminal width, so a phrase like
+    "invalid JSON" splits across lines once the path before it is long enough.
+    Drop the ANSI escapes and panel borders and collapse whitespace so the
+    assertion reads the message, not the layout.
+    """
+    return " ".join(_plain(text).replace("\u2502", " ").split())
 
 
 def test_bind_rows_json_malformed_json_is_clean_error(tmp_path):
@@ -460,7 +474,24 @@ def test_bind_rows_json_malformed_json_is_clean_error(tmp_path):
     r = _run_bind_real(ws, bad)
     assert r.returncode != 0
     assert "Traceback" not in (r.stdout + r.stderr)
-    assert "invalid JSON" in (r.stdout + r.stderr)
+    assert "invalid JSON" in _flat(r.stdout + r.stderr)
+
+
+@pytest.mark.parametrize("columns", [40, 60])
+def test_bind_rows_json_malformed_json_error_is_width_proof(tmp_path, columns):
+    # The panel is columns - 4 wide inside its borders; a path longer than that
+    # is folded, and when its last piece ends 11 short of the edge the wrap
+    # lands between "invalid" and "JSON". Pad the file name to put it there.
+    ws = _grip_ws(tmp_path)
+    inner = columns - 4
+    base = len(str(tmp_path)) + len("/.json")
+    stem = (inner - 11 - base) % inner + inner
+    bad = tmp_path / ("b" * stem + ".json")
+    bad.write_text("not json {{{")
+    r = _run_bind_real(ws, bad, columns=columns)
+    assert r.returncode != 0
+    assert "Traceback" not in (r.stdout + r.stderr)
+    assert "invalid JSON" in _flat(r.stdout + r.stderr)
 
 
 def test_bind_rows_json_missing_file_is_clean_error(tmp_path):
@@ -477,7 +508,7 @@ def test_bind_rows_json_non_dict_entry_is_clean_error(tmp_path):
     r = _run_bind_real(ws, f)
     assert r.returncode != 0
     assert "Traceback" not in (r.stdout + r.stderr)
-    assert "must be a JSON object" in (r.stdout + r.stderr)
+    assert "must be a JSON object" in _flat(r.stdout + r.stderr)
 
 
 # --- A JSON number in a string field must refuse, not

@@ -124,14 +124,15 @@ def _read_run_receipt(path: Path) -> dict:
         raw = path.read_bytes()
     except FileNotFoundError:
         return {}
-    except OSError:
-        receipt = None
-    else:
-        try:
-            receipt = json.loads(raw.decode("utf-8"))
-        # Nesting deeper than the parser's recursion limit is RecursionError, not ValueError.
-        except (ValueError, RecursionError):
-            receipt = None
+    except OSError as exc:
+        # A directory or an unreadable file is named as what it is, not as bad JSON.
+        raise OpenGrReviewError(f"corrupt run receipt: cannot be read ({type(exc).__name__}); "
+                                f"nothing removed, recovery at {path}") from exc
+    try:
+        receipt = json.loads(raw.decode("utf-8"))
+    # Nesting deeper than the parser's recursion limit is RecursionError, not ValueError.
+    except (ValueError, RecursionError):
+        raise OpenGrReviewError(f"corrupt run receipt: not valid JSON; nothing removed, recovery at {path}") from None
     if not isinstance(receipt, dict):
         raise OpenGrReviewError(f"corrupt run receipt: not a JSON object; nothing removed, recovery at {path}")
     return receipt

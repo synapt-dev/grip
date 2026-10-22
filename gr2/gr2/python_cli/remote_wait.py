@@ -2,9 +2,10 @@
 object other than the one it named at the start (or the caller's ``from_sha``).
 
 Prior art is `gr2 sync wait` (sync_wait.py), and this keeps its contract: the same exit codes
-(``exit_codes.EXIT_CODES["sync"]``, repeated as the "review" group), the same bounds, the same read. 0 moved; 3
+(``exit_codes.EXIT_CODES["sync"]``, repeated as the "review wait" table), the same bounds, the same read. 0 moved; 3
 refused, before any read for a bad value and at the start for a remote that cannot be read or has no such ref; 6 the
-timeout came first, including a read the deadline cut short; 7 unreadable, two failed reads in a row. A failed read is
+timeout came first, including a read the deadline cut short; 7 unreadable, two failed reads in a row. A read cut
+by its own 30 s bound with more time left is an ordinary failed read, not the deadline. A failed read is
 never "not moved": one is retried at the next poll, a second ends the wait. A ref that the remote stops advertising
 counts as a failed read with its own line, so a deletion seen twice ends in 7 saying the branch was deleted (often:
 it merged and the branch was removed); whether a commit landed is a ``--contains`` question this wait does not ask.
@@ -59,7 +60,7 @@ def _bound(value: float, kind: str, least: float) -> float:
 
 
 class _ReadFailed(Exception):
-    """ls-remote exited nonzero; the message is git's reason, credentials redacted."""
+    """ls-remote exited nonzero (the message is git's reason, credentials redacted) or hit its own 30 s bound."""
 
 
 def _ls_remote(repo: Path, remote: str, ref: str, bound: float) -> str:
@@ -68,17 +69,20 @@ def _ls_remote(repo: Path, remote: str, ref: str, bound: float) -> str:
     try:
         proc = gitops.run(repo, *args, timeout=bound, raise_timeout=True)
     except subprocess.TimeoutExpired:
-        raise RemoteWaitError(
-            f"{gitops._shown_arg(remote)} {ref}: no answer within {bound:g}s, the time the wait had left", CODE_TIMEOUT
-        ) from None
+        if bound < READ_BOUND:  # the bound was the time left: the wait's own deadline cut this read short
+            raise RemoteWaitError(
+                f"{gitops._shown_arg(remote)} {ref}: no answer within {bound:g}s, the time the wait had left",
+                CODE_TIMEOUT,
+            ) from None
+        raise _ReadFailed(f"no answer within {bound:g}s") from None
     if proc.returncode != 0:
         raise _ReadFailed(f"ls-remote failed: {gitops.shown_git_text(args, proc.stderr or '', repo).strip()[:200]}")
     return proc.stdout
 
 
 def _read(repo: Path, remote: str, ref: str, left: float) -> tuple[str | None, str]:
-    """(oid, "") on a read, (None, why) on a failure: git's reason, a malformed listing, or the ref absent. A read the
-    deadline cut short raises CODE_TIMEOUT: the only deadline in play is the wait's own."""
+    """(oid, "") on a read, (None, why) on a failure: git's reason, a read cut by its own 30 s bound, a malformed
+    listing, or the ref absent. A read the deadline cut short raises CODE_TIMEOUT: that is the wait's own deadline."""
     try:
         listing = _ls_remote(repo, remote, ref, max(1.0, min(READ_BOUND, left)))
     except _ReadFailed as exc:

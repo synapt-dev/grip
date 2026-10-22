@@ -36,8 +36,9 @@ EXIT_CODES: dict[str, dict[int, str]] = {
         6: "timeout",
         7: "unreadable",
     },
-    # review wait: the same codes as sync wait, so a caller handles both waits one way.
-    "review": {
+    # review wait: the same codes as sync wait, so a caller handles both waits one way. Keyed by the verb, not the
+    # review group: the other review verbs return other codes.
+    "review wait": {
         0: "ok",
         2: "usage",
         3: "refused",

@@ -8,7 +8,7 @@ same PR; the gate that enforces that is ``tests/test_api_dump.py``.
 Grouping is a core rule (``gr2/api_core.py``) over a fact only this file can
 supply: which command each item belongs to. The walk hands it over for free for
 verbs, flags and positionals; the json table supplies its own verb key; an exit
-code is filed under the group that returns it; and the layout rows, which belong
+code is filed under the group or verb that returns it; and the layout rows, which belong
 to no verb at all, render under ``LAYOUT_GROUP``.
 
 Item kinds emitted here: ``verb``, ``flag``, ``arg``, ``exit``, ``json``,
@@ -264,9 +264,9 @@ def _exit_items() -> list[api_core.Row]:
             spelling = f"{group} {code} {reason}"
             if (group, code) in PREFIXED_CODES:
                 spelling += f' prefix:"{grip_cli.STORE_INCOMPLETE_PREFIX}"'
-            # An exit code belongs to the GROUP that returns it rather than to
-            # any one verb inside the group: the table is keyed by group and the
-            # code is shared by everything under it.
+            # An exit code belongs to the group or verb that returns it: a key
+            # naming a group shares the code with everything under it, a key
+            # naming a verb (``review wait``) holds it for that verb alone.
             rows.append(api_core.Row("exit", spelling, False, None, group))
     return rows
 

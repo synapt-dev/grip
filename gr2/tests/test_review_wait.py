@@ -65,7 +65,15 @@ def _push(work, remote, msg="two"):
 
 def test_the_codes_are_sync_waits():
     assert (remote_wait.CODE_REFUSED, remote_wait.CODE_TIMEOUT, remote_wait.CODE_UNREADABLE) == (3, 6, 7)
-    assert EXIT_CODES["review"] == EXIT_CODES["sync"]
+    assert EXIT_CODES["review wait"] == EXIT_CODES["sync"]
+
+
+def test_the_codes_are_keyed_by_the_verb_not_the_review_group():
+    # The other review verbs exit 1 or 4; a "review" key would publish 0/2/3/6/7 as their contract too.
+    assert "review" not in EXIT_CODES
+    api = (Path(__file__).resolve().parents[1] / "api" / "cli.api").read_text()
+    assert re.search(r"^exit  review wait 6 timeout\s", api, re.M)
+    assert not re.search(r"^exit  review \d", api, re.M)
 
 
 def test_moved_returns_old_and_new(world):

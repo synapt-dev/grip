@@ -649,13 +649,23 @@ def test_a_run_receipt_that_is_not_a_json_object_is_refused_as_corrupt(tmp_path:
     assert result.exception is None or isinstance(result.exception, SystemExit), repr(result.exception)
     assert result.exit_code == 2, _text(result)
     assert "corrupt run receipt" in _text(result) and "Traceback" not in _text(result), _text(result)
-    # The parser decides the cause: a nesting depth that raises on one Python parses on another (3.14).
+    # The cause follows the reader's own order: decode, then the depth scan, then the parser. Whether the
+    # parser accepts deep nesting depends on the interpreter's stack, so the row asks it rather than assume.
     try:
-        json.loads(raw)
-        cause = "not a JSON object"
-    except (ValueError, RecursionError):
+        text = raw.decode("utf-8")
+    except ValueError:
         cause = "not valid JSON"
-    others = [c for c in ("not a JSON object", "not valid JSON", "cannot be read") if c != cause]
+    else:
+        if open_gr_review._nested_too_deep(text):
+            cause = f"nested deeper than {open_gr_review._RECEIPT_MAX_DEPTH} levels"
+        else:
+            try:
+                json.loads(text)
+                cause = "not a JSON object"
+            except (ValueError, RecursionError):
+                cause = "not valid JSON"
+    others = [c for c in ("not a JSON object", "not valid JSON", "cannot be read", "nested deeper than")
+              if not cause.startswith(c)]
     assert cause in _text(result) and not any(c in _text(result) for c in others), _text(result)
     assert (lane / review_run._RECEIPT_NAME).read_bytes() == raw
     assert (lane / "demo-core" / ".git").exists() and (lane / "demo-web" / ".git").exists()

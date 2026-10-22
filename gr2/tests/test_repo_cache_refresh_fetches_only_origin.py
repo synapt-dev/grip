@@ -25,6 +25,7 @@ from pathlib import Path
 from gr2.python_cli import gitops
 if sys.argv[3] == "skip-refusal":
     gitops._refuse_planted_cache_remotes = lambda root: None
+    gitops._refuse_cache_keys_outside_allowlist = lambda root: None
 try:
     print("created" if gitops.ensure_repo_cache(sys.argv[1], Path(sys.argv[2])) else "refreshed")
 except SystemExit as exc:

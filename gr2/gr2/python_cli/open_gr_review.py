@@ -267,6 +267,10 @@ def _run_placed_members(target: Path, receipt: dict, member_names: set[str]) -> 
 def _preserve_allocated_runs(workspace: Path, target: Path, allocation: dict) -> list[dict]:
     archive = allocation_path(workspace, target).with_suffix("")
     paths = list(dict.fromkeys([target, *(target / item["path"] for item in allocation["members"])]))
+    # Every receipt is read before the first copy: a corrupt MEMBER receipt refused after the root's copy
+    # left that archive partial.
+    for path in paths:
+        _read_run_receipt(path / _RUN_RECEIPT_NAME)
     result = []
     for path in paths:
         relative = str(path.relative_to(target))

@@ -649,6 +649,14 @@ def test_a_run_receipt_that_is_not_a_json_object_is_refused_as_corrupt(tmp_path:
     assert result.exception is None or isinstance(result.exception, SystemExit), repr(result.exception)
     assert result.exit_code == 2, _text(result)
     assert "corrupt run receipt" in _text(result) and "Traceback" not in _text(result), _text(result)
+    # The parser decides the cause: a nesting depth that raises on one Python parses on another (3.14).
+    try:
+        json.loads(raw)
+        cause = "not a JSON object"
+    except (ValueError, RecursionError):
+        cause = "not valid JSON"
+    others = [c for c in ("not a JSON object", "not valid JSON", "cannot be read") if c != cause]
+    assert cause in _text(result) and not any(c in _text(result) for c in others), _text(result)
     assert (lane / review_run._RECEIPT_NAME).read_bytes() == raw
     assert (lane / "demo-core" / ".git").exists() and (lane / "demo-web" / ".git").exists()
     assert review_allocation.allocation_path(tmp_path / "workspace", lane).is_file()
@@ -736,6 +744,10 @@ def test_a_member_receipt_that_is_a_directory_is_refused_as_unreadable(tmp_path:
     assert alloc.is_file() and not alloc.with_suffix("").exists(), list(alloc.parent.rglob("*"))
     assert "corrupt run receipt" in _text(result) and "Traceback" not in _text(result), _text(result)
     assert "cannot be read" in _text(result) and "not a JSON object" not in _text(result), _text(result)
+    # The class is the platform's own: IsADirectoryError on Linux and macOS, PermissionError on Windows.
+    with pytest.raises(OSError) as exc:
+        (lane / "demo-core" / review_run._RECEIPT_NAME).read_bytes()
+    assert "not valid JSON" not in _text(result) and f"({type(exc.value).__name__})" in _text(result), _text(result)
 
 
 def test_a_corrupt_member_receipt_is_refused_before_the_root_receipt_is_archived(tmp_path: Path):

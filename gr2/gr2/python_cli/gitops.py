@@ -466,10 +466,12 @@ def run_argv(argv: list[str], *, cwd: Path | None = None, input: str | bytes | N
 
 
 def clone(*args: str, cwd: Path | None = None, binary: bool = False, env: dict | None = None,
-          timeout: float | None = None) -> subprocess.CompletedProcess:
+          timeout: float | None = None, config: tuple[str, ...] = ()) -> subprocess.CompletedProcess:
     """`git clone <args>`: the one place gr2 clones. Unbounded by default, because a clone's
-    duration scales with the repository, not with anything gr2 controls."""
-    return run_argv(["git", "clone", *args], cwd=cwd, binary=binary, env=env, timeout=timeout)
+    duration scales with the repository, not with anything gr2 controls. `config` pins key=value
+    pairs with `-c` ahead of `clone`, so they rule over the user's global for this clone only."""
+    pins = [arg for pair in config for arg in ("-c", pair)]
+    return run_argv(["git", *pins, "clone", *args], cwd=cwd, binary=binary, env=env, timeout=timeout)
 
 
 def logical_argv(argv) -> list[str]:
@@ -1007,8 +1009,11 @@ def ensure_repo_cache(url: str, cache_repo_root: Path, *, local_source: Path | N
     seed_source = str(local_source) if seed_from_local else effective_url
 
     cache_repo_root.parent.mkdir(parents=True, exist_ok=True)
-    # An empty template, so a user's init.templateDir config (gc.auto, hooks) is not copied into the cache.
-    proc = clone("--mirror", "--template=", "--", seed_source, str(cache_repo_root))
+    # An empty template, so a user's init.templateDir config (gc.auto, hooks) is not copied into the cache;
+    # the remote named origin and a umask share mode, so a user's clone.defaultRemoteName or
+    # core.sharedRepository cannot write keys the refresh refuses or skips.
+    proc = clone("--mirror", "--template=", "--origin", "origin", "--", seed_source, str(cache_repo_root),
+                 config=("core.sharedRepository=umask",))
     if proc.returncode != 0:
         raise SystemExit(f"failed to seed repo cache {_shown_arg(seed_source)} -> {cache_repo_root}:\n{proc.stderr or proc.stdout}")
 

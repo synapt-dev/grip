@@ -252,6 +252,25 @@ def _refreshes(src: Path, tmp_path: Path) -> None:
     assert _git("--git-dir", str(cache), "rev-parse", "HEAD") == _git("-C", str(src), "rev-parse", "HEAD")
 
 
+@pytest.mark.parametrize("text", [
+    "[core]\n\tsharedRepository = group\n",
+    "[core]\n\tsharedRepository = true\n",
+    "[core]\n\tsharedRepository = 0640\n",
+    "[clone]\n\tdefaultRemoteName = up\n",
+    "[init]\n\tdefaultObjectFormat = sha256\n",
+    "[init]\n\tdefaultBranch = trunk\n",
+    "[core]\n\tcompression = 9\n",
+    "[fetch]\n\twriteCommitGraph = true\n",
+], ids=["shared-group", "shared-true", "shared-0640", "remote-name", "sha256-default", "branch-default",
+        "compression", "commit-graph"])
+def test_a_cache_made_under_a_user_global_refreshes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str) -> None:
+    _user_global(tmp_path, monkeypatch, text)
+    src = tmp_path / "src"
+    _git("init", "-q", str(src))
+    _commit(src, "one")
+    _refreshes(src, tmp_path)
+
+
 def test_a_cache_made_under_a_reftable_default_refreshes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     print(_git("--version"))
     probe = tmp_path / "probe"

@@ -188,10 +188,15 @@ def review_open_lane(lane: Path) -> tuple[Path, str, dict[str, Path]] | None:
 
 
 def _context(workspace: Path, review_id: str, member_dirs: dict[str, Path] | None = None,
-             merged: frozenset[str] = frozenset()) -> tuple[dict, set[str]]:
+             merged: frozenset[str] = frozenset(), approver: str | None = None) -> tuple[dict, set[str]]:
     """`member_dirs` (key -> checkout) reads the members from a review lane instead of the workspace's own clones.
     `merged` names members the merge gate measured as already merged into their target: their base moved by their
-    own merge, so it is not read as a moved base."""
+    own merge, so it is not read as a moved base.
+
+    With `approver` (a stamp), the refusals that need only the bind come before any member checkout is read: the
+    bind's own author stamping, then a moved base (one remote read per member, in bind order; only the refused
+    member's checkout is read, for the already-on-target case). A commit author stamping needs each member's
+    head, so the caller refuses it after the loop. Without it (a count), every local refusal comes first."""
     from . import merge_gate
     workspace = workspace.resolve()
     if merge_gate._toplevel(workspace) != workspace or not merge_gate._store_inside(workspace, workspace):
@@ -205,39 +210,13 @@ def _context(workspace: Path, review_id: str, member_dirs: dict[str, Path] | Non
     # Older binds have no author field; their immutable Git author is the fallback.
     author = view.get("author") or _git(workspace, "show", "-s", "--format=%an", rid)
     authors = {author}
+    if approver is not None:
+        _refuse_self_approval(approver, authors)
+        _refuse_moved_bases(workspace, view, merged, rid,
+                            lambda m: _member_repo(workspace, view, m, member_dirs, rid))
     members, repos = [], {}
-    root = workspace.resolve()
     for m in view["members"]:
-        if member_dirs is not None:
-            repo = member_dirs.get(m["key"])
-            if repo is None:
-                keys = [r["key"] for r in view["members"]]
-                from . import next_steps
-                raise ApprovalRefused(
-                    f"approval_lane_partial: this lane holds {', '.join(sorted(member_dirs))}; the review has "
-                    f"{', '.join(keys)}",
-                    next_step=f"next: open the whole review and stamp that lane: gr2 review open {next_steps._shown(workspace)} "
-                              f"{next_steps._shown('gr:' + rid)} --lane-dir <new-lane>, then gr2 review stamp <new-lane>")
-            if merge_gate._toplevel(repo) != repo.resolve():
-                raise ApprovalRefused(f"approval_member_repo_mismatch: {m['key']}")
-            repo = repo.resolve()
-        else:
-            repo = (root / m["path"]).resolve()
-            if not repo.is_relative_to(root) or merge_gate._toplevel(repo) != repo or not merge_gate._store_inside(repo, root):
-                raise ApprovalRefused(f"approval_member_repo_mismatch: {m['key']}")
-        # A reviewer's clone made before the head was pushed does not hold it, so the exact reviewed head is
-        # fetched from the member remote the review names (the remote the approval chain is read from below).
-        # Only when that remote cannot serve it: a named refusal with the next step, not a raw `unknown revision`.
-        if gitops.run(repo, "cat-file", "-e", f"{m['head']}^{{commit}}").returncode:
-            gitops.run(repo, "fetch", "-q", "--no-tags", "--no-write-fetch-head", "--", m["remote"], m["head"],
-                       timeout=60)
-        try:
-            _git(repo, "cat-file", "-t", f"{m['head']}^{{commit}}")
-        except ApprovalRefused:
-            from . import next_steps
-            raise ApprovalRefused(f"head_not_fetched: {m['key']}",
-                                  next_steps.head_not_fetched(str(repo), m["remote"], m["head"], str(workspace),
-                                                              "gr:" + rid)) from None
+        repo = _member_repo(workspace, view, m, member_dirs, rid)
         actual_tree = _git(repo, "rev-parse", f"{m['head']}^{{tree}}")
         tree = measured[m["key"]].get("head_tree", actual_tree)
         if actual_tree != tree:
@@ -245,15 +224,24 @@ def _context(workspace: Path, review_id: str, member_dirs: dict[str, Path] | Non
         authors.update(_git(repo, "log", "--format=%an", f"{m['base']}..{m['head']}").splitlines())
         members.append({"key": m["key"], "remote": m["remote"], "head_commit": m["head"], "head_tree": tree})
         repos[m["key"]] = repo
-    # Every local refusal comes first; then one remote read per member, before any approval is pushed. A member
-    # whose head is already on its target is half of a half-landed review, which the merge reads as already_merged
-    # and finishes; only when EVERY member's head is in does nothing remain to stamp for.
+    # A count: every local refusal comes first; then one remote read per member, before any approval is pushed.
+    if approver is None:
+        _refuse_moved_bases(workspace, view, merged, rid, lambda m: repos[m["key"]])
+    return {"review_id": "gr:" + rid, "author": author, "members": members}, authors
+
+
+def _refuse_moved_bases(workspace: Path, view: dict, merged: frozenset[str], rid: str, checkout) -> None:
+    """One remote read per member not in `merged`, in bind order. A member whose head is already on its target is
+    half of a half-landed review, which the merge reads as already_merged and finishes; only when EVERY member's
+    head is in does nothing remain to stamp for. Every other refusal raises at once. `checkout(m)` gives the
+    member's checkout, read only when its base has moved."""
     landed, waiting = None, False
     for m in view["members"]:
         if m["key"] in merged:
             continue
         try:
-            _refuse_moved_base(workspace, m["key"], m["remote"], m["base"], "gr:" + rid, repos[m["key"]], m["head"])
+            _refuse_moved_base(workspace, m["key"], m["remote"], m["base"], "gr:" + rid, lambda m=m: checkout(m),
+                               m["head"])
         except ApprovalRefused as exc:
             if not str(exc).startswith("head_already_on_target"):
                 raise
@@ -262,14 +250,51 @@ def _context(workspace: Path, review_id: str, member_dirs: dict[str, Path] | Non
         waiting = True
     if landed and not waiting:
         raise landed
-    return {"review_id": "gr:" + rid, "author": author, "members": members}, authors
 
 
-def _refuse_moved_base(workspace: Path, key: str, remote: str, base: str, review: str, repo: Path, head: str) -> None:
+def _member_repo(workspace: Path, view: dict, m: dict, member_dirs: dict[str, Path] | None, rid: str) -> Path:
+    """The member's checkout (the lane's, else the workspace's own clone), holding the reviewed head."""
+    from . import merge_gate
+    root = workspace.resolve()
+    if member_dirs is not None:
+        repo = member_dirs.get(m["key"])
+        if repo is None:
+            keys = [r["key"] for r in view["members"]]
+            from . import next_steps
+            raise ApprovalRefused(
+                f"approval_lane_partial: this lane holds {', '.join(sorted(member_dirs))}; the review has "
+                f"{', '.join(keys)}",
+                next_step=f"next: open the whole review and stamp that lane: gr2 review open {next_steps._shown(workspace)} "
+                          f"{next_steps._shown('gr:' + rid)} --lane-dir <new-lane>, then gr2 review stamp <new-lane>")
+        if merge_gate._toplevel(repo) != repo.resolve():
+            raise ApprovalRefused(f"approval_member_repo_mismatch: {m['key']}")
+        repo = repo.resolve()
+    else:
+        repo = (root / m["path"]).resolve()
+        if not repo.is_relative_to(root) or merge_gate._toplevel(repo) != repo or not merge_gate._store_inside(repo, root):
+            raise ApprovalRefused(f"approval_member_repo_mismatch: {m['key']}")
+    # A reviewer's clone made before the head was pushed does not hold it, so the exact reviewed head is
+    # fetched from the member remote the review names (the remote the approval chain is read from below).
+    # Only when that remote cannot serve it: a named refusal with the next step, not a raw `unknown revision`.
+    if gitops.run(repo, "cat-file", "-e", f"{m['head']}^{{commit}}").returncode:
+        gitops.run(repo, "fetch", "-q", "--no-tags", "--no-write-fetch-head", "--", m["remote"], m["head"],
+                   timeout=60)
+    try:
+        _git(repo, "cat-file", "-t", f"{m['head']}^{{commit}}")
+    except ApprovalRefused:
+        from . import next_steps
+        raise ApprovalRefused(f"head_not_fetched: {m['key']}",
+                              next_steps.head_not_fetched(str(repo), m["remote"], m["head"], str(workspace),
+                                                          "gr:" + rid)) from None
+    return repo
+
+
+def _refuse_moved_base(workspace: Path, key: str, remote: str, base: str, review: str, checkout, head: str) -> None:
     """Refuse a stamp the merge could never count: a merge needs its target at the reviewed base, so when no branch
     on the member's remote still sits at that base, the target has moved and the review needs a new pin. Read
     before any approval is pushed. Any branch at the base passes (a review may target a branch other than the
-    default), so a stale branch left at the base lets the stamp through; the merge still refuses that case."""
+    default), so a stale branch left at the base lets the stamp through; the merge still refuses that case.
+    `checkout` is the member's checkout or a callable returning it; it is read only when the base has moved."""
     if remote.startswith("-") or any(ord(c) < 32 or ord(c) == 127 for c in remote):
         raise ApprovalRefused("approval_remote_invalid")
     default, at_base, tips = None, False, {}
@@ -297,8 +322,13 @@ def _refuse_moved_base(workspace: Path, key: str, remote: str, base: str, review
     # A writer moved the target to the reviewed head or past it with no merge commit: the work is already in, and
     # update would pin this same head again and refuse head_already_on_remote. Only a tip held here and proved to
     # hold the head reads so; a failed read or a tip not fetched (is_ancestor None) keeps base_moved.
-    tip = tips.get(branch)
-    if tip and (tip == head or gitops.is_ancestor(repo, head, tip) is True):
+    tip, on_target = tips.get(branch), False
+    if tip and tip != head:
+        try:
+            on_target = gitops.is_ancestor(checkout() if callable(checkout) else checkout, head, tip) is True
+        except ApprovalRefused:
+            on_target = False
+    if tip and (tip == head or on_target):
         raise ApprovalRefused(f"head_already_on_target: {key}: the reviewed head {head} is already in {branch} at {tip}",
                               next_steps._nothing_to_merge())
     raise ApprovalRefused(f"base_moved: {key}: no branch on its remote is at the reviewed base {base[:12]}{now}",
@@ -485,7 +515,6 @@ def count_approvals(workspace: Path, review_id: str, member_dirs: dict[str, Path
 def approve(workspace: Path, review_id: str | None = None, member_dirs: dict[str, Path] | None = None) -> dict:
     workspace = workspace.resolve()
     rid = review_id.removeprefix("gr:") if review_id else current_review(workspace)
-    root, authors = _context(workspace, rid, member_dirs)
     name = grip.review_author_name(workspace)
     if not name.strip():
         raise ApprovalRefused("approval_identity_missing: neither GIT_AUTHOR_NAME nor the workspace user.name is set")
@@ -493,6 +522,7 @@ def approve(workspace: Path, review_id: str | None = None, member_dirs: dict[str
         check_approver_name(name)
     except ApprovalRefused:
         raise ApprovalRefused("approval_identity_invalid: invalid approver name") from None
+    root, authors = _context(workspace, rid, member_dirs, frozenset(), name)
     _refuse_self_approval(name, authors)
     tips = _remote_tips(workspace, root)
     tip = _reconcile(workspace, root, authors, tips)

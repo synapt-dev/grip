@@ -394,7 +394,14 @@ def test_a_head_on_another_remote_names_open_and_what_still_needs_the_head(hando
     assert opened.exit_code == 0, opened.output
     lane = Path(opened.output.split("lane-dir=")[1].split()[0])
     assert git(lane, "rev-parse", "HEAD^{tree}") == git(author / "member", "rev-parse", "HEAD^{tree}")
-    assert "head_not_fetched" in cli(receiver, monkeypatch, "stamp", receiver, "gr:" + commit).output  # as the reason says
+    # The stamper here is the bind's author, and the bind is refused before any member is read, so self_approval
+    # comes first; a non-author stamper still gets head_not_fetched (test_review_stamp_refused_git_calls).
+    first, nxt = cli(receiver, monkeypatch, "stamp", receiver, "gr:" + commit).output.split("\n")[:2]
+    assert first == "self_approval", first
+    assert nxt == ("next: a different approver stamps it from their own workspace, after receiving it there: "
+                   f"gr2 review receive <their-workspace> gr:{commit} --remote <member-remote>, "
+                   f"then gr2 review stamp <their-workspace> gr:{commit}; "
+                   f"with no other approver: gr2 review merge {receiver} gr:{commit} --approvals 0"), nxt
 
 
 

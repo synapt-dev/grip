@@ -626,5 +626,5 @@ def test_a_stamp_before_the_half_land_is_counted_by_the_rerun(slice2, monkeypatc
 def test_the_readme_half_land_paragraph_names_the_stamp_before_the_rerun():
     from pathlib import Path
     text = " ".join((Path(__file__).resolve().parents[1] / "README.md").read_text().split())
-    assert ("When the merge requires approvals, `gr2 review stamp` the same review before the rerun: it stamps while "
+    assert ("When the merge requires approvals, `gr2 review stamp` the same review before the rerun if the review is not stamped yet: it stamps while "
             "any member has yet to land.") in text

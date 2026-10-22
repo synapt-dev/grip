@@ -65,7 +65,7 @@ def test_a2_remote_tips_finds_a_review_ref_with_a_line_separator(tmp_path, sep, 
     origin, repo, _, one, _ = _repo(tmp_path)
     rid = f"r{sep}1" if at == "inside" else f"r1{sep}"
     git(repo, "push", "-q", str(origin), f"{one}:{ap.PREFIX}{rid}")
-    assert ap._remote_tips(repo, {"review_id": f"gr:{rid}", "members": [{"remote": str(origin)}]}) == {str(origin): one}
+    assert ap._remote_tips(repo, {"review_id": f"gr:{rid}", "members": [{"key": "app", "remote": str(origin)}]}) == {str(origin): one}
 
 
 @SEPS

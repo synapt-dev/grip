@@ -4,6 +4,7 @@ import hashlib
 import json
 import subprocess
 import sys
+import traceback
 from pathlib import Path
 
 import pytest
@@ -561,6 +562,74 @@ def test_tip_fetch_must_match_its_advertisement(monkeypatch):
     monkeypatch.setattr(approvals, "_git", changed)
     with pytest.raises(approvals.ApprovalRefused, match="approval_chain_moved"):
         approvals._remote_tips(None, root)
+
+
+def _missing_remote(tmp_path):
+    """A remote that does not exist, named so git echoes a word the refusal must not carry."""
+    workspace = tmp_path / "ws"
+    git(tmp_path, "init", "-q", workspace)
+    return workspace, str(tmp_path / "sekretword-missing.git")
+
+
+def _refuses_by_key(caught, reason):
+    text = str(caught.value)
+    assert text == reason + ": m", text
+    full = "".join(traceback.format_exception(caught.value))
+    assert "sekretword" not in full, full
+    # Not only hidden from printing: git's refusal is not on the exception at all.
+    assert caught.value.__context__ is None and caught.value.__cause__ is None, repr(caught.value.__context__)
+
+
+def test_remote_tips_on_a_missing_remote_names_the_member_not_git(tmp_path):
+    workspace, remote = _missing_remote(tmp_path)
+    root, _ = _sample_link()
+    root["members"][0]["remote"] = remote
+    with pytest.raises(approvals.ApprovalRefused) as caught:
+        approvals._remote_tips(workspace, root)
+    _refuses_by_key(caught, "approval_remote_unreadable")
+
+
+def test_remote_tips_fetch_from_a_missing_remote_names_the_member_not_git(tmp_path, monkeypatch):
+    workspace, remote = _missing_remote(tmp_path)
+    root, _ = _sample_link()
+    root["members"][0]["remote"] = remote
+    ref = approvals.PREFIX + root["review_id"].removeprefix("gr:")
+    original = approvals._git
+    def advertised(repo, *args, **kwargs):
+        if args[0] == "ls-remote": return "b" * 40 + "\t" + ref
+        return original(repo, *args, **kwargs)
+    monkeypatch.setattr(approvals, "_git", advertised)
+    with pytest.raises(approvals.ApprovalRefused) as caught:
+        approvals._remote_tips(workspace, root)
+    _refuses_by_key(caught, "approval_remote_unreadable")
+
+
+def test_reconcile_push_to_a_missing_remote_names_the_member_not_git(tmp_path, monkeypatch):
+    workspace, remote = _missing_remote(tmp_path)
+    git(workspace, "commit", "-q", "--allow-empty", "-m", "tip")
+    tip = git(workspace, "rev-parse", "HEAD")
+    root, _ = _sample_link()
+    root["members"][0]["remote"] = remote
+    root["members"].append({**root["members"][0], "key": "other", "remote": str(workspace)})
+    monkeypatch.setattr(approvals, "_walk", lambda *args: [])
+    monkeypatch.setattr(approvals, "_longest", lambda *args: [tip])
+    with pytest.raises(approvals.ApprovalRefused) as caught:
+        approvals._reconcile(workspace, root, {"Author A"}, {remote: None, str(workspace): tip})
+    _refuses_by_key(caught, "approval_remote_push_refused")
+
+
+def test_approve_push_to_a_missing_remote_names_the_member_not_git(world, tmp_path, monkeypatch):
+    missing = str(tmp_path / "sekretword-missing.git")
+    original = approvals._git
+    def elsewhere(repo, *args, **kwargs):
+        if args[0] == "push":
+            args = tuple(missing if a == str(world["remote"]) else a for a in args)
+        return original(repo, *args, **kwargs)
+    monkeypatch.setattr(approvals, "_git", elsewhere)
+    refused = approve_as(world, "Approver B")
+    assert refused.exit_code == 2, refused.output
+    assert "approval_remote_push_refused: member" in refused.output, refused.output
+    assert "sekretword" not in refused.output, refused.output
 
 
 def test_reader_rejects_nested_member_paths(monkeypatch, tmp_path):

@@ -336,6 +336,24 @@ def _refuse_moved_base(workspace: Path, key: str, remote: str, base: str, review
                           next_steps._stamp_base_moved(branch, review))
 
 
+def _remote_git(workspace: Path, key: str, reason: str, *args: str) -> str:
+    """git against a member remote: a failure names the member, never git's stderr, which echoes the remote as written
+    (a path or an unredacted credential). The refusal is raised after the except block, so git's refusal is not kept on
+    it as __context__ either (`from None` only hides the context from printed tracebacks)."""
+    try:
+        return _git(workspace, *args, raw=True)
+    except ApprovalRefused:
+        pass
+    raise ApprovalRefused(f"{reason}: {key}")
+
+
+def _remote_keys(root: dict) -> dict[str, str]:
+    keys = {}
+    for m in root["members"]:
+        keys.setdefault(m["remote"], m["key"])
+    return keys
+
+
 def _remote_tips(workspace: Path, root: dict) -> dict[str, str | None]:
     ref = PREFIX + root["review_id"].removeprefix("gr:")
     tips = {}
@@ -343,7 +361,7 @@ def _remote_tips(workspace: Path, root: dict) -> dict[str, str | None]:
         remote = m["remote"]
         if remote.startswith("-") or any(ord(c) < 32 or ord(c) == 127 for c in remote):
             raise ApprovalRefused("approval_remote_invalid")
-        lines = _git(workspace, "ls-remote", "--", remote, ref, raw=True).split("\n")
+        lines = _remote_git(workspace, m["key"], "approval_remote_unreadable", "ls-remote", "--", remote, ref).split("\n")
         hits = [line.split("\t")[0] for line in lines if line.split("\t")[-1] == ref]
         if len(hits) > 1:
             raise ApprovalRefused("approval_chain_unmeasurable")
@@ -352,7 +370,8 @@ def _remote_tips(workspace: Path, root: dict) -> dict[str, str | None]:
         if tip:
             temporary = "refs/dev.synapt.grip/__approval_transfers__/" + uuid.uuid4().hex
             try:
-                _git(workspace, "fetch", "--no-tags", "--refmap=", "--no-write-fetch-head", "--", remote, f"{ref}:{temporary}")
+                _remote_git(workspace, m["key"], "approval_remote_unreadable",
+                            "fetch", "--no-tags", "--refmap=", "--no-write-fetch-head", "--", remote, f"{ref}:{temporary}")
                 if _git(workspace, "rev-parse", temporary) != tip:
                     raise ApprovalRefused("approval_chain_moved")
             finally:
@@ -458,9 +477,11 @@ def _reconcile(workspace: Path, root: dict, authors: set[str], tips: dict[str, s
         raise ApprovalRefused("approval_chain_divergent: " + canonical(tips))
     tip = longest[0]
     ref = PREFIX + root["review_id"].removeprefix("gr:")
+    keys = _remote_keys(root)
     for remote, old in tips.items():
         if old != tip:
-            _git(workspace, "push", f"--force-with-lease={ref}:{old or ''}", "--", remote, f"{tip}:{ref}")
+            _remote_git(workspace, keys[remote], "approval_remote_push_refused",
+                        "push", f"--force-with-lease={ref}:{old or ''}", "--", remote, f"{tip}:{ref}")
     measured = _remote_tips(workspace, root)
     if set(measured.values()) != {tip}:
         raise ApprovalRefused("approval_chain_divergent: " + canonical(measured))
@@ -537,9 +558,11 @@ def approve(workspace: Path, review_id: str | None = None, member_dirs: dict[str
     tree = _git(workspace, "mktree", data=f"100644 blob {blob}\tapproval.json\n")
     commit = _git(workspace, "commit-tree", tree, "-p", tip or rid, "-m", "Approve " + root["review_id"])
     ref = PREFIX + rid
+    keys = _remote_keys(root)
     for remote in tips:
         old = tip
-        _git(workspace, "push", f"--force-with-lease={ref}:{old or ''}", "--", remote, f"{commit}:{ref}")
+        _remote_git(workspace, keys[remote], "approval_remote_push_refused",
+                    "push", f"--force-with-lease={ref}:{old or ''}", "--", remote, f"{commit}:{ref}")
     _git(workspace, "update-ref", ref, commit)
     return count_approvals(workspace, rid, member_dirs)
 

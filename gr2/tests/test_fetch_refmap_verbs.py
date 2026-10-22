@@ -63,7 +63,7 @@ def test_approvals_remote_tip_fetch_writes_nothing(clone):
     ref = approvals.PREFIX + "r1"
     git(clone["repo"], "push", "-q", "origin", f"dev:{ref}")
     configure(clone["repo"], ref)
-    tips = approvals._remote_tips(clone["repo"], {"review_id": "gr:r1", "members": [{"remote": "origin"}]})
+    tips = approvals._remote_tips(clone["repo"], {"review_id": "gr:r1", "members": [{"key": "app", "remote": "origin"}]})
     assert tips == {"origin": clone["tip"]}
     assert untouched(clone)
 

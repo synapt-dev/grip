@@ -853,7 +853,7 @@ def conflicting_files(path: Path) -> list[str]:
 
 
 def _cache_git(cache_repo_root: Path, args: list[str]):
-    """Every git run against a repo cache goes through here, with the cache's hooks switched off. A config allowlist
+    """Every git run on an existing repo cache that can run a hook goes through here, with the cache's hooks switched off. A config allowlist
     cannot see an executable file such as <cache>/hooks/reference-transaction, which the refresh fetch would run with no
     config key at all; `core.hooksPath=/dev/null` names a path that cannot hold a hook, so git runs none and errors on
     none."""
@@ -895,6 +895,9 @@ _CACHE_ALLOWED_KEYS = frozenset(
         "remote.origin.fetch",
         "remote.origin.mirror",
         "remote.origin.tagopt",
+        # gr2 writes this itself on every review mirror (the review read lane and open-gr), so a later blobless read
+        # of the mirror may filter; a boolean, it names no program.
+        "uploadpack.allowfilter",
     }
 )
 

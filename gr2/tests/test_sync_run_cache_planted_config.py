@@ -104,6 +104,14 @@ def test_a_cache_gr2_made_and_repointed_refreshes(tmp_path: Path) -> None:
     assert _git("--git-dir", str(cache), "rev-parse", "HEAD") == _git("-C", str(src), "rev-parse", "HEAD")
 
 
+def test_a_review_mirror_gr2_let_filter_refreshes(tmp_path: Path) -> None:
+    # gr2 writes this key itself on every review mirror after ensuring it, so the next review of the repo ensures again.
+    src, cache = _made_cache(tmp_path)
+    _git("--git-dir", str(cache), "config", "uploadpack.allowFilter", "true")
+    assert _refusal(src, cache) == ""
+    assert _git("--git-dir", str(cache), "rev-parse", "HEAD") == _git("-C", str(src), "rev-parse", "HEAD")
+
+
 def test_include_path_is_refused_not_followed(tmp_path: Path) -> None:
     # `config --local --list` lists include.path itself and does not read the included file, so the allowlist
     # cannot judge what it holds: the include key is refused outright.

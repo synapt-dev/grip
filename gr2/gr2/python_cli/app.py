@@ -2468,7 +2468,7 @@ def _add_in_lane(paths: list[str], include_bytecode: bool = False) -> None:
             typer.echo(
                 f"Error: {here} is a subdirectory of the lane repo {key} ({top}); --lane reads each path from the "
                 "root of every lane repo, not from here. Nothing was staged. To stage here, drop --lane (or pass "
-                f"--repo-path {top}); to stage in every lane repo, run from {top} with paths from that root.",
+                f"--repo-path {next_steps._shown(str(top))}); to stage in every lane repo, run from {top} with paths from that root.",
                 err=True,
             )
             raise typer.Exit(code=2)

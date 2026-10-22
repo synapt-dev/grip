@@ -720,3 +720,18 @@ def test_an_unreadable_run_receipt_is_refused_before_anything_is_written(tmp_pat
     assert (lane / "demo-core" / ".git").exists() and (lane / "demo-web" / ".git").exists()
     alloc = review_allocation.allocation_path(tmp_path / "workspace", lane)
     assert alloc.is_file() and not alloc.with_suffix("").exists(), list(alloc.parent.rglob("*"))
+
+
+def test_a_corrupt_member_receipt_is_refused_before_the_root_receipt_is_archived(tmp_path: Path):
+    """Close checked only the root receipt before archiving; a MEMBER receipt it could not parse was refused
+    after the root copy was written, leaving a partial archive. Every receipt is now read before any copy."""
+    runner = make_cli_runner()
+    lane = _multi_member_lane(tmp_path)
+    _run_receipt(lane)
+    (lane / "demo-core" / review_run._RECEIPT_NAME).write_bytes(b"{not json\n")
+    result = runner.invoke(gr2_app.app, ["review", "close", str(lane), "--json"])
+    assert result.exit_code == 2, _text(result)
+    assert "corrupt run receipt" in _text(result) and "Traceback" not in _text(result), _text(result)
+    assert (lane / "demo-core" / ".git").exists() and (lane / "demo-web" / ".git").exists()
+    alloc = review_allocation.allocation_path(tmp_path / "workspace", lane)
+    assert alloc.is_file() and not alloc.with_suffix("").exists(), list(alloc.parent.rglob("*"))

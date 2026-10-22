@@ -207,3 +207,24 @@ def test_at_base_names_a_ref_tip_the_remote_will_not_serve(tmp_path: Path, monke
     assert result.exit_code == 2 and "at_base_tip_unfetchable" in result.output, result.output
     assert "at_base_not_ancestor" not in result.output and "check: " in result.output, result.output
     assert _git(w["ws"], "for-each-ref", "refs/dev.synapt.grip/") == ""
+
+
+def test_branch_ref_never_fetches_by_sha(tmp_path: Path, monkeypatch) -> None:
+    # A branch comes with the clone, so the cat-file guard finds its tip and no `fetch <sha>` is ever issued for it.
+    from gr2.python_cli import gitops
+    w = _world(tmp_path)
+    real = gitops.run
+    calls: list[tuple] = []
+
+    def record(cwd, *args, **kw):
+        calls.append(args)
+        return real(cwd, *args, **kw)
+
+    monkeypatch.setattr(gitops, "run", record)
+    result = runner.invoke(app, ["review", "pin", str(w["ws"]), "--repo", "src", "--remote", "file://" + str(w["remote"]),
+                                 "--base", w["base"], "--head", w["head"], "--ref", "refs/heads/trunk",
+                                 "--from-range", str(w["patch"]), "--at-base"])
+    assert result.exit_code == 0 and re.search(r"gr:[0-9a-f]{40}", result.output), result.output
+    assert any("cat-file" in a for a in calls), calls
+    by_sha = [a for a in calls if "fetch" in a and any(re.fullmatch(r"[0-9a-f]{40}", str(x)) for x in a)]
+    assert by_sha == [], by_sha

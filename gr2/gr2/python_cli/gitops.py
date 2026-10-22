@@ -870,6 +870,24 @@ def _refuse_planted_cache_remotes(cache_repo_root: Path) -> None:
             raise GripCorruptError(f"repo cache {cache_repo_root} holds a remote gr2 never writes: config key {shown}")
 
 
+# Keys in a repo cache's OWN config that name a program git runs during the refresh fetch. gr2 never writes them,
+# so a cache that sets one is refused before the fetch, naming the KEY (never its value, a path or a command).
+# TODO: add the next classes, one at a time: core.fsmonitor, core.sshCommand, *.helper, url.*.insteadOf with ext::.
+_CACHE_PROGRAM_KEYS = frozenset({"core.hookspath"})
+
+
+def _refuse_cache_program_keys(cache_repo_root: Path) -> None:
+    from .grip import GripCorruptError  # lazy, as _shown_arg
+
+    proc = run_argv(["git", "--git-dir", str(cache_repo_root), "config", "--local", "--list", "--null", "--name-only"])
+    if proc.returncode != 0:
+        raise GripCorruptError(f"cannot read repo cache config {cache_repo_root}: {(proc.stderr or '').strip()[:160]}")
+    for key in (proc.stdout or "").split("\0"):
+        if key.lower() in _CACHE_PROGRAM_KEYS:
+            shown = ascii(key) if unsafe_in_identifier(key) else key
+            raise GripCorruptError(f"repo cache {cache_repo_root} sets a key that runs a program: config key {shown}")
+
+
 def ensure_repo_cache(url: str, cache_repo_root: Path, *, local_source: Path | None = None) -> bool:
     """Ensure a local bare mirror exists for a repo URL.
 
@@ -921,6 +939,7 @@ def ensure_repo_cache(url: str, cache_repo_root: Path, *, local_source: Path | N
         if not effective_url or effective_url.startswith("-") or unsafe_in_identifier(effective_url):
             raise SystemExit(f"refusing to refresh repo cache {cache_repo_root}: url is option-shaped or holds a control character")
         _refuse_planted_cache_remotes(cache_repo_root)
+        _refuse_cache_program_keys(cache_repo_root)
         proc = run_argv(
             ["git", "--git-dir", str(cache_repo_root), "fetch", "--prune", "--", effective_url, "+refs/*:refs/*"]
         )

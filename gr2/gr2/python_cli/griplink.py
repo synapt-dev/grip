@@ -1,6 +1,6 @@
 """Full mode on the griplink root: a STOOK and a SHADOW.
 
-Step 1: commit, push and checkout. Step 2: status, record, pin and follow. Step 3: pull. Functions over
+Step 1: commit, push and checkout. Step 2: status, record, pin and follow. Step 3: pull. Step 4: promote. Functions over
 gitops.run; no verb is wired yet, the top-level names come with the CLI surface. Ported from the prototype that
 carried the design, whose rows ran on real git.
 
@@ -17,8 +17,8 @@ The shape, one level:
   <m>.griplink/005.2r_records/<id>/002.2_head   the same, for a record: "ref: refs/dev.synapt.grip/__records__/<id>"
                             or a sha; the record's chain lives at that ref
 
-A member's change stays in the workspace (its GripCommit chain) until it is promoted; the member's own git is
-never written here. The shadow's parents are the previous shadow, then every sha its heads resolved to, so a plain
+A member's change stays in the workspace (its GripCommit chain) until it is promoted; promote is the one step that
+writes into the member's own git. The shadow's parents are the previous shadow, then every sha its heads resolved to, so a plain
 clone of main carries every workspace change.
 """
 from __future__ import annotations
@@ -942,3 +942,77 @@ def pull(root: Path, remote: str = "origin") -> dict:
         how = "merged"
     checkout(root, committed_from=mine)
     return {"how": how, "shadow": _git(root, "rev-parse", "HEAD"), "merged": merged, "updated": [u[0] for u in updates]}
+
+
+# ---- promote (step 4) ------------------------------------------------------------------------------------------------
+def promote(root: Path, m: str) -> dict:
+    """The member's workspace change becomes one commit in the member's own git; the one step that writes there. Its
+    tree is the pin's with the change applied, its one parent the pin, its author, committer, both dates and message
+    the change's tip GripCommit's. Then the pin moves to it, the member's STOOK is deleted, its head follows that
+    branch again (so a head held by `pin` stops holding the old change), and the STOOK and SHADOW are cut. Records are
+    untouched.
+
+    Everything is read and checked before it moves any local ref: a member gr2 does not know, a member that is not
+    checked out or does not hold its pin, uncommitted work in it, a change the shadow does not hold yet, and each path
+    and mode of the change, all refused by name. The new commit is in the member's local git only; it reaches the
+    member's remote with the member's own push (13.6 item 2), and push and pull do not yet carry the deleted STOOK
+    (open beside it). Returns {"member", "commit", "paths", "shadow"}; with nothing to
+    promote, commit is None and nothing moves."""
+    _one_branch(root)
+    _check_name(m)
+    links = _links(root, _git(root, "rev-parse", "HEAD^{tree}"))
+    if m not in links:
+        raise GriplinkRefusal(f"{m}: not a member of this workspace; nothing was promoted", 3)
+    mrepo = member_dir(root, m)
+    if not (mrepo / ".git").exists():
+        raise GriplinkRefusal(f"{m}: not checked out; nothing was promoted. next: gr2 checkout, then promote again", 3)
+    e = _ls_tree(root, links[m])
+    pin = e[PIN][2]
+    if not _has(mrepo, pin + "^{commit}"):  # before uncommitted(), which diffs against the pin
+        raise GriplinkRefusal(f"{m}: its checkout does not hold the pin {pin[:12]}; nothing was promoted. next: fetch "
+                              "in the member, then promote again", 3)
+    if m in status(root)["moved"] or m in uncommitted(root):
+        raise GriplinkRefusal(f"{m}: its change is not all in a commit yet; nothing was promoted. next: gr2 commit -a, "
+                              "then promote again", 3)
+    shadow = _git(root, "rev-parse", "HEAD")
+    overlay, deleted = _change_in(root, "HEAD", m)
+    if not overlay and not deleted:
+        return {"member": m, "commit": None, "paths": 0, "shadow": shadow}
+    tip = _git(root, "cat-file", "blob", e[HEADF][2])
+    for p, mode, _ in overlay:
+        _check_path(m, p)
+        if mode not in _MODES:
+            raise GriplinkRefusal(f"{m}: the workspace change gives {p!r} mode {mode}, which gr2 will not write; "
+                                  "nothing was promoted", 3)
+    for p in deleted:
+        _check_path(m, p)
+    gc = _ls_tree(root, _git(root, "rev-parse", f"{tip}^{{tree}}"))
+    rd = lambda n: gitops.out_bytes(root, "cat-file", "blob", gc[n][2]).decode("utf-8", "surrogateescape")  # noqa: E731
+    env = dict(os.environ)
+    for who, ident, date in (("AUTHOR", GC_AUTHOR, GC_ADATE), ("COMMITTER", GC_COMMITTER, GC_CDATE)):
+        got = re.fullmatch(r"([^<>\n]*?) <([^<>\n]*)>", rd(ident).strip())
+        when = rd(date).strip()
+        if not got or not re.fullmatch(r"\d+ [+-]\d{4}", when):
+            raise GriplinkRefusal(f"{m}: the change's {who.lower()} is not one gr2 writes into a commit; nothing was "
+                                  "promoted", 3)
+        env.update({f"GIT_{who}_NAME": got[1], f"GIT_{who}_EMAIL": got[2], f"GIT_{who}_DATE": "@" + when})
+    for p, _, b in overlay:
+        _copy_blob(root, mrepo, b)
+    idx = Path(_git(mrepo, "rev-parse", "--git-dir"))
+    idx = (idx if idx.is_absolute() else mrepo / idx) / "grip-promote-index"
+    ienv = dict(os.environ, GIT_INDEX_FILE=str(idx))
+    _git(mrepo, "read-tree", pin, env=ienv)
+    for p, mode, b in overlay:
+        _git(mrepo, "update-index", "--add", "--replace", "--cacheinfo", f"{mode},{b},{p}", env=ienv)
+    for p in deleted:
+        _git(mrepo, "update-index", "--force-remove", "--", p, env=ienv)
+    tree = _git(mrepo, "write-tree", env=ienv)
+    idx.unlink()
+    sha = _git(mrepo, "commit-tree", tree, "-p", pin, input=rd(GC_MSG), env=env)
+    # every check is behind us: now the refs move, the member's first
+    _git(mrepo, "checkout", "-q", "--detach", "-f", sha)
+    _git(root, "update-ref", "-d", member_ref(m))
+    _git(root, "update-index", "--cacheinfo", f"160000,{sha},{m}.griplink/{PIN}")
+    _set_field(root, f"{m}.griplink/{HEADF}", REFP + member_ref(m))
+    shadow = _cut(root, f"promote {m} -> {sha[:12]}", [shadow])[1]
+    return {"member": m, "commit": sha, "paths": len(overlay) + len(deleted), "shadow": shadow}

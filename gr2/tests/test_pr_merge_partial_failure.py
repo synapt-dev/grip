@@ -12,6 +12,7 @@ from gr2.python_cli.platform import (
     MergeMethod,
     MergeReceipt,
     PRRef,
+    PRStatus,
 )
 from gr2.python_cli.pr import (
     PRMergeError,
@@ -29,6 +30,9 @@ class _FailAfter:
         self.fail_on = fail_on
         self.unknown_on = unknown_on
         self.calls: list[str] = []
+
+    def pr_status(self, repo: str, number: int) -> PRStatus:
+        return PRStatus(ref=PRRef(repo=repo, number=number), state="OPEN")
 
     def merge_pr(
         self,

@@ -251,8 +251,8 @@ def test_since_my_stamp_on_the_current_pin_is_unchanged(world):
     assert result.exit_code == 0, result.output
     out = json.loads(result.stdout)
     assert out["changed"] is False and out["stamped_review"] == out["review_id"] == "gr:" + world["rid"]
-    assert [old(m) for m in out["members"]] == [{"key": "member", "stamped_head": world["head"], "current_head": world["head"],
-                               "changed": False, "range": None, "commits": [], "paths": []}]
+    assert [old(m) for m in out["members"]] == [{"key": "member", "stamped_review": out["stamped_review"], "stamped_at": out["stamped_at"], "stamped_head": world["head"],
+                               "current_head": world["head"],                               "changed": False, "range": None, "commits": [], "paths": []}]
 
 
 def test_since_my_stamp_without_my_stamp_refuses_no_stamp(world):
@@ -325,7 +325,7 @@ def test_since_my_stamp_names_a_member_added_after_the_stamp_as_new(world):
     out = json.loads(result.stdout)
     assert out["stamped_review"] == "gr:" + world["rid"] and out["changed"] is True
     rows = {m["key"]: m for m in out["members"]}
-    assert old(rows["other"]) == {"key": "other", "stamped_head": None, "current_head": head, "changed": True,
+    assert old(rows["other"]) == {"key": "other", "stamped_review": None, "stamped_at": None, "stamped_head": None, "current_head": head, "changed": True,
                              "range": None, "commits": [], "paths": ["added"]}
     assert rows["member"]["changed"] is True and rows["member"]["range"] == f"{world['head']}..{moved}"
 
@@ -347,8 +347,10 @@ def test_since_my_stamp_on_a_rebased_head_has_no_range_and_the_tree_diff(world):
     assert bound.exit_code == 0, bound.output
     result = since(world)
     assert result.exit_code == 0, result.output
-    [m] = json.loads(result.stdout)["members"]
-    assert old(m) == {"key": "member", "stamped_head": world["head"], "current_head": head, "changed": True,
+    out = json.loads(result.stdout)
+    [m] = out["members"]
+    assert old(m) == {"key": "member", "stamped_review": out["stamped_review"], "stamped_at": out["stamped_at"], 
+                 "stamped_head": world["head"], "current_head": head, "changed": True,
                  "range": None, "commits": [], "paths": ["payload", "rebased"]}
 
 
@@ -472,7 +474,9 @@ def test_since_my_stamp_measures_each_member_from_my_stamp_on_that_member(world)
     result = since(world)
     assert result.exit_code == 0, result.output
     rows = {m["key"]: m for m in json.loads(result.stdout)["members"]}
-    assert old(rows["member"]) == {"key": "member", "stamped_head": world["head"], "current_head": moved, "changed": True,
+    assert old(rows["member"]) == {"key": "member", "stamped_review": "gr:" + world["rid"],
+                              "stamped_at": rows["member"]["stamped_at"], "stamped_head": world["head"],
+                              "current_head": moved, "changed": True,
                               "range": f"{world['head']}..{moved}", "commits": [moved], "paths": ["second"]}
     assert rows["other"]["range"] == f"{other_head}..{other_moved}" and rows["other"]["paths"] == ["more"]
 
@@ -499,8 +503,10 @@ def test_since_my_stamp_after_a_rebase_onto_a_moved_main_names_only_what_the_fea
     assert bound.exit_code == 0, bound.output
     result = since(world)
     assert result.exit_code == 0, result.output
-    [m] = json.loads(result.stdout)["members"]
-    assert old(m) == {"key": "member", "stamped_head": world["head"], "current_head": head, "changed": True,
+    out = json.loads(result.stdout)
+    [m] = out["members"]
+    assert old(m) == {"key": "member", "stamped_review": out["stamped_review"], "stamped_at": out["stamped_at"], 
+                 "stamped_head": world["head"], "current_head": head, "changed": True,
                  "range": None, "commits": [], "paths": []}
 
 
@@ -547,3 +553,34 @@ def test_since_my_stamp_names_a_reviewed_file_whose_change_landed_on_the_moved_m
     assert result.exit_code == 0, result.output
     [m] = json.loads(result.stdout)["members"]
     assert m["range"] is None and m["paths"] == ["extra", "payload"]
+
+
+def test_since_my_stamp_rows_name_their_own_stamp_pin_and_time(world):
+    """member stamped on pin 1, other on the newer pin 2: each row names the pin and time of its own stamp."""
+    assert approve_as(world, "Approver B").exit_code == 0  # stamp 1: member, on world's pin
+    pin1 = "gr:" + world["rid"]
+    remote, seed = world["remote"].parent / "other.git", world["remote"].parent / "other-seed"
+    git(remote.parent, "init", "--bare", "-b", "main", remote)
+    git(remote.parent, "clone", "-q", "-b", "main", world["remote"], seed)
+    git(seed, "push", remote, "main")
+    other = world["workspace"] / "other"
+    git(world["workspace"], "clone", remote, other)
+    git(other, "checkout", "-b", "feature")
+    other_head = commit_file(other, "added")
+    pin2 = "gr:" + bind_rows(world, [("other", remote, other_head, other)])
+    published = runner.invoke(app, ["review", "publish", pin2, "--remote", str(remote)])
+    assert published.exit_code == 0, published.output
+    git(world["workspace"], "config", "user.name", "Approver B")
+    stamped = runner.invoke(app, ["review", "approve", pin2])  # stamp 2, newer: other only
+    assert stamped.exit_code == 0, stamped.output
+    moved = commit_file(world["member"], "second")
+    other_moved = commit_file(other, "more")
+    bind_rows(world, [("member", world["remote"], moved, world["member"]), ("other", remote, other_moved, other)])
+    result = since(world)
+    assert result.exit_code == 0, result.output
+    out = json.loads(result.stdout)
+    assert pin1 != pin2 and out["stamped_review"] == pin2
+    rows = {m["key"]: m for m in out["members"]}
+    assert rows["member"]["stamped_head"] == world["head"] and rows["other"]["stamped_head"] == other_head
+    assert {k: r.get("stamped_review") for k, r in rows.items()} == {"member": pin1, "other": pin2}
+    assert rows["other"]["stamped_at"] == out["stamped_at"] != rows["member"]["stamped_at"] is not None

@@ -6122,6 +6122,9 @@ def review_merge(
                                             required_checks=tuple(check) if check else None,
                                             required_approvals=approval_count, no_set=no_set)
     typer.echo(json.dumps(receipt))
+    partial = next_steps._merge_partial_line(code, receipt)
+    if partial:
+        typer.echo(partial, err=True)
     approval = receipt.get("approvals") or {}
     if approval.get("skipped"):
         typer.echo(f"approvals: skipped, 0 required by {approval.get('source')}", err=True)

@@ -23,7 +23,8 @@ from pathlib import Path
 PKG = Path(__file__).resolve().parents[1] / "gr2"
 # A command starts at the start of the text, after a backtick or '(', after ': ', or after then/run/with; a backticked one ends at the next
 # backtick, any other at the first newline, '; ', ', ' or ': ' (implicitly joined f-strings are one node).
-_START = re.compile(r"(?:^|[`(]|: |\b(?:then|run|with) )(git|gr2) ")
+# 'pass --flag <value>' is a fragment of the command the person reruns, so it is a command too (app.py lane create).
+_START = re.compile(r"(?:^|[`(]|: |\b(?:then|run|with) )(git|gr2) |\bpass (--[\w-]+) ")
 _ENDS = ("\n", "; ", ", ", ": ")
 # Text that names a git or gr2 run that already happened (its failure, exit or label) is a diagnostic, not a line
 # to run; its values are not checked.
@@ -75,7 +76,7 @@ def _quoted(value: ast.expr) -> bool:
 def _command_spans(text: str) -> list[tuple[int, int]]:
     spans = []
     for m in _START.finditer(text):
-        start = m.end() - len(m.group(1)) - 1
+        start = m.start(m.lastindex)
         if m.group(0).startswith("`"):
             end = text.find("`", start)
         else:

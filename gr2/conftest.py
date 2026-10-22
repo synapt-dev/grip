@@ -186,6 +186,14 @@ def _no_seat_actor(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("GR2_ACTOR", raising=False)
 
 
+# The identity variables git reads ahead of user.name/user.email; see the fifth
+# channel in _isolated_git_config. Witness: tests/test_seat_git_identity.py.
+_GIT_IDENTITY_ENV = (
+    "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_AUTHOR_DATE",
+    "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_COMMITTER_DATE",
+)
+
+
 @pytest.fixture(autouse=True)
 def _isolated_git_config(tmp_path, monkeypatch):
     """Every gr2 test runs against an isolated Git identity and no host options.
@@ -250,6 +258,15 @@ def _isolated_git_config(tmp_path, monkeypatch):
     also set does not leak -- ``NOSYSTEM`` wins outright, so the channel this
     fixture already closes covers it. Revisit if a supported git version is
     ever measured to behave otherwise.
+
+    A FIFTH channel, identity rather than config: ``GIT_AUTHOR_NAME``,
+    ``GIT_AUTHOR_EMAIL``, ``GIT_COMMITTER_NAME`` and ``GIT_COMMITTER_EMAIL``
+    outrank ``user.name``/``user.email`` from any config file, so the fixture
+    identity written below never applied on a runner that exports them (an agent
+    seat does, as a set). Measured on a cloud box at 918f9bef: with the seat's
+    GIT_AUTHOR_NAME alone, five rows failed (the pin author read as the
+    approver, so ``review stamp`` exited 2) and all five passed with it unset.
+    The two ``*_DATE`` variables go with them, since a seat sets the set.
     """
     # Under the test's own tmp_path, so the retention policy in pyproject removes them with it.
     for name in (".isolated-git-global", ".isolated-git-xdg", ".isolated-review-cache"):
@@ -268,3 +285,5 @@ def _isolated_git_config(tmp_path, monkeypatch):
     monkeypatch.setenv("SYNAPT_REVIEW_CACHE_ROOT", str(tmp_path / ".isolated-review-cache"))
     monkeypatch.delenv("GIT_CONFIG_COUNT", raising=False)
     monkeypatch.delenv("GIT_CONFIG_PARAMETERS", raising=False)
+    for name in _GIT_IDENTITY_ENV:
+        monkeypatch.delenv(name, raising=False)

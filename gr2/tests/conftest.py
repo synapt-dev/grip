@@ -75,6 +75,16 @@ def _run_stubs_keep_the_plain_spawn(request: pytest.FixtureRequest, monkeypatch:
     yield
 
 
+@pytest.fixture(autouse=True)
+def _once_per_process_notices_start_empty():
+    # Both sets dedup a notice once per process, keyed on absolute paths. A passed test's tmp dir is deleted
+    # and the next test can reuse its path, so a line printed by one test would be swallowed in the next.
+    from gr2.python_cli import lane_downstream, spec_apply
+    lane_downstream._NOTICED.clear()
+    spec_apply._ALPHA_FALLBACK_NOTICED.clear()
+    yield
+
+
 def pytest_enter_pdb(config, pdb):
     # Only when fd 0 is still our /dev/null: under the default fd capture,
     # pytest has already handed pdb the terminal by the time this hook runs.

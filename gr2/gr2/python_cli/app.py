@@ -4477,6 +4477,25 @@ def _default_review_lane_dir(workspace_root: Path, target: str) -> Path:
     return path
 
 
+@review_app.command("wait", hidden=True)
+def review_wait(
+    remote: str = typer.Argument(..., help="Remote name or url to read with ls-remote"),
+    branch: str = typer.Argument(..., help="Branch whose tip to wait on, e.g. main"),
+    since: Optional[str] = typer.Option(None, "--since", help="Full sha to measure from; default the tip at the start"),
+    timeout: float = typer.Option(600.0, "--timeout", help="Seconds before giving up (exit 6); finite, >= 0"),
+    interval: float = typer.Option(10.0, "--interval", help="Seconds between reads; finite, >= 1"),
+) -> None:
+    """Wait until a remote branch tip moves: one ls-remote per poll. Same codes as sync wait: 0 moved, 3 refused, 6 timeout, 7 unreadable."""
+    from . import remote_wait
+
+    try:
+        old, new = remote_wait.wait_for_tip(Path.cwd(), remote, branch, from_sha=since, interval=interval, timeout=timeout)
+    except remote_wait.RemoteWaitError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=exc.code)
+    typer.echo(f"moved: {branch} {old} -> {new}")
+
+
 @review_app.command("open", cls=json_refusing(ReviewOpenCommand))
 def review_open(
     workspace_root: Path,

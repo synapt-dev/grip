@@ -12,7 +12,9 @@ from pathlib import Path
 import pytest
 
 from gr2.python_cli import remote_wait
-from gr2.python_cli.remote_wait import CODE_REFUSED, CODE_REMOTE, CODE_TIMEOUT, RemoteWaitError, wait_for_tip
+from gr2.python_cli.remote_wait import (
+    CODE_REFUSED, CODE_REMOTE, CODE_TIMEOUT, CODE_UNREADABLE, RemoteWaitError, wait_for_tip,
+)
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -124,6 +126,60 @@ def test_an_ls_remote_timeout_inside_the_wait_is_the_waits_timeout(world, monkey
     assert "the time the wait had left" in str(exc.value)
 
 
+def _hang_then(clock, answers):
+    """An ls-remote answer per read: None hangs for the bound it was given (the fake clock advances by it), a str is
+    the stdout."""
+    def answer(timeout):
+        a = answers.pop(0)
+        if a is None:
+            clock.now += timeout
+            raise subprocess.TimeoutExpired(["git", "ls-remote"], timeout)
+        return a
+    return answer
+
+
+def _row(oid: str) -> str:
+    return f"{oid}\trefs/heads/main\n"
+
+
+def test_a_read_hung_on_its_own_bound_with_time_left_is_retried_then_a_move_is_moved(world, monkeypatch):
+    work, remote = world
+    clock = Clock()
+    seen = _stub_ls_remote(monkeypatch, _hang_then(clock, [_row("a" * 40), None, _row("b" * 40)]))
+    assert _wait(work, remote, clock=clock, interval=10, timeout=600) == ("a" * 40, "b" * 40)
+    assert seen == [30, 30, 30]
+
+
+def test_two_reads_hung_on_their_own_bound_in_a_row_are_unreadable(world, monkeypatch):
+    work, remote = world
+    clock = Clock()
+    _stub_ls_remote(monkeypatch, _hang_then(clock, [_row("a" * 40), None, None]))
+    with pytest.raises(RemoteWaitError) as exc:
+        _wait(work, remote, clock=clock, interval=10, timeout=600)
+    assert exc.value.code == CODE_UNREADABLE and "no answer within 30s" in str(exc.value)
+    assert clock.now < 600
+
+
+def test_a_read_hung_on_the_time_left_is_the_waits_timeout(world, monkeypatch):
+    work, remote = world
+    clock = Clock()
+    clock.actions = [lambda: setattr(clock, "now", 580.0)]  # 20 s left when the hung read starts
+    seen = _stub_ls_remote(monkeypatch, _hang_then(clock, [_row("a" * 40), None]))
+    with pytest.raises(RemoteWaitError) as exc:
+        _wait(work, remote, clock=clock, interval=10, timeout=600)
+    assert exc.value.code == CODE_TIMEOUT and "the time the wait had left" in str(exc.value)
+    assert seen[1] == pytest.approx(20)
+
+
+def test_a_start_read_hung_on_its_own_bound_with_time_left_is_refused(world, monkeypatch):
+    work, remote = world
+    clock = Clock()
+    _stub_ls_remote(monkeypatch, _hang_then(clock, [None]))
+    with pytest.raises(RemoteWaitError) as exc:
+        _wait(work, remote, clock=clock, interval=10, timeout=600)
+    assert exc.value.code == CODE_REFUSED and "no answer within 30s" in str(exc.value)
+
+
 def test_a_remote_that_never_answers_ends_the_wait_near_its_timeout(world):
     # The upload-pack sleeps 8 s; the 2 s wait must end near 2 s, not after the 8 s answer. Each read gets the time
     # left with a 1 s floor, so a read that starts with under 1 s left can still run up to 1 s past the deadline.
@@ -190,7 +246,7 @@ def test_a_ref_deleted_while_waiting_is_refused_not_moved(world):
     clock = Clock(lambda: _git(work, "push", "-q", str(remote), ":refs/heads/main"))
     with pytest.raises(RemoteWaitError) as exc:
         _wait(work, remote, clock=clock)
-    assert exc.value.code == CODE_REMOTE and "deleted while waiting" in str(exc.value)
+    assert exc.value.code == 7 and "deleted while waiting" in str(exc.value)
 
 
 @pytest.mark.parametrize("from_sha", ["nope", "abc1234", "g" * 40, "a" * 39, "a" * 41, "a" * 64, ""])
@@ -202,7 +258,7 @@ def test_a_from_that_is_not_a_full_40_hex_sha_is_refused(world, from_sha):
 
 
 @pytest.mark.parametrize("kind", ["interval", "timeout"])
-@pytest.mark.parametrize("value", [0, -1, float("nan"), float("inf"), float("-inf"), "x"])
+@pytest.mark.parametrize("value", [-1, float("nan"), float("inf"), float("-inf"), "x"])
 def test_a_bound_that_is_not_positive_and_finite_is_refused(world, kind, value):
     work, remote = world
     with pytest.raises(RemoteWaitError) as exc:

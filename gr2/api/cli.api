@@ -759,6 +759,18 @@ arg   review verify workspace_root <str> (hidden)                     stable
 flag  review verify --json (hidden)                                   stable
 flag  review verify --root/-C <str> (hidden)                          stable
 verb  review verify (hidden)                                          stable
+# review wait
+arg   review wait branch <str> (hidden)                               stable
+arg   review wait remote <str> (hidden)                               stable
+exit  review wait 0 ok                                                stable
+exit  review wait 2 usage                                             stable
+exit  review wait 3 refused                                           stable
+exit  review wait 6 timeout                                           stable
+exit  review wait 7 unreadable                                        stable
+flag  review wait --interval <str> (hidden)                           stable
+flag  review wait --since <str> (hidden)                              stable
+flag  review wait --timeout <str> (hidden)                            stable
+verb  review wait (hidden)                                            stable
 # spec show
 arg   spec show workspace_root <str> (hidden:spec)                    stable
 flag  spec show --json (hidden:spec)                                  stable

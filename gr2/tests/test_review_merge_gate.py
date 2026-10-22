@@ -477,6 +477,25 @@ def test_a_bind_fault_partial_line_says_nothing_was_measured():
     assert next_steps._merge_partial_line(code, receipt) == "partial: nothing measured (bind_unreadable)"
 
 
+@pytest.mark.parametrize("receipt", [
+    pytest.param({"members": [{"key": "alpha", "final": "merged", "merged": "ab\npartial: "}]}, id="sha-newline"),
+    pytest.param({"members": [{"key": "alpha", "final": "merged", "merged": "\x1b[2K\rforged"}]}, id="sha-escape"),
+    pytest.param({"members": [], "refused": "x\npartial"}, id="no-members-code-newline"),
+    pytest.param({"members": [], "refused": 7}, id="no-members-code-int"),
+    pytest.param({"members": [{"key": "alpha", "final": "merged", "merged": "a" * 40, "refused": 7}]}, id="member-code-int"),
+    pytest.param({"members": [{"key": "alpha", "final": "merged", "merged": "a" * 40, "refused": "x\npartial"}]},
+                 id="merged-code-newline"),
+    pytest.param({"members": [{"key": "alpha", "final": "unmerged", "refused": "x\npartial"}]}, id="unmerged-code-newline"),
+    pytest.param({"members": [{"key": "alpha", "final": "unknown\x1b[2K\rforged"}]}, id="final-escape"),
+])
+def test_no_receipt_field_forges_a_line(receipt):
+    # Every field the partial line prints goes through _shown: one line, no terminal escape, no raw control byte.
+    from gr2.python_cli import next_steps
+    line = next_steps._merge_partial_line(merge_gate.EXIT_PARTIAL, receipt)
+    assert line.startswith("partial: ") and len(line.splitlines()) == 1, line
+    assert not any(ord(ch) < 0x20 or ord(ch) == 0x7f for ch in line), repr(line)
+
+
 def test_an_unconfirmed_push_is_not_known_not_unmerged():
     # A push that timed out may still land: the member is "not known", even when the target then read unmerged.
     from gr2.python_cli import next_steps

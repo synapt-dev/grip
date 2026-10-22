@@ -124,23 +124,24 @@ def _update_lines(workspace: str, receipt: dict) -> list[str]:
 def _merge_partial_line(code: int, receipt: dict) -> str | None:
     # Exit 4 only: what landed is otherwise in the JSON alone. Exit 4 is partial OR unknown, so a member is "not merged"
     # only when its target was measured unmerged and no push may still land; an unmeasured member, or one whose push
-    # went unconfirmed, is "not known". A bind fault measured nothing and says so with its refusal code.
+    # went unconfirmed, is "not known". A bind fault measured nothing and says so with its refusal code. Every printed
+    # field goes through _shown, so no receipt value can forge a line or colour the terminal.
     if code != 4:
         return None
     members = receipt.get("members") or []
     if not members:
-        return f"partial: nothing measured ({str(receipt.get('refused') or 'unknown').split(':', 1)[0]})"
+        return f"partial: nothing measured ({_shown(str(receipt.get('refused') or 'unknown').split(':', 1)[0])})"
     sides = {"merged": [], "not merged": [], "not known": []}
     for m in members:
-        reason = (m.get("refused") or "").split(":", 1)[0]
+        reason = str(m.get("refused") or "").split(":", 1)[0]
         if m.get("final") == "merged":
             # A merged member can still carry a code (stranded or unmeasured after the merge): it says what is missing.
-            code_note = f"; {reason}" if reason else ""
-            sides["merged"].append(f"{_shown(m['key'])} ({str(m.get('merged') or '?')[:12]}{code_note})")
+            code_note = f"; {_shown(reason)}" if reason else ""
+            sides["merged"].append(f"{_shown(m['key'])} ({_shown(str(m.get('merged') or '?')[:12])}{code_note})")
         elif m.get("final") == "unmerged" and reason != "push_unconfirmed":
-            sides["not merged"].append(f"{_shown(m['key'])} ({reason or 'unmerged'})")
+            sides["not merged"].append(f"{_shown(m['key'])} ({_shown(reason or 'unmerged')})")
         else:
-            sides["not known"].append(f"{_shown(m['key'])} ({reason or m.get('final') or 'unknown'})")
+            sides["not known"].append(f"{_shown(m['key'])} ({_shown(reason or str(m.get('final') or 'unknown'))})")
     return "partial: " + "; ".join(f"{side} {', '.join(keys)}" for side, keys in sides.items() if keys)
 
 

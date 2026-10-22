@@ -338,11 +338,13 @@ def _refuse_moved_base(workspace: Path, key: str, remote: str, base: str, review
 
 def _remote_git(workspace: Path, key: str, reason: str, *args: str) -> str:
     """git against a member remote: a failure names the member, never git's stderr, which echoes the remote as written
-    (a path or an unredacted credential)."""
+    (a path or an unredacted credential). The refusal is raised after the except block, so git's refusal is not kept on
+    it as __context__ either (`from None` only hides the context from printed tracebacks)."""
     try:
         return _git(workspace, *args, raw=True)
     except ApprovalRefused:
-        raise ApprovalRefused(f"{reason}: {key}") from None
+        pass
+    raise ApprovalRefused(f"{reason}: {key}")
 
 
 def _remote_keys(root: dict) -> dict[str, str]:

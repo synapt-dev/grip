@@ -576,6 +576,8 @@ def _refuses_by_key(caught, reason):
     assert text == reason + ": m", text
     full = "".join(traceback.format_exception(caught.value))
     assert "sekretword" not in full, full
+    # Not only hidden from printing: git's refusal is not on the exception at all.
+    assert caught.value.__context__ is None and caught.value.__cause__ is None, repr(caught.value.__context__)
 
 
 def test_remote_tips_on_a_missing_remote_names_the_member_not_git(tmp_path):

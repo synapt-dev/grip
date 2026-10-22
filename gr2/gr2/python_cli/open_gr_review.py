@@ -117,6 +117,26 @@ def close_open_gr_lane(lane_dir: Path, *, workspace_root: Path | None = None) ->
     return result
 
 
+def _read_run_receipt(path: Path) -> dict:
+    """The run receipt at `path`, or {} when there is none. A receipt that exists but cannot be read or
+    parsed, or is not a JSON object, is corrupt: close refuses it by name before anything moves."""
+    try:
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        return {}
+    except OSError:
+        receipt = None
+    else:
+        try:
+            receipt = json.loads(raw.decode("utf-8"))
+        # Nesting deeper than the parser's recursion limit is RecursionError, not ValueError.
+        except (ValueError, RecursionError):
+            receipt = None
+    if not isinstance(receipt, dict):
+        raise OpenGrReviewError(f"corrupt run receipt: not a JSON object; nothing removed, recovery at {path}")
+    return receipt
+
+
 def _refuse_local_work(target: Path, allocation: dict) -> None:
     """Close removes the lane, so it first refuses when the lane holds work that exists nowhere
     else: in a member repository, a staged, unstaged or untracked change (the review's own
@@ -137,12 +157,7 @@ def _refuse_local_work(target: Path, allocation: dict) -> None:
     from .review_runners import RUNNER_CREATED_PATHS
     # A runner's own outputs (cargo's target/ and Cargo.lock, ...) are the review's, exactly as
     # `review run` treats them; the receipt names the runner that wrote them.
-    try:
-        receipt = json.loads((target / _RUN_RECEIPT_NAME).read_text())
-    except (OSError, ValueError):
-        receipt = None
-    if not isinstance(receipt, dict):
-        receipt = {}
+    receipt = _read_run_receipt(target / _RUN_RECEIPT_NAME)
     runner = receipt.get("runner")
     created = RUNNER_CREATED_PATHS.get(runner if isinstance(runner, str) else "", {})
     # What the run's install itself created (setuptools' top-level `build/`), as the run's receipt names it, file by
@@ -215,14 +230,20 @@ def _run_placed_members(target: Path, receipt: dict, member_names: set[str]) -> 
     them: a key named in the run's selection, whose directory at the lane root is a real git clone (not a
     symlink) with HEAD at the pin the run recorded for it. A key is placed only if bind would accept it
     (grip.plain_member_key) and its grip.member_key_fold is not a member's or another key's. Anything else at
-    the root, a clone the receipt does not name included, stays unknown, and close refuses it."""
+    the root, a clone the receipt does not name included, stays unknown, and close refuses it. A key that is
+    not a string makes the receipt corrupt, and close refuses it by name."""
     selection = receipt.get("downstream") if receipt.get("kind") == "review-run" else None
     if not isinstance(selection, dict) or not isinstance(selection.get("pins"), dict):
         return []
     pins = selection["pins"]
     keys = [k for role in ("upstream", "downstream") if isinstance(selection.get(role), list)
             for k in selection[role]]
-    keys = [k for k in dict.fromkeys(keys) if isinstance(k, str)]
+    # Checked before any hashing: a list or dict key would raise TypeError at the dedup below.
+    for k in keys:
+        if not isinstance(k, str):
+            raise OpenGrReviewError(f"corrupt run receipt: a member key is {type(k).__name__}, not a name; "
+                                    f"nothing removed, recovery at {target / _RUN_RECEIPT_NAME}")
+    keys = list(dict.fromkeys(keys))
     folded = [grip.member_key_fold(k) for k in keys]
     taken = {grip.member_key_fold(name) for name in member_names}
     # Nor a key a case-insensitive filesystem reads as a file the review writes at the root (_lane_own_names).
@@ -281,15 +302,17 @@ def _preserve_run_artifacts(lane_dir: Path, *, archive_root: Path | None = None)
     # Sibling of the lane (NOT under it), `.resolve()` so it is a true sibling even when
     # lane_dir was passed relative.
     lane_dir = lane_dir.resolve()
-    receipt = json.loads(receipt_src.read_text())
+    receipt = _read_run_receipt(receipt_src)
     # Key the preserved dir by (gr short commit, run timestamp), both taken from the
     # receipt the run wrote. Keying only by lane name let a SECOND close of the same
     # lane name overwrite the first close's receipt and log in place, so door 1's
     # "the evidence survives close" held for one close per lane name only. A distinct
     # run (a reopen + rerun) has a distinct `created`, so it lands beside the first
     # rather than on top of it; the same run closed twice is idempotent.
-    gr_short = (receipt.get("gr_commit") or "unknown")[:12]
-    created = receipt.get("created") or "no-timestamp"
+    # Only strings key it: an int gr_commit raised TypeError at the slice.
+    gr_commit, created = receipt.get("gr_commit"), receipt.get("created")
+    gr_short = (gr_commit if isinstance(gr_commit, str) and gr_commit else "unknown")[:12]
+    created = created if isinstance(created, str) and created else "no-timestamp"
     key = re.sub(r"[^A-Za-z0-9._-]", "-", f"{gr_short}-{created}")
     dest = (archive_root or lane_dir.parent / f"{lane_dir.name}.review-run") / key
     dest.mkdir(parents=True, exist_ok=True)
@@ -312,10 +335,14 @@ def _preserve_run_artifacts(lane_dir: Path, *, archive_root: Path | None = None)
     # A multi-member lane keeps one log per member, `<lane>/<key>.grip-review-run.log`, named
     # by the receipt (each member entry, and a refusal's own `output_log`). Carry each out
     # the same way, so the evidence for every member survives the close.
+    # A field of the wrong type is skipped, not refused, as gr_commit is: `members` only as a list and only its
+    # object entries, `output_log` only as a string. A skipped value names no file, so no log bytes it could name
+    # are left behind, and the .original above keeps the receipt byte for byte.
     member_logs: dict[str, str] = {}
-    for entry in [receipt, *receipt.get("members", [])]:
+    members = receipt.get("members")
+    for entry in [receipt, *(m for m in (members if isinstance(members, list) else []) if isinstance(m, dict))]:
         name = entry.get("output_log")
-        if not name or name == _RUN_LOG_NAME or name != Path(name).name:
+        if not isinstance(name, str) or not name or name == _RUN_LOG_NAME or name != Path(name).name:
             continue
         src = lane_dir / name
         if not src.is_file():

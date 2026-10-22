@@ -134,7 +134,7 @@ class TestEnsureRepoCacheUsesRewrittenUrl:
         def fake_run(cmd, *args, **kwargs):
             cmd = gitops_mod.logical_argv(cmd)  # the command as written, without the shared flags
             recorded.append(list(cmd))
-            if cmd[:2] == ["git", "clone"]:
+            if "clone" in cmd[:4]:
                 return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
             return real_run(cmd, *args, **kwargs)
 
@@ -143,7 +143,7 @@ class TestEnsureRepoCacheUsesRewrittenUrl:
         cache_path = tmp_path / "cache" / "app.git"
         gitops_mod.ensure_repo_cache("git@github.com:synapt-dev/app.git", cache_path, local_source=None)
 
-        clone_cmds = [c for c in recorded if c[:2] == ["git", "clone"]]
+        clone_cmds = [c for c in recorded if "clone" in c[:4]]
         assert len(clone_cmds) == 1
         assert "https://github.com/synapt-dev/app.git" in clone_cmds[0]
         assert "git@github.com:synapt-dev/app.git" not in clone_cmds[0]
@@ -158,7 +158,7 @@ class TestEnsureRepoCacheUsesRewrittenUrl:
         def fake_run(cmd, *args, **kwargs):
             cmd = gitops_mod.logical_argv(cmd)  # the command as written, without the shared flags
             recorded.append(list(cmd))
-            if cmd[:2] == ["git", "clone"]:
+            if "clone" in cmd[:4]:
                 return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
             return real_run(cmd, *args, **kwargs)
 
@@ -167,7 +167,7 @@ class TestEnsureRepoCacheUsesRewrittenUrl:
         cache_path = tmp_path / "cache" / "app.git"
         gitops_mod.ensure_repo_cache("git@github.com:synapt-dev/app.git", cache_path, local_source=None)
 
-        clone_cmds = [c for c in recorded if c[:2] == ["git", "clone"]]
+        clone_cmds = [c for c in recorded if "clone" in c[:4]]
         assert "git@github.com:synapt-dev/app.git" in clone_cmds[0]
 
 
@@ -202,7 +202,7 @@ class TestEnsureRepoCacheRefreshRepointsSshOrigin:
         def fake_run(cmd, *args, **kwargs):
             cmd = gitops_mod.logical_argv(cmd)  # the command as written, without the shared flags
             recorded.append(list(cmd))
-            if cmd[:2] == ["git", "--git-dir"] and "fetch" in cmd:
+            if cmd[:1] == ["git"] and "--git-dir" in cmd and "fetch" in cmd:  # any flag order, e.g. the hooks-off -c
                 return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
             return real_run(cmd, *args, **kwargs)
 
@@ -239,7 +239,7 @@ class TestEnsureRepoCacheRefreshRepointsSshOrigin:
         def fake_run(cmd, *args, **kwargs):
             cmd = gitops_mod.logical_argv(cmd)  # the command as written, without the shared flags
             recorded.append(list(cmd))
-            if cmd[:2] == ["git", "--git-dir"] and "fetch" in cmd:
+            if cmd[:1] == ["git"] and "--git-dir" in cmd and "fetch" in cmd:  # any flag order, e.g. the hooks-off -c
                 return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
             return real_run(cmd, *args, **kwargs)
 

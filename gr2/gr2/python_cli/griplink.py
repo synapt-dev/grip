@@ -582,7 +582,7 @@ def checkout(root: Path) -> dict[str, int]:
     return applied
 
 
-def size_sentence(found: tuple[str, str, tuple[str, ...]]) -> str:
+def size_sentence(found: tuple[str, str, tuple[str, ...], str]) -> str:
     from .grip_cli import host_size_line
     return host_size_line(found[0], ", ".join(found[2]) or None, found[1], found[3])
 

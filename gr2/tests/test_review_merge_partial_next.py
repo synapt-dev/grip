@@ -224,6 +224,32 @@ def test_every_head_in_the_partial_next_is_quoted():
     assert f"--head {head}" not in line, line
 
 
+def _partial_row(slice2, feature):
+    beta = slice2["members"]["beta"]
+    return next_steps._partial_moved_row(
+        workspace=str(slice2["author"]), key="beta", member_path="beta", path=str(beta["repo"]),
+        remote=str(beta["remote"]), base=beta["base"], into="main", feature=feature, landed=["alpha"], approvals=0)
+
+
+def test_the_partial_next_names_the_feature_as_a_ref(slice2):
+    # A bare feature name is read by git as an option or a lookalike ref; the pull and the push name it in full.
+    step = _partial_row(slice2, "feat")
+    remote = slice2["members"]["beta"]["remote"]
+    assert f"pull --ff-only {remote} refs/heads/feat;" in step, step
+    assert f"push {remote} refs/heads/feat &&" in step, step
+
+
+@pytest.mark.parametrize("shape", ["--upload-pack=touch ", "x;touch${IFS}"], ids=["option", "shell-meta"])
+def test_an_option_shaped_feature_in_the_printed_git_lines_runs_nothing(slice2, tmp_path, shape):
+    mark = tmp_path / "MARK"
+    step = _partial_row(slice2, shape + str(mark))
+    pull = step[step.index("commit your change: ") + len("commit your change: "):step.index("; then, with")]
+    (push,) = [s for s in step.split(" && ") if " push " in s]
+    for line in (pull, push):
+        subprocess.run(["sh", "-c", line], capture_output=True, timeout=60, stdin=subprocess.DEVNULL)
+        assert not mark.exists(), line
+
+
 def test_the_readme_names_why_the_check_set_next_does_not_recover_a_partial():
     text = " ".join((Path(__file__).resolve().parents[1] / "README.md").read_text().split())
     assert "never moves the pin" in text and "base_not_live_head" in text and "pin that member alone" in text

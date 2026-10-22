@@ -373,7 +373,7 @@ def _partial_moved_row(*, workspace: str, key: str, member_path: str, path: str,
         merge = f'gr2 review merge {_shown(workspace)} "$R" --from {_shown(feature)} --into {_shown(into)}'
         if approvals is not None:
             merge += f" --approvals {approvals}"
-        pushed = f" && git -C {_shown(p)} push {_shown(rem)} {_shown(feature)}" if push else ""
+        pushed = f" && git -C {_shown(p)} push {_shown(rem)} {_shown('refs/heads/' + feature)}" if push else ""
         return (f"R=$(gr2 review pin {_shown(workspace)} --repo {_shown(k)} --path {_shown(mpath)} --remote "
                 f"{_shown(rem)} --base {_shown(b)} --head {_shown(head)} --ref {_shown('refs/heads/' + into)} --source "
                 f"{_shown(p)}){pushed} && gr2 review publish {_shown(workspace)} \"$R\" --remote {_shown(rem)} && "
@@ -395,4 +395,4 @@ def _partial_moved_row(*, workspace: str, key: str, member_path: str, path: str,
     return (f"next: {', '.join(_shown(k) for k in landed)} already merged and {_shown(key)}'s feature branch moved, so "
             f"this review cannot merge {_shown(key)}; pin {_shown(key)} alone on a new head{then}. First bring the "
             f"branch up and commit your change: git -C {_shown(path)} pull --ff-only {_shown(remote)} "
-            f"{_shown(feature)}; then, with <your new commit> its sha, run: {' && '.join(steps)}")
+            f"{_shown('refs/heads/' + feature)}; then, with <your new commit> its sha, run: {' && '.join(steps)}")

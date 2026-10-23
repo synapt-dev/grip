@@ -113,7 +113,42 @@ def canonical_source_identity(remote_url: str, *, allow_local: bool = False) -> 
         if match:
             return f"https://github.com/{match.group('owner').lower()}/{match.group('repo').lower()}"
     if allow_local:
-        return f"local:{Path(url).resolve()}"
+        path = url
+        if url.lower().startswith("file://"):
+            # A file:// URL and the path it spells are one repository. A
+            # non-local host names another machine's path; refuse it rather
+            # than alias whatever sits at that path on this one.
+            # Slice the raw text, not urlsplit: git reads '#' and '?' in a
+            # file:// path literally, and urlsplit would cut them off.
+            host, _, rest = url[len("file://"):].partition("/")
+            if host.lower() not in ("", "localhost"):
+                raise ReviewError(
+                    f"origin {url!r} names host {host!r}; a local "
+                    "identity must be a path on this machine."
+                )
+            # url2pathname is the platform's own reading: /C:/p is C:\p on
+            # Windows and stays /p on POSIX, with %-escapes decoded on both.
+            # It splits off '#' and '?' itself (3.14), so they go in escaped.
+            # A second leading slash (file:////p, file://localhost//p; git
+            # takes both) is a UNC-style path, not a local one. url2pathname
+            # raises on it only on 3.14 and returns '//p' before that, so it
+            # is refused here, the same on every version.
+            if rest.startswith("/"):
+                raise ReviewError(
+                    f"origin {url!r} has an extra slash after file://; "
+                    "it does not read as a local path."
+                )
+            # Imported here, not at module top: urllib.request is one of the slow modules the CLI
+            # keeps out of its import (tests/test_cli_import_deferred.py).
+            from urllib.request import url2pathname
+
+            try:
+                path = url2pathname("/" + rest.replace("#", "%23").replace("?", "%3F"))
+            except OSError as exc:
+                raise ReviewError(
+                    f"origin {url!r} does not read as a local path: {exc}"
+                ) from exc
+        return f"local:{Path(path).resolve()}"
     raise ReviewError(
         f"origin {url!r} is not a canonical GitHub source; a review record's repo "
         "identity must be a portable https://github.com/<owner>/<repo> (no .git). "

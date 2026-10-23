@@ -71,6 +71,28 @@ def test_close_gr_text_refusal_is_unchanged(tmp_path: Path) -> None:
     assert err.startswith("refused: review has no owning workspace allocation"), err
 
 
+def _non_empty_lane_dir(tmp_path: Path) -> tuple[Path, Path]:
+    (tmp_path / "ws" / ".grip").mkdir(parents=True)
+    lane = tmp_path / "lane"
+    lane.mkdir()
+    (lane / "f").write_text("x\n")
+    return tmp_path / "ws", lane
+
+
+def test_open_gr_into_a_non_empty_lane_dir_is_one_json_lane_dir_not_empty(tmp_path: Path) -> None:
+    ws, lane = _non_empty_lane_dir(tmp_path)
+    code, out, err = _run("review", "open-gr", "gr:" + SHA, "--lane-dir", str(lane), "--enter", "--json", "-C", str(ws))
+    assert (code, err) == (2, ""), out + err
+    assert "exists and is not empty" in _one_refusal(code, out, "lane_dir_not_empty")["message"]
+
+
+def test_open_gr_non_empty_lane_dir_text_refusal_is_unchanged(tmp_path: Path) -> None:
+    ws, lane = _non_empty_lane_dir(tmp_path)
+    code, out, err = _run("review", "open-gr", "gr:" + SHA, "--lane-dir", str(lane), "--enter", "-C", str(ws))
+    assert (code, out) == (2, ""), out + err
+    assert err.startswith("refused: lane_dir_not_empty: --lane-dir "), err
+
+
 def test_repin_missing_its_required_options_is_a_json_usage_refusal(tmp_path: Path) -> None:
     code, out, err = _run("review", "repin", str(tmp_path), "--json")
     assert code == 2, out + err
@@ -109,3 +131,21 @@ def test_an_unknown_option_with_json_is_one_usage_refusal(verb: str) -> None:
     assert code == text_code == 2, out + err
     assert "Traceback" not in out + err, out + err
     _one_refusal(code, out, "usage")
+
+
+def test_create_project_with_no_fork_base_is_a_json_create_project_refused(tmp_path: Path) -> None:
+    from tests.test_review_bind_fork_base import _materialized_lane
+
+    ws = _materialized_lane(tmp_path, ["a"], fork_base=False)
+    code, out, err = _run("review", "create-project", str(ws), "atlas", "feature", "--json")
+    assert code == 2 and err == "", out + err
+    _one_refusal(code, out, "create_project_refused")
+
+
+def test_create_project_with_no_fork_base_still_refuses_as_text(tmp_path: Path) -> None:
+    from tests.test_review_bind_fork_base import _materialized_lane
+
+    ws = _materialized_lane(tmp_path, ["a"], fork_base=False)
+    code, out, err = _run("review", "create-project", str(ws), "atlas", "feature")
+    assert code == 2, out + err
+    assert (out + err).startswith("refused: "), out + err

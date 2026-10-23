@@ -12,6 +12,7 @@ import re
 import shlex
 from pathlib import Path
 import subprocess
+import sys
 
 import pytest
 from typer.testing import CliRunner
@@ -439,6 +440,29 @@ def test_a4q_feature_moved_next_runs_in_a_shell_with_a_space_a_quote_and_a_membe
     assert tip(beta["remote"], "refs/heads/feat") == git(beta["repo"], "rev-parse", "HEAD")
 
 
+def test_a4r_printed_repin_run_as_a_process_names_visibility_by_the_key_pin_gives_a_member_not_at_its_name(tmp_path, monkeypatch):
+    w = build(tmp_path, monkeypatch, nest="m-")
+    beta = w["members"]["beta"]
+    other = tmp_path / "someone"
+    git(tmp_path, "clone", "--no-local", "--branch", "feat", beta["remote"] if tip(beta["remote"], "refs/heads/feat") else beta["repo"], other)
+    (other / "t.txt").write_text("t\n")
+    git(other, "add", "t.txt")
+    git(other, "commit", "-m", "t")
+    git(other, "push", beta["remote"], "feat")
+    out = publish(w["review"])
+    assert out.exit_code == 2, out.output
+    pull = re.search(r"# after (git .*?); publish", receipt(out)["next"]).group(1)
+    assert subprocess.run(["bash", "-c", pull], capture_output=True, text=True).returncode == 0
+    pin = shlex.split(receipt(out)["next"].split("   # ")[0])
+    assert "--visibility" in pin, pin
+    exe = str(Path(sys.executable).parent / pin[0])
+    pinned = subprocess.run([exe, *pin[1:]], capture_output=True, text=True)
+    assert pinned.returncode == 0, (pin, pinned.stderr)
+    new = next(t for t in pinned.stdout.split() if t.startswith("gr:"))
+    again = publish(new)
+    assert again.exit_code == 0 and receipt(again)["complete"], (pin, again.output)
+
+
 # ls-remote answers refs/heads/<branch> by tail, so refs/heads/a/refs/heads/<branch> answers too and sorts first; the
 # first token of the listing is then the lookalike's tip. Both reads of the member's branch (before the push and after
 # it) take the row named exactly the branch, and a malformed line is a fault, not absence.
@@ -646,3 +670,17 @@ def test_v9_a_file_url_with_a_host_reads_public():
     states = {"alpha": {"remote": "/srv/alpha.git", "visibility": "private"}, "beta": {"remote": "/srv/beta.git", "visibility": "private"}}
     with pytest.raises(GripReviewRefused, match="not host-local; read as public"):
         _refuse_visibility_mismatch(states, "file://host/share/repo.git")
+
+
+def test_a4u_a_printed_repin_whose_rows_pin_cannot_read_says_why_it_carries_no_visibility(w, monkeypatch):
+    from gr2.python_cli import review_members
+
+    def boom(*a, **k):
+        raise RuntimeError("rows unread")
+    monkeypatch.setattr(review_members, "changed_member_rows", boom)
+    git(w["members"]["beta"]["repo"], "commit", "--allow-empty", "-m", "moved")
+    out = publish(w["review"])
+    assert out.exit_code == 2, out.output
+    nxt = receipt(out)["next"]
+    assert "review pin" in nxt and "--visibility" not in nxt.split("   # ")[0], nxt
+    assert "carries no --visibility: review pin could not read this workspace's rows (rows unread)" in nxt, nxt

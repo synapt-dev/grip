@@ -139,9 +139,16 @@ PUBLISH_REFUSED_CHECK = {
 
 
 def _publish_refused_next(workspace: str, review: str, refusal: str, key: str, clone: str, remote: str,
-                         observed: str) -> str | None:
+                         observed: str, visibility: dict[str, str] | None = None) -> str | None:
+    """`visibility` is each member's declared visibility in the refused review: a printed repin carries it as
+    --visibility, else the new review declares none and publish refuses it visibility_mismatch."""
     build = PUBLISH_REFUSED_NEXT.get(refusal)
-    return build(workspace, review, key, clone, remote, observed) if build else None
+    line = build(workspace, review, key, clone, remote, observed) if build else None
+    if line and line.startswith("gr2 review pin ") and visibility:
+        pin, sep, rest = line.partition("   # ")
+        flags = " ".join(f"--visibility {_shown(f'{k}={v}')}" for k, v in sorted(visibility.items()))
+        line = f"{pin} {flags}{sep}{rest}"
+    return line
 
 
 def _publish_refused_check(refusal: str, clone: str) -> str | None:

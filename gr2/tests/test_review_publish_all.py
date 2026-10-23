@@ -430,11 +430,13 @@ def test_a4q_feature_moved_next_runs_in_a_shell_with_a_space_a_quote_and_a_membe
     ran = subprocess.run(["bash", "-c", pull], capture_output=True, text=True)
     assert ran.returncode == 0, (pull, ran.stderr)
     assert git(beta["repo"], "rev-parse", "HEAD") == tip(beta["remote"], "refs/heads/feat")
-    out = publish(w["review"])
-    assert out.exit_code == 0, out.output
-    for m in w["members"].values():
-        assert tip(m["remote"], "refs/heads/feat") == m["head"]
-        assert review_on(m["remote"], w["full"]) == w["full"]
+    pin = shlex.split(receipt(out)["next"].split("   # ")[0])
+    pinned = runner.invoke(app, pin[1:])
+    assert pinned.exit_code == 0, (pin, pinned.output)
+    new = next(t for t in pinned.stdout.split() if t.startswith("gr:"))
+    again = publish(new)
+    assert again.exit_code == 0 and receipt(again)["complete"], (pin, again.output)
+    assert tip(beta["remote"], "refs/heads/feat") == git(beta["repo"], "rev-parse", "HEAD")
 
 
 # ls-remote answers refs/heads/<branch> by tail, so refs/heads/a/refs/heads/<branch> answers too and sorts first; the

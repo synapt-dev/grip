@@ -1049,6 +1049,7 @@ def show_review_commit(workspace: Path, commit: str, *, migrate: bool = True,
             **({"ratified_by": ratified_by[key]} if key in ratified_by else {}),
             **({"at_base": at_base[key]} if key in at_base else {}),
             **({"target": m["target"]} if "target" in m else {}),
+            **({"visibility": m["repo"]["visibility"]} if m["repo"].get("visibility") else {}),
         } for key, m in sorted(view["members"].items())]}
     if _bind_git(workspace, "show", f"{commit}:.grip/schema").stdout.strip() != _REVIEW_BIND_SCHEMA:
         raise GripCorruptError("not a gr2 pinned review commit")

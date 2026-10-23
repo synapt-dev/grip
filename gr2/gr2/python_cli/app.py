@@ -5531,6 +5531,8 @@ def review_close_gr(
     try:
         result = open_gr_review.close_open_gr_lane(lane_dir.resolve(), workspace_root=workspace)
     except open_gr_review.OpenGrReviewError as exc:
+        if _JSON_REFUSALS.get():
+            _refuse_json("open_refused", str(exc), 2)
         typer.echo(f"refused: {exc}", err=True)
         raise typer.Exit(code=2)
     if lane_workspace is not None:

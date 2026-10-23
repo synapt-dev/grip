@@ -4942,7 +4942,7 @@ def review_open_project(
         raise typer.Exit(code=1)
 
 
-@review_app.command("exit-gr", hidden=True, cls=RootOptionalCommand)  # hidden alias for one release, dropped at 2.0 GA
+@review_app.command("exit-gr", hidden=True, cls=json_refusing(RootOptionalCommand))  # hidden alias for one release, dropped at 2.0 GA
 def review_exit_gr(
     workspace_root: Path,
     owner_unit: str = typer.Argument(..., help="Owner unit whose review lane to exit"),

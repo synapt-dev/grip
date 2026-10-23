@@ -714,3 +714,26 @@ def test_exit_of_an_ephemeral_review_refuses_a_corrupt_member_receipt(tmp_path: 
     assert "Traceback" not in out, out
     assert (member / ".git").exists() and alloc.is_file()
     assert lanes.require_current_lane(workspace, "atlas")["lane_name"] == "review-m1"
+
+
+def test_exit_with_json_prints_a_refusal_as_one_json_object(tmp_path: Path) -> None:
+    """Under --json, an exit refusal is one JSON object on stdout naming its code, exit 2, no traceback."""
+    from gr2.python_cli import review_allocation, review_run
+    workspace, source, base, head, prior_cwd = _prepush_world(tmp_path)
+    gr_commit = _prepush_gr_commit(workspace, source, base, head)
+    outcome = open_gr_review.open_gr_enter(
+        workspace, "atlas", "review-m1", gr_commit, None,
+        prior_cwd=prior_cwd, allow_local=True, local_sources={"alpha": source},
+    )
+    review_root = outcome.review_root
+    alloc = review_allocation.allocation_path(workspace.resolve(), review_root.resolve())
+    member = review_root / json.loads(alloc.read_text())["members"][0]["path"]
+    (member / review_run._RECEIPT_NAME).mkdir()
+    result = CliRunner().invoke(gr2_app.app, [
+        "review", "exit-gr", str(workspace), "atlas", str(review_root), "--actor", "agent:atlas", "--json",
+    ])
+    assert result.exit_code == 2, (result.exit_code, result.output, repr(result.exception))
+    assert "Traceback" not in result.output, result.output
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "refused" and payload["refusal"] == "open_refused", payload
+    assert "corrupt run receipt" in payload["message"] and "cannot be read" in payload["message"], payload

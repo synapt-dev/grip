@@ -13,8 +13,7 @@ from tests.test_review_reads_entered_lane import _commit_in_lane, _lane, _pin_ro
 from tests.test_store_break_attempts import _cli, two_member_ws  # noqa: F401
 
 GRIP = Path(__file__).resolve().parents[1] / "gr2" / "python_cli" / "grip.py"
-# Its detail already names the fix (publish to a local destination); a check line for it is not yet written.
-NOT_YET_CHECKED = {"local_path_remote"}
+NOT_YET_CHECKED: set[str] = set()
 
 
 def _publish_codes() -> set[str]:

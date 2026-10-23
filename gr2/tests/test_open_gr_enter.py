@@ -737,3 +737,27 @@ def test_exit_with_json_prints_a_refusal_as_one_json_object(tmp_path: Path) -> N
     payload = json.loads(result.stdout)
     assert payload["status"] == "refused" and payload["refusal"] == "open_refused", payload
     assert "corrupt run receipt" in payload["message"] and "cannot be read" in payload["message"], payload
+
+
+def test_exit_with_json_and_no_actor_prints_one_json_object(tmp_path: Path, monkeypatch) -> None:
+    """Under --json, a missing actor is one JSON object on stdout, exit 4, no traceback."""
+    monkeypatch.delenv("GR2_ACTOR", raising=False)
+    result = CliRunner().invoke(gr2_app.app, [
+        "review", "exit-gr", str(tmp_path), "atlas", str(tmp_path / "review"), "--json",
+    ])
+    assert result.exit_code == 4, (result.exit_code, result.output, repr(result.exception))
+    assert "Traceback" not in result.output, result.output
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "refused" and payload["refusal"] == "actor_refused", payload
+    assert "no actor" in payload["message"], payload
+
+
+def test_exit_without_json_and_no_actor_prints_the_text_line(tmp_path: Path, monkeypatch) -> None:
+    """Without --json, a missing actor stays the plain text line on stderr, exit 4."""
+    monkeypatch.delenv("GR2_ACTOR", raising=False)
+    result = CliRunner().invoke(gr2_app.app, [
+        "review", "exit-gr", str(tmp_path), "atlas", str(tmp_path / "review"),
+    ])
+    assert result.exit_code == 4, (result.exit_code, result.output, repr(result.exception))
+    assert result.stdout == "", result.stdout
+    assert "no actor" in result.stderr, result.stderr

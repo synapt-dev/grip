@@ -4962,6 +4962,7 @@ def review_exit_gr(
     try:
         actor_item = ctx_mod.resolve_actor(actor)
     except ctx_mod.ActorRefused as exc:
+        if _JSON_REFUSALS.get(): _refuse_json("actor_refused", str(exc), 4)
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=4)
     ctx_mod.announce({"actor": actor_item}, root=None, quiet=ctx_mod.quiet_from_env())

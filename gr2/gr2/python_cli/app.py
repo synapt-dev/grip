@@ -4861,6 +4861,8 @@ def review_create_project(
                 committers[p.key] = cm.stdout
         spec = _review_call(project_review.make_spec, ws, pins, ranges=ranges, committers=committers)
     except (ValueError, ws_snap.WorkspaceSnapshotError) as exc:
+        if _JSON_REFUSALS.get():
+            _refuse_json("create_project_refused", str(exc), 2)
         typer.echo(f"refused: {exc}", err=True)
         raise typer.Exit(code=2)
     if json_output:
@@ -5457,6 +5459,8 @@ def review_open_gr(
     # pre-existing non-empty dir rather than write a lane into someone's files and
     # let teardown remove them. An absent or empty dir is fine (open-gr fills it).
     if root.exists() and any(root.iterdir()):
+        if _JSON_REFUSALS.get():
+            _refuse_json("lane_dir_not_empty", f"--lane-dir {root} exists and is not empty; pass a fresh directory", 2)
         typer.echo(
             f"refused: lane_dir_not_empty: --lane-dir {root} exists and is not empty; "
             "pass a fresh directory (`review close` reclaims the whole lane)",

@@ -44,13 +44,17 @@ def _has_stook(d: Path) -> bool:
 
 
 def _has_griplink_gitlink(d: Path) -> bool:
-    listed = gitops.run(d, "ls-tree", "-r", "-z", "HEAD")
+    """HEAD holds a top-level <m>.griplink tree whose 001.2_pin is a gitlink. Reads the top level only, so an
+    ordinary repo of any size costs one short listing."""
+    listed = gitops.run(d, "ls-tree", "-z", "HEAD")
     if listed.returncode:
         return False
     for entry in listed.stdout.split("\0"):
-        meta, _, path = entry.partition("\t")
-        if meta.startswith("160000 ") and path.endswith(f".griplink/{griplink.PIN}"):
-            return True
+        meta, _, name = entry.partition("\t")
+        if meta.split(" ")[1:2] == ["tree"] and name.endswith(".griplink"):
+            pin = gitops.run(d, "ls-tree", "HEAD", "--", f"{name}/{griplink.PIN}")
+            if pin.returncode == 0 and pin.stdout.startswith("160000 "):
+                return True
     return False
 
 

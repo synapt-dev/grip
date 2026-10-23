@@ -175,6 +175,11 @@ def test_a_store_root_runs_the_store_engine_and_refuses_full_mode_only_verbs(tmp
     assert "#" not in r.stderr and "m_" not in r.stderr  # no card number or post id in public text
     r = gr2(store, monkeypatch, "push")
     assert r.exit_code == 4 and "gr2 store push" in r.stderr
+    r = gr2(store, monkeypatch, "add", str(url), "web")  # the store engine clones and records a second member
+    assert r.exit_code == 0, r.stderr
+    assert (store / "web" / "f").read_text() == "x\n"
+    r = gr2(store, monkeypatch, "checkout")  # the store engine's materialize
+    assert r.exit_code == 0, r.stderr
 
 
 def test_outside_any_root_commit_is_the_one_repo_commit(tmp_path, monkeypatch):

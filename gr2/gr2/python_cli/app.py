@@ -2640,7 +2640,7 @@ def _root_add(root, args: list[str]) -> None:
     if root.shape == root_verbs.STORE:
         from .grip_cli import grip_add_cmd
 
-        grip_add_cmd(value=f"{name}={url}", ref=None, root=root.path, json_output=False)
+        grip_add_cmd(value=f"{name}={url}", ref=None, root=root.path)
         return
     shadow = _griplink_call(root, "add", griplink_mod().add, name, url)
     typer.echo(f"added {name} at {url}; shadow {shadow}")

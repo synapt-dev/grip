@@ -2529,7 +2529,7 @@ def _griplink_call(root, verb: str, fn, *args, needs_stook: bool = True, **kwarg
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=exc.code) from exc
     except gitops.GitError as exc:
-        first = next((ln for ln in exc.stderr.splitlines() if ln.strip()), "").strip() or str(exc)
+        first = next((ln for ln in str(exc).splitlines() if ln.strip()), "").strip()  # str(exc) masks credentials
         typer.echo(f"gr2 {verb}: git failed: {first}; nothing past that step was written", err=True)
         raise typer.Exit(code=3) from exc
 
@@ -2655,8 +2655,8 @@ def _refuse_add_of_a_path_inside(root, arg: str) -> None:
             checkout = shown = root.path / member
     rel = target.relative_to(checkout).as_posix() if checkout in (target, *target.parents) else "."
     typer.echo(f"gr2 add: {next_steps._shown(arg)} is a path inside this workspace; to stage it: "
-               f"git -C {next_steps._shown(str(shown))} add {next_steps._shown(rel)}. gr2 add at a workspace root "
-               "takes the url of a new member; nothing was changed", err=True)
+               f"git -C {next_steps._shown(str(shown))} add {next_steps._shown(rel)}; gr2 add at a workspace root "
+               "takes the url of a new member, and nothing was changed", err=True)
     raise typer.Exit(code=2)
 
 

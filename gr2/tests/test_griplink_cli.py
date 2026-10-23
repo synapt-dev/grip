@@ -263,7 +263,7 @@ def test_add_of_a_git_directory_under_the_root_refuses_and_names_git_add(world, 
     r = gr2(root, monkeypatch, "add", "tools")
     assert r.exit_code == 2, (r.exit_code, r.stderr)
     assert r.stderr.startswith(f"gr2 add: tools is a path inside this workspace; to stage it: git -C {root} add "
-                               "tools."), r.stderr
+                               "tools; "), r.stderr
     assert not (root / "tools.griplink").exists()
     assert _root_state(root) == before
 
@@ -273,7 +273,7 @@ def test_add_of_a_file_inside_a_member_refuses_naming_that_member(world, monkeyp
     before = _root_state(root)
     r = gr2(root, monkeypatch, "add", "api/a.txt")
     assert r.exit_code == 2, (r.exit_code, r.stderr)
-    assert f"to stage it: git -C {root / 'api'} add a.txt." in r.stderr, r.stderr
+    assert f"to stage it: git -C {root / 'api'} add a.txt; " in r.stderr, r.stderr
     assert _root_state(root) == before
 
 
@@ -283,3 +283,28 @@ def test_add_of_a_local_repository_outside_the_root_still_adds(world, monkeypatc
     r = gr2(root, monkeypatch, "add", str(other), "api2")
     assert r.exit_code == 0, r.stderr
     assert git(root, "ls-tree", "HEAD", "api2.griplink/001.2_pin").startswith("160000 commit ")
+
+
+def test_add_of_the_member_checkout_itself_prints_a_command_that_stages_that_checkout(world, monkeypatch):
+    import shlex
+
+    root = world["root"]
+    r = gr2(root, monkeypatch, "add", "api")
+    assert r.exit_code == 2, (r.exit_code, r.stderr)
+    command = r.stderr.split("to stage it: ", 1)[1].split(";", 1)[0]
+    assert shlex.split(command) == ["git", "-C", str(root / "api"), "add", "."], command
+
+
+def test_a_git_failure_line_masks_a_credential_git_echoed(world, monkeypatch):
+    from gr2.python_cli import gitops
+
+    secret = "s3cr3tpassw0rd"
+
+    def failing_out(repo, *args, **kwargs):
+        raise gitops.GitError(tuple(args), 128, f"fatal: unable to access 'https://alice:{secret}@example.invalid/x.git/'",
+                              frozenset({secret}))
+
+    monkeypatch.setattr(gitops, "out", failing_out)
+    r = gr2(world["root"], monkeypatch, "add", f"https://alice:{secret}@example.invalid/x.git", "x")
+    assert r.exit_code == 3, (r.exit_code, r.stderr)
+    assert r.stderr.startswith("gr2 add: git failed: ") and secret not in r.stdout + r.stderr, r.stderr

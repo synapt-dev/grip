@@ -109,7 +109,7 @@ def _publish_feature_moved(workspace: str, clone: str, remote: str, observed: st
 # The `next` of each refusal a bare `review publish` raises, keyed by refusal: (workspace, review, member key, clone,
 # remote, observed) -> the next command. None is deliberate: no command is safe to print, so the human lines say what to
 # check instead (PUBLISH_REFUSED_CHECK). Every refusal a publish raises has a key here and a check where its key
-# is None, except local_path_remote: its detail names the fix, and it prints next: null and no check line yet.
+# is None.
 PUBLISH_REFUSED_NEXT = {
     "unresolved_merge": lambda ws, rid, key, clone, remote, seen: _publish_unresolved_merge(ws, rid, clone),
     "no_branch": None,
@@ -123,6 +123,7 @@ PUBLISH_REFUSED_NEXT = {
     "remote_credentials": None,
     "visibility_mismatch": None,
     "lane_ambiguous": None,
+    "local_path_remote": None,
 }
 # A `next` runs as printed, so it never carries a `<placeholder>`: a value the review does not record is a check.
 # A check is a line, or (clone) -> the line where the clone's path is known.
@@ -140,21 +141,30 @@ PUBLISH_REFUSED_CHECK = {
     "visibility_mismatch": ("check: a member with no declared visibility must declare one (gr2 review pin --visibility "
                             "<key>=public|private); a private member can go only to a private or host-local remote "
                             "(gr2 review publish --remote <path>); then rerun"),
+    "local_path_remote": ("check: the member's recorded remote is a path on this host, so its review stays here; "
+                          "publish to a local destination instead: gr2 review publish <workspace> <review> --remote "
+                          "<absolute path>, or pin again from a clone whose remote is a network URL (https or ssh) "
+                          "on another host"),
     "lane_ambiguous": ("check: which units have a lane entered (gr2 lane list <workspace>); exit all but the one under "
                        "review (gr2 lane exit <workspace> <unit>), then rerun gr2 review publish"),
 }
 
 
 def _publish_refused_next(workspace: str, review: str, refusal: str, key: str, clone: str, remote: str,
-                         observed: str, visibility: dict[str, str] | None = None) -> str | None:
+                         observed: str, visibility: dict[str, str] | None = None,
+                         destination: str | None = None) -> str | None:
     """`visibility` is each member's declared visibility in the refused review: a printed repin carries it as
-    --visibility, else the new review declares none and publish refuses it visibility_mismatch."""
+    --visibility, else the new review declares none and publish refuses it visibility_mismatch. `destination` is the
+    --remote of the refused publish: a printed publish rerun carries it, else the rerun is the bare form."""
     build = PUBLISH_REFUSED_NEXT.get(refusal)
     line = build(workspace, review, key, clone, remote, observed) if build else None
     if line and line.startswith("gr2 review pin ") and visibility:
         pin, sep, rest = line.partition("   # ")
         flags = " ".join(f"--visibility {_shown(f'{k}={v}')}" for k, v in sorted(visibility.items()))
         line = f"{pin} {flags}{sep}{rest}"
+    if line and line.startswith("gr2 review publish ") and destination is not None:
+        run, sep, rest = line.partition("   # ")
+        line = f"{run} --remote {_shown(destination)}{sep}{rest}"
     return line
 
 

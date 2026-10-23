@@ -5768,6 +5768,43 @@ def review_run(
         raise typer.Exit(code=1)
 
 
+def _publish_refused(ws: Path, commit: str, ref: str | None, exc: BaseException,
+                     destination: str | None = None) -> NoReturn:
+    """A refused `review publish`, either form: the receipt on stdout; the refused: line, then the next command or
+    the check line, on stderr. With `destination` (the --remote form) a printed publish rerun carries --remote."""
+    refused = (f"{exc.refusal}: {exc.expected}: {exc.observed}" if isinstance(exc, grip.GripReviewRefused)
+               else str(exc))
+    review_id = commit if commit.startswith("gr:") else f"gr:{commit}"
+    nxt = check = None
+    if isinstance(exc, grip.GripReviewRefused):
+        shown = grip.show_review_commit(ws, review_id[3:], visibility=True)["members"]
+        hit = [m for m in shown if m["key"] == exc.expected]
+        try:
+            roots = commit_ops.entered_member_roots(ws)
+        except commit_ops.LaneAmbiguous:
+            roots = {}
+        clone = str(roots.get(exc.expected, f"{str(ws).rstrip('/')}/{hit[0]['path']}" if hit else str(ws)))
+        try:
+            declared, unread = _repin_visibility(ws, shown), None
+        except _RepinRowsUnread as why:
+            declared, unread = {}, str(why)
+        nxt = next_steps._publish_refused_next(str(ws), review_id, exc.refusal, exc.expected, clone,
+                                              hit[0]["remote"] if hit else "", exc.observed, declared, destination)
+        if nxt and unread is not None and "review pin" in nxt:
+            nxt += f"; carries no --visibility: review pin could not read this workspace's rows ({unread})"
+        check = next_steps._publish_refused_check(exc.refusal, clone)
+    typer.echo(json.dumps({"id": review_id, "ref": ref,
+                           "complete": False, "exit": grip.PUBLISH_EXIT_REFUSED, "members": [], "remotes": [],
+                           "refused": refused, "next": nxt, "check": check}))
+    typer.echo(f"refused: {refused} (nothing left this host)", err=True)
+    if nxt:
+        typer.echo(f"next: {nxt}", err=True)
+    if check:
+        typer.echo(check, err=True)
+    _echo_notes(exc)
+    raise typer.Exit(grip.PUBLISH_EXIT_REFUSED)
+
+
 @review_app.command("publish", cls=ReviewTargetCommand)
 def review_publish(
     workspace_root: Path,
@@ -5785,43 +5822,18 @@ def review_publish(
     3 a failure that landed nothing, 4 partial: rerun the same command to resume."""
     ws = workspace_root.resolve()
     if remote is not None:
-        result = _review_call(grip.publish_review_commit, ws, commit, remote, ref)
+        try:
+            result = grip.publish_review_commit(ws, commit, remote, ref)
+        except grip.GripReviewRefused as exc:
+            _publish_refused(ws, commit, ref, exc, remote)
+        except _REVIEW_REFUSALS as exc:
+            _refuse_text(exc)
         typer.echo(json.dumps(result))
         return
     try:
         code, receipt = grip.publish_review_all(ws, commit, ref)
     except (grip.GripReviewRefused, grip.GripCorruptError, grip.ReviewStoreAbsent, grip.GripInitError) as exc:
-        refused = (f"{exc.refusal}: {exc.expected}: {exc.observed}" if isinstance(exc, grip.GripReviewRefused)
-                   else str(exc))
-        review_id = commit if commit.startswith("gr:") else f"gr:{commit}"
-        nxt = check = None
-        if isinstance(exc, grip.GripReviewRefused):
-            shown = grip.show_review_commit(ws, review_id[3:], visibility=True)["members"]
-            hit = [m for m in shown if m["key"] == exc.expected]
-            try:
-                roots = commit_ops.entered_member_roots(ws)
-            except commit_ops.LaneAmbiguous:
-                roots = {}
-            clone = str(roots.get(exc.expected, f"{str(ws).rstrip('/')}/{hit[0]['path']}" if hit else str(ws)))
-            try:
-                declared, unread = _repin_visibility(ws, shown), None
-            except _RepinRowsUnread as why:
-                declared, unread = {}, str(why)
-            nxt = next_steps._publish_refused_next(str(ws), review_id, exc.refusal, exc.expected, clone,
-                                                  hit[0]["remote"] if hit else "", exc.observed, declared)
-            if nxt and unread is not None and "review pin" in nxt:
-                nxt += f"; carries no --visibility: review pin could not read this workspace's rows ({unread})"
-            check = next_steps._publish_refused_check(exc.refusal, clone)
-        typer.echo(json.dumps({"id": review_id, "ref": ref,
-                               "complete": False, "exit": grip.PUBLISH_EXIT_REFUSED, "members": [], "remotes": [],
-                               "refused": refused, "next": nxt}))
-        typer.echo(f"refused: {refused} (nothing left this host)", err=True)
-        if nxt:
-            typer.echo(f"next: {nxt}", err=True)
-        if check:
-            typer.echo(check, err=True)
-        _echo_notes(exc)
-        raise typer.Exit(grip.PUBLISH_EXIT_REFUSED)
+        _publish_refused(ws, commit, ref, exc)
     typer.echo(json.dumps(receipt))
     _publish_lines(receipt)
     if code:

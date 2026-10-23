@@ -59,6 +59,18 @@ def test_close_outside_any_lane_is_a_json_no_review_context(tmp_path: Path, monk
     _one_refusal(code, out, "no_review_context")
 
 
+def test_close_gr_on_a_lane_with_no_allocation_is_one_json_open_refused(tmp_path: Path) -> None:
+    code, out, err = _run("review", "close-gr", str(tmp_path), "--json")
+    assert (code, err) == (2, ""), out + err
+    assert "no owning workspace allocation" in _one_refusal(code, out, "open_refused")["message"]
+
+
+def test_close_gr_text_refusal_is_unchanged(tmp_path: Path) -> None:
+    code, out, err = _run("review", "close-gr", str(tmp_path))
+    assert (code, out) == (2, ""), out + err
+    assert err.startswith("refused: review has no owning workspace allocation"), err
+
+
 def test_repin_missing_its_required_options_is_a_json_usage_refusal(tmp_path: Path) -> None:
     code, out, err = _run("review", "repin", str(tmp_path), "--json")
     assert code == 2, out + err

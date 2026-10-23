@@ -4807,7 +4807,7 @@ def pr_create(
         typer.echo(json.dumps(payload, indent=2))
 
 
-@review_app.command("create-project", hidden=True, cls=RootOptionalCommand)
+@review_app.command("create-project", hidden=True, cls=json_refusing(RootOptionalCommand))
 def review_create_project(
     workspace_root: Path,
     owner_unit: str = typer.Argument(..., help="Owner unit whose materialized lane to pin"),
@@ -4878,7 +4878,7 @@ def review_create_project(
             typer.echo(f"  {p.key}: {p.base[:12]}..{p.head[:12]} {p.repo}")
 
 
-@review_app.command("open-project", hidden=True, cls=RootOptionalCommand)  # hidden alias for one release, dropped at 2.0 GA
+@review_app.command("open-project", hidden=True, cls=json_refusing(RootOptionalCommand))  # hidden alias for one release, dropped at 2.0 GA
 def review_open_project(
     workspace_root: Path,
     commit: str = typer.Argument(..., help="The project-review-KIND gr commit (gr:<sha> or bare sha); create one with `review create-project`"),
@@ -4962,7 +4962,8 @@ def review_exit_gr(
     try:
         actor_item = ctx_mod.resolve_actor(actor)
     except ctx_mod.ActorRefused as exc:
-        if _JSON_REFUSALS.get(): _refuse_json("actor_refused", str(exc), 4)
+        if _JSON_REFUSALS.get():
+            _refuse_json("actor_refused", str(exc), 4)
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=4)
     ctx_mod.announce({"actor": actor_item}, root=None, quiet=ctx_mod.quiet_from_env())
@@ -5432,7 +5433,7 @@ def _emit_review_opened(workspace_root: Path, sha: str, lane_dir: Path, results:
     )
 
 
-@review_app.command("open-gr", hidden=True, cls=RootOptionalCommand)  # hidden alias for one release, dropped at 2.0 GA
+@review_app.command("open-gr", hidden=True, cls=json_refusing(RootOptionalCommand))  # hidden alias for one release, dropped at 2.0 GA
 def review_open_gr(
     workspace_root: Path,
     commit: str = typer.Argument(..., help="The pinned review commit, as gr:<sha> or a bare sha"),
@@ -5515,7 +5516,7 @@ def review_open_gr(
         typer.echo(f"source: {result['source']}  profile: {result['profile']}")
 
 
-@review_app.command("close-gr", hidden=True)  # hidden alias for one release, dropped at 2.0 GA
+@review_app.command("close-gr", hidden=True, cls=json_refusing(typer.core.TyperCommand))  # hidden alias for one release, dropped at 2.0 GA
 def review_close_gr(
     lane_dir: Path = typer.Argument(..., help="The review reconstruction lane (the --lane-dir from `review open --enter`) to reclaim"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
@@ -5552,7 +5553,7 @@ def review_close_gr(
                     typer.echo(f"review-run output log kept at {item['log']}")
 
 
-@review_app.command("run")
+@review_app.command("run", cls=json_refusing(typer.core.TyperCommand))
 def review_run(
     lane_dir: Optional[Path] = typer.Argument(None, help="Review reconstruction lane; defaults to the unique enclosing review marker"),
     package: Optional[str] = typer.Option(None, "--package", help="Importable package name that ties the install to the lane (its __file__ must resolve under the lane). Optional if the lane's .review-install declares `package`."),
@@ -5938,7 +5939,7 @@ def _refuse_project_review_verify(workspace: Path, commit: str) -> None:
             f"gr:{project}, kind {grip._PROJECT_REVIEW_SCHEMA}")
 
 
-@review_app.command("list", hidden=True, cls=RootOptionalCommand)
+@review_app.command("list", hidden=True, cls=json_refusing(RootOptionalCommand))
 def review_list(
     workspace_root: Path,
     json_output: bool = typer.Option(False, "--json", help="Accepted for symmetry; the output is JSON either way"),

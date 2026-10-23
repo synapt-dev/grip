@@ -4942,7 +4942,7 @@ def review_open_project(
         raise typer.Exit(code=1)
 
 
-@review_app.command("exit-gr", hidden=True, cls=RootOptionalCommand)  # hidden alias for one release, dropped at 2.0 GA
+@review_app.command("exit-gr", hidden=True, cls=json_refusing(RootOptionalCommand))  # hidden alias for one release, dropped at 2.0 GA
 def review_exit_gr(
     workspace_root: Path,
     owner_unit: str = typer.Argument(..., help="Owner unit whose review lane to exit"),
@@ -4962,6 +4962,7 @@ def review_exit_gr(
     try:
         actor_item = ctx_mod.resolve_actor(actor)
     except ctx_mod.ActorRefused as exc:
+        if _JSON_REFUSALS.get(): _refuse_json("actor_refused", str(exc), 4)
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=4)
     ctx_mod.announce({"actor": actor_item}, root=None, quiet=ctx_mod.quiet_from_env())

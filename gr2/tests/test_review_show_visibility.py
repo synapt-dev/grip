@@ -58,14 +58,18 @@ def test_r4_json_is_additive_over_dev(two_member_ws: Path) -> None:
     dev = os.environ.get("GR2_DEV_TREE")
     if dev:
         env = {**os.environ, "PYTHONPATH": dev}
+        # a -c child puts its cwd first on sys.path; pin it to dev so it cannot import the branch
         proc = subprocess.run([sys.executable, "-c", "from gr2.python_cli.app import app; app()",
                                "review", "show", str(ws), gr_id, "--json"], capture_output=True, text=True, env=env,
-                              stdin=subprocess.DEVNULL)
+                              cwd=dev, stdin=subprocess.DEVNULL)
         assert proc.returncode == 0, proc.stderr
         old = json.loads(proc.stdout)
     else:  # dev's view, rebuilt in-process: the same call show made before the change
         from gr2.python_cli import grip
         old = json.loads(json.dumps(grip.show_review_commit(ws, gr_id.removeprefix("gr:")), default=str))
+        # show adds merge and merge_runs itself; show_review_commit does not return them.
+        # (None, 0) are the never-merged fixture's values: an edit that merges its review must update them.
+        old = {**old, "merge": None, "merge_runs": 0}
     new = json.loads(_cli("review", "show", str(ws), gr_id, "--json")[1])
     for key, value in old.items():
         if key == "members":
@@ -73,8 +77,7 @@ def test_r4_json_is_additive_over_dev(two_member_ws: Path) -> None:
         assert new[key] == value, key
     for before, after in zip(old["members"], new["members"], strict=True):
         for key, value in before.items():
-            if key != "files":
-                assert after[key] == value, key
+            assert after[key] == value, key
 
 
 def test_r5_single_undeclared_member_is_exempt(two_member_ws: Path) -> None:

@@ -1028,7 +1028,7 @@ def list_review_binds(workspace: Path) -> list[tuple[str, str]]:
 
 
 def show_review_commit(workspace: Path, commit: str, *, migrate: bool = True,
-                       facts: BindFacts | None = None) -> dict[str, object]:
+                       facts: BindFacts | None = None, visibility: bool = False) -> dict[str, object]:
     """What a bound review contains, read-only: per member the repository, the commit range (base and head), the
     title and body it was bound with, and the files its range changes. The id is the bind's own, as ``gr:<sha>``
     or a bare sha; a commit that is not a bind is refused the way `verify` refuses it. ``migrate=False`` is
@@ -1049,6 +1049,7 @@ def show_review_commit(workspace: Path, commit: str, *, migrate: bool = True,
             **({"ratified_by": ratified_by[key]} if key in ratified_by else {}),
             **({"at_base": at_base[key]} if key in at_base else {}),
             **({"target": m["target"]} if "target" in m else {}),
+            **({"visibility": m["repo"]["visibility"]} if visibility and m["repo"].get("visibility") else {}),
         } for key, m in sorted(view["members"].items())]}
     if _bind_git(workspace, "show", f"{commit}:.grip/schema").stdout.strip() != _REVIEW_BIND_SCHEMA:
         raise GripCorruptError("not a gr2 pinned review commit")

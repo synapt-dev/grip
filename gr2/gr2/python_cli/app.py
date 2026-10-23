@@ -5191,6 +5191,24 @@ def _parse_visibility_flags(values: list[str]) -> dict[str, str]:
     return declared
 
 
+class _RepinRowsUnread(Exception):
+    """review pin's rows could not be read, so a printed repin cannot carry --visibility."""
+
+
+def _repin_visibility(ws: Path, shown: list[dict]) -> dict[str, str]:
+    """Each refused member's declared visibility, keyed the way `review pin <ws>` keys its rows: by the row
+    review_members.changed_member_rows builds for the member at the same path, so a printed --visibility never
+    names a key pin refuses. A member pin would not pin again is left out."""
+    from . import review_members
+
+    try:
+        rows = review_members.changed_member_rows(Path(ws).resolve()).rows
+    except Exception as exc:  # pin refuses the same workspace; the caller says why the printed repin has no flags
+        raise _RepinRowsUnread(str(exc)) from exc
+    key_by_path = {r["path"]: r["key"] for r in rows}
+    return {key_by_path[m["path"]]: m["visibility"] for m in shown if m.get("visibility") and m["path"] in key_by_path}
+
+
 def _apply_visibility_flags(rows: list[dict], declared: dict[str, str]) -> None:
     """Set each declared member's visibility on its row, before anything is pinned. Refuses a name that is not a row
     being pinned, and a --rows-json row that already carries its own visibility: two declarations for one member
@@ -5775,10 +5793,33 @@ def review_publish(
     except (grip.GripReviewRefused, grip.GripCorruptError, grip.ReviewStoreAbsent, grip.GripInitError) as exc:
         refused = (f"{exc.refusal}: {exc.expected}: {exc.observed}" if isinstance(exc, grip.GripReviewRefused)
                    else str(exc))
-        typer.echo(json.dumps({"id": commit if commit.startswith("gr:") else f"gr:{commit}", "ref": ref,
+        review_id = commit if commit.startswith("gr:") else f"gr:{commit}"
+        nxt = check = None
+        if isinstance(exc, grip.GripReviewRefused):
+            shown = grip.show_review_commit(ws, review_id[3:], visibility=True)["members"]
+            hit = [m for m in shown if m["key"] == exc.expected]
+            try:
+                roots = commit_ops.entered_member_roots(ws)
+            except commit_ops.LaneAmbiguous:
+                roots = {}
+            clone = str(roots.get(exc.expected, f"{str(ws).rstrip('/')}/{hit[0]['path']}" if hit else str(ws)))
+            try:
+                declared, unread = _repin_visibility(ws, shown), None
+            except _RepinRowsUnread as why:
+                declared, unread = {}, str(why)
+            nxt = next_steps._publish_refused_next(str(ws), review_id, exc.refusal, exc.expected, clone,
+                                                  hit[0]["remote"] if hit else "", exc.observed, declared)
+            if nxt and unread is not None and "review pin" in nxt:
+                nxt += f"; carries no --visibility: review pin could not read this workspace's rows ({unread})"
+            check = next_steps._publish_refused_check(exc.refusal, clone)
+        typer.echo(json.dumps({"id": review_id, "ref": ref,
                                "complete": False, "exit": grip.PUBLISH_EXIT_REFUSED, "members": [], "remotes": [],
-                               "refused": refused, "next": None}))
+                               "refused": refused, "next": nxt}))
         typer.echo(f"refused: {refused} (nothing left this host)", err=True)
+        if nxt:
+            typer.echo(f"next: {nxt}", err=True)
+        if check:
+            typer.echo(check, err=True)
         _echo_notes(exc)
         raise typer.Exit(grip.PUBLISH_EXIT_REFUSED)
     typer.echo(json.dumps(receipt))

@@ -87,6 +87,74 @@ def _stamp_remote_unreadable(remote: str | None, review: str) -> str:
             f"from this machine, then stamp {_shown(review)} again")
 
 
+def _publish_unresolved_merge(workspace: str, review: str, clone: str) -> str:
+    """The `next` of a bare `review publish` refused because a member clone is mid-merge. Not update's line: a merge
+    commit moves HEAD past the pin (publish then refuses head_moved_since_pin), so the publish rerun follows an abort."""
+    return (f"gr2 review publish {_shown(workspace)} {_shown(review)}   # after git -C {_shown(clone)} merge --abort; "
+            f"to keep the merge instead, commit it and run gr2 review update {_shown(workspace)} {_shown(review)}")
+
+
+def _publish_feature_moved(workspace: str, clone: str, remote: str, observed: str) -> str | None:
+    """feature_moved's `next`: pull the remote's commits, then pin again. publish pushes head:refs/heads/<branch>
+    without -u, so the clone usually has no upstream and a bare pull fails; the pull names the member's recorded
+    remote and the branch the refusal observed (`remote <branch> at <sha>`). Neither known: no command is safe."""
+    seen = re.fullmatch(r"remote (\S+) at (\S+)", observed)
+    if not seen or not remote:
+        return None
+    return (f"gr2 review pin {_shown(workspace)}   # after git -C {_shown(clone)} pull --no-rebase {_shown(remote)} "
+            f"{_shown(seen.group(1))}; publish the new gr: id (the remote's {_escaped(seen.group(1))} is at "
+            f"{_escaped(seen.group(2))})")
+
+
+# The `next` of each refusal a bare `review publish` raises, keyed by refusal: (workspace, review, member key, clone,
+# remote, observed) -> the next command. None is deliberate: no command is safe to print, so the human lines say what to
+# check instead (PUBLISH_REFUSED_CHECK). A refusal in neither table prints next: null and nothing to check.
+PUBLISH_REFUSED_NEXT = {
+    "unresolved_merge": lambda ws, rid, key, clone, remote, seen: _publish_unresolved_merge(ws, rid, clone),
+    "no_branch": None,
+    "head_moved_since_pin": lambda ws, rid, key, clone, remote, seen: (
+        f"gr2 review pin {_shown(ws)}   # pins the clones' current heads as a new review; publish that gr: id. "
+        f"To publish {_shown(rid)} instead, move {_shown(clone)} back to the pinned commit"),
+    "member_clone_missing": None,
+    "review_remote_required": None,
+    "feature_moved": lambda ws, rid, key, clone, remote, seen: _publish_feature_moved(ws, clone, remote, seen),
+    "remote_unreadable": None,
+    "remote_credentials": None,
+}
+# A `next` runs as printed, so it never carries a `<placeholder>`: a value the review does not record is a check.
+# A check is a line, or (clone) -> the line where the clone's path is known.
+PUBLISH_REFUSED_CHECK = {
+    "no_branch": lambda clone: ("check: name a branch for the pinned commit (the review records the base it targets, "
+                                f"not the feature branch): git -C {_shown(clone)} switch -c <branch>, then rerun gr2 "
+                                "review publish"),
+    "member_clone_missing": ("check: the clone named in refused: is gone, and with it any head not yet pushed; restore "
+                             "it at that path with the pinned head (gr2 review show prints it) on a branch, then "
+                             "rerun gr2 review publish"),
+    "review_remote_required": ("check: pass --remote <https url of the review remote>; the member's recorded remote "
+                               "is neither HTTPS nor an absolute path, and --remote sends the review ref only"),
+    "remote_unreadable": "check: the member's recorded remote URL, the network, and your access to it; then rerun",
+    "remote_credentials": "check: the recorded remote carries a credential; pin again from a clone whose remote has none",
+}
+
+
+def _publish_refused_next(workspace: str, review: str, refusal: str, key: str, clone: str, remote: str,
+                         observed: str, visibility: dict[str, str] | None = None) -> str | None:
+    """`visibility` is each member's declared visibility in the refused review: a printed repin carries it as
+    --visibility, else the new review declares none and publish refuses it visibility_mismatch."""
+    build = PUBLISH_REFUSED_NEXT.get(refusal)
+    line = build(workspace, review, key, clone, remote, observed) if build else None
+    if line and line.startswith("gr2 review pin ") and visibility:
+        pin, sep, rest = line.partition("   # ")
+        flags = " ".join(f"--visibility {_shown(f'{k}={v}')}" for k, v in sorted(visibility.items()))
+        line = f"{pin} {flags}{sep}{rest}"
+    return line
+
+
+def _publish_refused_check(refusal: str, clone: str) -> str | None:
+    check = PUBLISH_REFUSED_CHECK.get(refusal)
+    return check(clone) if callable(check) else check
+
+
 def _update_lines(workspace: str, receipt: dict) -> list[str]:
     # Private: `review update` prints its refusal inside its JSON receipt, not as a `refused: <code>` line.
     lines, rid, new = [], receipt.get("review") or "<review>", receipt.get("new_review")

@@ -5191,6 +5191,20 @@ def _parse_visibility_flags(values: list[str]) -> dict[str, str]:
     return declared
 
 
+def _repin_visibility(ws: Path, shown: list[dict]) -> dict[str, str]:
+    """Each refused member's declared visibility, keyed the way `review pin <ws>` keys its rows: by the row
+    review_members.changed_member_rows builds for the member at the same path, so a printed --visibility never
+    names a key pin refuses. A member pin would not pin again is left out."""
+    from . import review_members
+
+    try:
+        rows = review_members.changed_member_rows(Path(ws).resolve()).rows
+    except Exception:  # pin refuses the same workspace and names why; the printed repin carries no flags
+        return {}
+    key_by_path = {r["path"]: r["key"] for r in rows}
+    return {key_by_path[m["path"]]: m["visibility"] for m in shown if m.get("visibility") and m["path"] in key_by_path}
+
+
 def _apply_visibility_flags(rows: list[dict], declared: dict[str, str]) -> None:
     """Set each declared member's visibility on its row, before anything is pinned. Refuses a name that is not a row
     being pinned, and a --rows-json row that already carries its own visibility: two declarations for one member
@@ -5778,12 +5792,12 @@ def review_publish(
         review_id = commit if commit.startswith("gr:") else f"gr:{commit}"
         nxt = check = None
         if isinstance(exc, grip.GripReviewRefused):
-            shown = grip.show_review_commit(ws, review_id[3:])["members"]
+            shown = grip.show_review_commit(ws, review_id[3:], visibility=True)["members"]
             hit = [m for m in shown if m["key"] == exc.expected]
             clone = f"{str(ws).rstrip('/')}/{hit[0]['path']}" if hit else str(ws)
             nxt = next_steps._publish_refused_next(str(ws), review_id, exc.refusal, exc.expected, clone,
                                                   hit[0]["remote"] if hit else "", exc.observed,
-                                                  {m["key"]: m["visibility"] for m in shown if m.get("visibility")})
+                                                  _repin_visibility(ws, shown))
             check = next_steps._publish_refused_check(exc.refusal, clone)
         typer.echo(json.dumps({"id": review_id, "ref": ref,
                                "complete": False, "exit": grip.PUBLISH_EXIT_REFUSED, "members": [], "remotes": [],

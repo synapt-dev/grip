@@ -117,7 +117,9 @@ def run_set_check(workspace: Path, review_id: str, name: str, argv: Sequence[str
         verified = grip.verify_review_commit(workspace, review_id)
         if verified.get("tree_matches") is not True:
             raise check_records.CheckRefused("bind_verification_failed: stored tree does not match")
-        view = grip.show_review_commit(workspace, review_id)
+        # resolved once: every read below (per member too) reuses the bind's id, tree and layout
+        facts = grip.bind_facts(workspace, review_id)
+        view = grip.show_review_commit(workspace, review_id, facts=facts)
     except (grip.GripInitError, grip.GripCorruptError, grip.GripReviewRefused, RuntimeError, OSError, ValueError,
             KeyError, subprocess.SubprocessError) as exc:
         raise check_records.CheckRefused(f"bind_unreadable: {type(exc).__name__}: {exc}") from exc
@@ -148,7 +150,7 @@ def run_set_check(workspace: Path, review_id: str, name: str, argv: Sequence[str
         repos[m["key"]] = repo
     sid = set_id(members)
     try:
-        grip.require_reconstructable(workspace, review_id, keys)
+        grip.require_reconstructable(workspace, review_id, keys, facts=facts)
     except grip.GripReviewRefused as exc:
         raise check_records.CheckRefused(f"set_not_reconstructable: {exc}") from exc
 
@@ -158,7 +160,7 @@ def run_set_check(workspace: Path, review_id: str, name: str, argv: Sequence[str
         reproduced: dict[str, str] = {}
         for key in keys:
             try:
-                res = grip.reconstruct_review_lane(workspace, review_id, key, lane / key)
+                res = grip.reconstruct_review_lane(workspace, review_id, key, lane / key, facts=facts)
             except grip.GripReviewRefused as exc:
                 raise check_records.CheckRefused(f"set_not_reconstructable: {key}: {exc}") from exc
             before[key] = res["reconstructed_head"]

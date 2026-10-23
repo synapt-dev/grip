@@ -9,6 +9,7 @@ import os
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import NamedTuple
 import re
 import ipaddress
 import unicodedata
@@ -1026,15 +1027,17 @@ def list_review_binds(workspace: Path) -> list[tuple[str, str]]:
     return sorted(rows.items(), key=lambda r: (r[1], r[0]))
 
 
-def show_review_commit(workspace: Path, commit: str, *, migrate: bool = True) -> dict[str, object]:
+def show_review_commit(workspace: Path, commit: str, *, migrate: bool = True,
+                       facts: BindFacts | None = None) -> dict[str, object]:
     """What a bound review contains, read-only: per member the repository, the commit range (base and head), the
     title and body it was bound with, and the files its range changes. The id is the bind's own, as ``gr:<sha>``
     or a bare sha; a commit that is not a bind is refused the way `verify` refuses it. ``migrate=False`` is
-    receive's read (see `_validate_bind_store`)."""
+    receive's read (see `_validate_bind_store`). ``facts`` (see `bind_facts`) skips re-reading what a caller
+    already resolved."""
     _validate_bind_store(workspace, migrate=migrate)
-    commit = _resolve_bound(workspace, commit)
-    if _is_field_tree_bind(workspace, commit):
-        view = _field_tree_view(workspace, commit)
+    commit = facts.commit if facts is not None else _resolve_bound(workspace, commit)
+    if _is_field_tree_bind(workspace, commit, facts):
+        view = _field_tree_view(workspace, commit, facts)
         pushed = _pushed_before_pin(workspace, commit)
         ratified_by = _bind_trailers(workspace, commit, _RATIFIED_BY)
         at_base = _bind_trailers(workspace, commit, _AT_BASE)
@@ -1224,9 +1227,25 @@ def member_key_fold(key: str) -> str:
     return unicodedata.normalize("NFD", unicodedata.normalize("NFD", key).casefold())
 
 
-def _is_field_tree_bind(workspace: Path, commit: str) -> bool:
+class BindFacts(NamedTuple):
+    """A bound review's full id, tree and layout, resolved once by `bind_facts` for a caller that reads the same
+    bind many times (a check over a set reads it per member)."""
+    commit: str
+    tree: str
+    field_tree: bool
+
+
+def bind_facts(workspace: Path, commit: str) -> BindFacts:
+    full = _resolve_bound(workspace, commit)
+    tree = _bind_git(workspace, "rev-parse", f"{full}^{{tree}}").stdout.strip()
+    return BindFacts(full, tree, _is_field_tree_bind(workspace, full))
+
+
+def _is_field_tree_bind(workspace: Path, commit: str, facts: BindFacts | None = None) -> bool:
     """A bound commit whose tree has no `.grip` entry is read as a field tree, so a malformed record is
     refused for what is wrong with it rather than as "not a bind"."""
+    if facts is not None and facts.commit == commit:
+        return facts.field_tree
     names = _bind_root_names(workspace, commit)
     return bool(names) and GRIP_DIR not in names
 
@@ -1246,13 +1265,16 @@ def _text(value: object) -> str:
 _FIELD_TREE_VIEWS: dict[tuple[str, str], dict[str, object]] = {}
 
 
-def _field_tree_view(workspace: Path, commit: str) -> dict[str, object]:
+def _field_tree_view(workspace: Path, commit: str, facts: BindFacts | None = None) -> dict[str, object]:
     """A field tree bind, verified AS WRITTEN and decoded by field number, in the shape the readers use:
     per member its repository row, observed remote head, texts, carried objects (None when the bind
     carried no range) and evidence (None when absent). Nothing is rebuilt and compared. A tree is
     content-addressed, so its checked view is kept per store and tree."""
     repo = _bind_dir(workspace)
-    tree = _bind_git(workspace, "rev-parse", f"{commit}^{{tree}}").stdout.strip()
+    if facts is not None and facts.commit == commit:
+        tree = facts.tree
+    else:
+        tree = _bind_git(workspace, "rev-parse", f"{commit}^{{tree}}").stdout.strip()
     cached = _FIELD_TREE_VIEWS.get((str(repo), tree))
     if cached is not None:
         return cached
@@ -1331,31 +1353,33 @@ def _decode_field_tree(repo: Path, tree: str) -> dict[str, object]:
             **({"author": record["author"]} if "author" in record else {})}
 
 
-def _carried(workspace: Path, commit: str, key: str, group: str, name: str) -> str | None:
+def _carried(workspace: Path, commit: str, key: str, group: str, name: str,
+             facts: BindFacts | None = None) -> str | None:
     """One carried value of a member (group "objects" or "evidence"), in either layout; None if absent."""
-    if _is_field_tree_bind(workspace, commit):
-        member = _field_tree_view(workspace, commit)["members"].get(key)
+    if _is_field_tree_bind(workspace, commit, facts):
+        member = _field_tree_view(workspace, commit, facts)["members"].get(key)
         values = None if member is None else member[group]
         return None if values is None else values.get(name)
     proc = _bind_git(workspace, "show", f"{commit}:{group}/{key}/{name}")
     return proc.stdout if proc.returncode == 0 else None
 
 
-def _carries_objects(workspace: Path, commit: str, key: str) -> bool:
-    if _is_field_tree_bind(workspace, commit):
-        member = _field_tree_view(workspace, commit)["members"].get(key)
+def _carries_objects(workspace: Path, commit: str, key: str, facts: BindFacts | None = None) -> bool:
+    if _is_field_tree_bind(workspace, commit, facts):
+        member = _field_tree_view(workspace, commit, facts)["members"].get(key)
         objects = None if member is None else member["objects"]
         # Reconstruction needs the range and the tree it must produce; metadata alone is not a range.
         return objects is not None and bool(objects["range.patch"]) and bool(objects["head-tree"])
     return key in _tree_keys(workspace, commit, "objects")
 
 
-def require_reconstructable(workspace: Path, commit: str, keys: list[str]) -> None:
+def require_reconstructable(workspace: Path, commit: str, keys: list[str], *,
+                            facts: BindFacts | None = None) -> None:
     """Before a multi-member open reconstructs anything: every member carries a range and its tree.
     Pure reads, so a refusal leaves no member cloned."""
-    commit = _resolve_bound(workspace, commit)
+    commit = facts.commit if facts is not None else _resolve_bound(workspace, commit)
     for key in keys:
-        if not _carries_objects(workspace, commit, key):
+        if not _carries_objects(workspace, commit, key, facts):
             raise GripReviewRefused("row_carries_no_objects", key, "reconstruction needs a carried range")
 
 
@@ -1593,7 +1617,8 @@ def _reader_clone(remote: str, base: str, range_text: str, lane_dir: Path) -> di
 
 
 def reconstruct_review_lane(
-    workspace: Path, commit: str, key: str, lane_dir: Path, *, reader: bool = False
+    workspace: Path, commit: str, key: str, lane_dir: Path, *, reader: bool = False,
+    facts: BindFacts | None = None,
 ) -> dict[str, str]:
     """Materialize a bound row's head by reconstruction, decision (a).
 
@@ -1612,16 +1637,16 @@ def reconstruct_review_lane(
     ``git am``: tree-faithful, committer re-stamped, so the returned reconstructed_head
     differs from the bound head by design."""
     _validate_bind_store(workspace)
-    commit = _resolve_bound(workspace, commit)
-    if not _carries_objects(workspace, commit, key):
+    commit = facts.commit if facts is not None else _resolve_bound(workspace, commit)
+    if not _carries_objects(workspace, commit, key, facts):
         raise GripReviewRefused("row_carries_no_objects", key, "reconstruction needs a carried range")
-    repo = _read_repo_state(workspace, commit, bind=True)[key]
+    repo = _read_repo_state(workspace, commit, bind=True, facts=facts)[key]
     remote, base, bound_head = repo["remote"], repo["base"], repo["commit"]
     # A received record is checked again before its remote is dialled (a credentialed record must not clone).
     _refuse_remote_credentials(key, remote)
-    head_tree_expected = (_carried(workspace, commit, key, "objects", "head-tree") or "").strip()
-    committers = _carried(workspace, commit, key, "objects", "committers")
-    range_text = _carried(workspace, commit, key, "objects", "range.patch") or ""
+    head_tree_expected = (_carried(workspace, commit, key, "objects", "head-tree", facts) or "").strip()
+    committers = _carried(workspace, commit, key, "objects", "committers", facts)
+    range_text = _carried(workspace, commit, key, "objects", "range.patch", facts) or ""
 
     lane_dir = Path(lane_dir)
     lane_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -2895,11 +2920,12 @@ def grip_diff(workspace: Path, ref_a: str, ref_b: str) -> GripDiff:
     return result
 
 
-def _read_repo_state(workspace: Path, ref: str, *, bind: bool = False) -> dict[str, dict[str, str]]:
+def _read_repo_state(workspace: Path, ref: str, *, bind: bool = False,
+                     facts: BindFacts | None = None) -> dict[str, dict[str, str]]:
     """Read all repo states from a grip commit. ``bind=True`` reads the review store (the root's
     own `.git` on a native root); the default keeps reading the alpha `.grip/.git` snapshot store."""
-    if bind and _is_field_tree_bind(workspace, ref):
-        return {key: dict(m["repo"]) for key, m in _field_tree_view(workspace, ref)["members"].items()}
+    if bind and _is_field_tree_bind(workspace, ref, facts):
+        return {key: dict(m["repo"]) for key, m in _field_tree_view(workspace, ref, facts)["members"].items()}
     _g = _bind_git if bind else _grip_git
     proc = _g(workspace, "ls-tree", "-z", f"{ref}:repos")
     if proc.returncode != 0:

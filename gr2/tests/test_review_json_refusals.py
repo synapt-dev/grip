@@ -4,6 +4,7 @@ printed as text before; the text form is unchanged."""
 
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 
 import pytest
@@ -72,3 +73,27 @@ def test_the_text_forms_are_unchanged(two_member_ws: Path, tmp_path: Path, monke
     code, out, err = _run("review", "close")
     assert (code, out) == (2, ""), out + err
     assert err.startswith("refused: no_review_context: "), err
+
+
+SIX = ("create-project", "open-project", "open-gr", "close-gr", "run", "list")
+
+
+def test_every_review_verb_with_a_json_option_uses_json_refusing() -> None:
+    from gr2.python_cli.app import review_app
+
+    bare = sorted(
+        info.name or info.callback.__name__
+        for info in review_app.registered_commands
+        if "json_output" in inspect.signature(info.callback).parameters
+        and "json_refusing" not in getattr(getattr(info.cls, "parse_args", None), "__qualname__", "")
+    )
+    assert bare == [], bare
+
+
+@pytest.mark.parametrize("verb", SIX)
+def test_an_unknown_option_with_json_is_one_usage_refusal(verb: str) -> None:
+    text_code, _, _ = _run("review", verb, "--no-such-flag")
+    code, out, err = _run("review", verb, "--json", "--no-such-flag")
+    assert code == text_code == 2, out + err
+    assert "Traceback" not in out + err, out + err
+    _one_refusal(code, out, "usage")

@@ -236,9 +236,10 @@ def _root_state(root: Path) -> tuple:
 
 def test_add_whose_clone_fails_refuses_with_gits_line_and_leaves_no_member_dir(world, monkeypatch):
     root = world["root"]
-    (root / "notes.txt").write_text("not a repository\n")
+    notes = world["tmp"] / "notes.txt"  # outside the root, so the clone runs and fails
+    notes.write_text("not a repository\n")
     before = _root_state(root)
-    r = gr2(root, monkeypatch, "add", "notes.txt")
+    r = gr2(root, monkeypatch, "add", str(notes))
     assert r.exit_code == 3, (r.exit_code, r.stderr)
     assert r.stderr.startswith("gr2 add: git failed: ") and "nothing past that step was written" in r.stderr, r.stderr
     assert "Traceback" not in r.stderr + r.stdout
@@ -253,3 +254,32 @@ def test_add_of_an_existing_member_refuses_naming_it_and_changes_nothing(world, 
     assert r.exit_code == 3, (r.exit_code, r.stderr)
     assert r.stderr.startswith("api: api.griplink is already at this root"), r.stderr
     assert _root_state(root) == before
+
+
+def test_add_of_a_git_directory_under_the_root_refuses_and_names_git_add(world, monkeypatch):
+    root = world["root"]
+    git(root, "init", "-q", "tools")  # a git directory under the root, not a member
+    before = _root_state(root)
+    r = gr2(root, monkeypatch, "add", "tools")
+    assert r.exit_code == 2, (r.exit_code, r.stderr)
+    assert r.stderr.startswith(f"gr2 add: tools is a path inside this workspace; to stage it: git -C {root} add "
+                               "tools."), r.stderr
+    assert not (root / "tools.griplink").exists()
+    assert _root_state(root) == before
+
+
+def test_add_of_a_file_inside_a_member_refuses_naming_that_member(world, monkeypatch):
+    root = world["root"]
+    before = _root_state(root)
+    r = gr2(root, monkeypatch, "add", "api/a.txt")
+    assert r.exit_code == 2, (r.exit_code, r.stderr)
+    assert f"to stage it: git -C {root / 'api'} add a.txt." in r.stderr, r.stderr
+    assert _root_state(root) == before
+
+
+def test_add_of_a_local_repository_outside_the_root_still_adds(world, monkeypatch):
+    root = world["root"]
+    other = world["tmp"] / "src-api"  # a local repository outside the root: the control
+    r = gr2(root, monkeypatch, "add", str(other), "api2")
+    assert r.exit_code == 0, r.stderr
+    assert git(root, "ls-tree", "HEAD", "api2.griplink/001.2_pin").startswith("160000 commit ")

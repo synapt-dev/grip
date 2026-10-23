@@ -2631,6 +2631,35 @@ def griplink_mod():
     return griplink
 
 
+def _refuse_add_of_a_path_inside(root, arg: str) -> None:
+    """At a root, `gr2 add <arg>` adds a member by url; an <arg> that is an existing path at or under the root is a
+    staging habit (git add), so it refuses at 2 and names where git add belongs. A url, or a path outside the root,
+    goes on to add."""
+    from . import root_verbs
+
+    try:
+        target = (Path.cwd() / arg).resolve()
+    except (OSError, RuntimeError, ValueError):
+        return
+    if not target.exists() or not (target == root.path or root.path in target.parents):
+        return
+    checkout, shown = root.path, root.path  # where git add belongs: the member checkout holding the path, else the root
+    first = target.relative_to(root.path).parts[:1]
+    if root.shape == root_verbs.GRIPLINK:
+        if first and first[0].endswith(".griplink"):
+            shown = root.path / first[0][: -len(".griplink")]
+            checkout = root.path / first[0] / griplink_mod().PIN
+    else:
+        member = root_verbs._member_of(root.path, target if target.is_dir() else target.parent)
+        if member:
+            checkout = shown = root.path / member
+    rel = target.relative_to(checkout).as_posix() if checkout in (target, *target.parents) else "."
+    typer.echo(f"gr2 add: {next_steps._shown(arg)} is a path inside this workspace; to stage it: "
+               f"git -C {next_steps._shown(str(shown))} add {next_steps._shown(rel)}. gr2 add at a workspace root "
+               "takes the url of a new member; nothing was changed", err=True)
+    raise typer.Exit(code=2)
+
+
 def _root_add(root, args: list[str]) -> None:
     """At a root, `gr2 add <url> [<name>]` clones a new member and records it."""
     from . import root_verbs
@@ -2640,6 +2669,7 @@ def _root_add(root, args: list[str]) -> None:
                    err=True)
         raise typer.Exit(code=2)
     url = args[0]
+    _refuse_add_of_a_path_inside(root, url)
     name = args[1] if len(args) == 2 else _member_name_from_url(url)
     if root.shape == root_verbs.STORE:
         from .grip_cli import grip_add_cmd

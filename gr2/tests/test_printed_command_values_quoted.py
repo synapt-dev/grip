@@ -39,6 +39,8 @@ ALLOWLIST: dict[tuple[str, str], str] = {
         'placeholder: verb is a literal root verb name from the caller (app.py root verbs)',
     ('gr2/python_cli/app.py', 'typer.echo(f"gr2 push at a workspace root is not available yet{hint}", err=True)'):
         'hint is one of two string constants in _root_push, no outside value',
+    ('gr2/python_cli/app.py', 'typer.echo(f"gr2 {verb}: git failed: {first}; nothing past that step was written", err=True)'):
+        'placeholder: verb is a literal root verb name from the caller; first is git\'s own message, not a command value',
     ('gr2/python_cli/root_verbs.py', 'f"gr2 {verb}: this workspace\'s names were not fetched (a plain git clone has main only); run "'):
         'placeholder: verb is a literal root verb name from the caller',
     ('gr2/python_cli/root_verbs.py', 'f"{STOOK_FETCH}, then gr2 {verb} again", 4)'):

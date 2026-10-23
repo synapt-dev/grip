@@ -1327,6 +1327,36 @@ def _write_gitignore(root: Path, members: list[dict[str, str]]) -> None:
     _regenerate_workspace_gitignore(root)
 
 
+def _griplink_init(root: Path, *, member_paths, clone_values, json_output: bool) -> None:
+    """Full mode makes a griplink root (section 13): main and an empty STOOK, then each --clone added as a member.
+    It makes a NEW root: a directory that already holds a git repository, and --member (adopt an existing
+    checkout), are refused at 4; full mode has no adopt step."""
+    from . import griplink
+
+    if member_paths:
+        typer.echo("--member: full mode adds members by url (--clone NAME=URL, or gr2 add <url>); adopting an existing "
+                   "checkout is not a full-mode step", err=True)
+        raise typer.Exit(code=4)
+    if (root / ".git").exists():
+        typer.echo(f"{root} already holds a git repository; full mode makes a new workspace root", err=True)
+        raise typer.Exit(code=4)
+    clones = _parse_clone_values(clone_values) if clone_values else []
+    try:
+        griplink.init(root)
+        for name, url in clones:
+            griplink.add(root, name, url)
+    except griplink.GriplinkRefusal as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=exc.code)
+    except RuntimeError as exc:
+        typer.echo(f"{STORE_INCOMPLETE_PREFIX}{exc}", err=True)
+        raise typer.Exit(code=5)
+    if json_output:
+        typer.echo(json.dumps({"status": "initialized", "path": str(root), "store": "griplink"}))
+    else:
+        typer.echo(f"Initialized full-mode workspace root at {root}")
+
+
 def _parse_clone_values(values: list[str], label: str = "--clone values") -> list[tuple[str, str]]:
     """(name, url) for each `--clone NAME=URL`, or a usage error naming every bad value.
 
@@ -3962,6 +3992,9 @@ def grip_init_cmd(
     if mode is not None and mode not in workspace_mode.MODES:
         typer.echo(f'--mode must be "compat" or "full", got {mode!r}', err=True)
         raise typer.Exit(code=2)
+    if mode == "full":
+        _griplink_init(root, member_paths=member_paths, clone_values=clone_values, json_output=json_output)
+        return
     try:
         clones = _parse_clone_values(clone_values) if clone_values else None
         hook_states = _native_store_init(root, member_paths=member_paths, clones=clones, mode=mode)

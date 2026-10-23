@@ -1948,6 +1948,19 @@ def workspace_status_cmd(
 @app.command("status")
 def status_cmd() -> None:
     """Show branch, upstream, and working-tree status for this workspace."""
+    from . import root_verbs
+
+    root = _root_for("status", "git status")
+    if root is not None:
+        if root.shape == root_verbs.STORE:
+            from .grip_cli import grip_status_cmd
+
+            grip_status_cmd(root=root.path, json_output=False)
+            return
+        found = _griplink_call(root, "status", griplink_mod().status)
+        for line in griplink_mod().status_lines(found):
+            typer.echo(line)
+        return
     # This is intentionally a route, not a second status implementation: the
     # operational status table already belongs to `repo status`.  `workspace
     # status` answers the different question of which workspace layout exists.
@@ -2491,6 +2504,176 @@ def _add_in_lane(paths: list[str], include_bytecode: bool = False) -> None:
         raise typer.Exit(code=1)
 
 
+# ---- root verbs: the engine is chosen by the shape of the nearest root above (root_verbs) ---------------------------
+def _root_for(verb: str, git_word: str):
+    """The root a top-level verb acts on, or None outside any root. A refusal (inside a member, a bad
+    inside_member value) prints and exits with its code."""
+    from . import root_verbs
+
+    try:
+        return root_verbs.resolve(verb, git_word)
+    except root_verbs.RootVerbRefusal as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=exc.code) from exc
+
+
+def _griplink_call(root, verb: str, fn, *args, needs_stook: bool = True, **kwargs):
+    """Run one griplink step on a griplink root; a refusal prints its text and exits with its code."""
+    from . import griplink, root_verbs
+
+    try:
+        if needs_stook:
+            root_verbs.require_stook(root, verb)
+        return fn(root.path, *args, **kwargs)
+    except (griplink.GriplinkRefusal, root_verbs.RootVerbRefusal) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=exc.code) from exc
+
+
+def _griplink_root_or_refuse(verb: str, git_word: str):
+    """A verb only a griplink root has: elsewhere it refuses at 4 (a store root) or 2 (no root)."""
+    from . import root_verbs
+
+    root = _root_for(verb, git_word)
+    if root is None:
+        typer.echo(f"gr2 {verb}: no workspace root at or above {Path.cwd()}", err=True)
+        raise typer.Exit(code=2)
+    if root.shape != root_verbs.GRIPLINK:
+        typer.echo(f"gr2 {verb}: this workspace is in an older shape; {verb} needs the full-mode shape, which "
+                   "migrate brings (migrate is not built yet)", err=True)
+        raise typer.Exit(code=4)
+    return root
+
+
+def _member_name_from_url(url: str) -> str:
+    base = url.rstrip("/").rsplit("/", 1)[-1].rsplit(":", 1)[-1]
+    return base[: -len(".git")] if base.endswith(".git") else base
+
+
+@app.command("checkout", hidden=True)
+def root_checkout_cmd() -> None:
+    """Put each member at its pin with its workspace change applied and staged (full mode). On an older-shape store,
+    `gr2 store materialize` runs."""
+    from . import root_verbs
+
+    root = _root_for("checkout", "git checkout")
+    if root is None:
+        typer.echo(f"gr2 checkout: no workspace root at or above {Path.cwd()}", err=True)
+        raise typer.Exit(code=2)
+    if root.shape == root_verbs.STORE:
+        from .grip_cli import grip_materialize_cmd
+
+        grip_materialize_cmd(root=root.path, json_output=False)
+        return
+    applied = _griplink_call(root, "checkout", griplink_mod().checkout, needs_stook=False)
+    for m, n in applied.items():
+        typer.echo(f"{m}: at its pin, {n} path(s) of its change applied and staged")
+
+
+@app.command("promote", hidden=True)
+def root_promote_cmd(member: str = typer.Argument(..., help="The member whose workspace change becomes a commit")) -> None:
+    """Write a member's workspace change into the member's own git as one commit, and move its pin there."""
+    root = _griplink_root_or_refuse("promote", "git commit")
+    done = _griplink_call(root, "promote", griplink_mod().promote, member)
+    if done["commit"] is None:
+        typer.echo(f"{member}: nothing to promote")
+    else:
+        typer.echo(f"{member}: promoted {done['paths']} path(s) as {done['commit']}; shadow {done['shadow']}")
+
+
+@app.command("pull", hidden=True)
+def root_pull_cmd(remote: str = typer.Option("origin", "--remote", help="The root's remote")) -> None:
+    """Fetch the root's remote and merge its shadow (full mode)."""
+    root = _griplink_root_or_refuse("pull", "git pull")
+    done = _griplink_call(root, "pull", griplink_mod().pull, remote=remote)
+    typer.echo(f"pull: {done['how']}; shadow {done['shadow']}")
+
+
+@app.command("pin", hidden=True)
+def root_pin_cmd(member: str, record_id: Optional[str] = typer.Option(None, "--record")) -> None:
+    """Hold an entry at the sha its branch points at now."""
+    root = _griplink_root_or_refuse("pin", "git checkout --detach")
+    typer.echo(_griplink_call(root, "pin", griplink_mod().pin, member, record_id))
+
+
+@app.command("follow", hidden=True)
+def root_follow_cmd(member: str, record_id: Optional[str] = typer.Option(None, "--record")) -> None:
+    """Make an entry follow its branch again."""
+    root = _griplink_root_or_refuse("follow", "git checkout")
+    typer.echo(_griplink_call(root, "follow", griplink_mod().follow, member, record_id))
+
+
+@app.command("record", hidden=True)
+def root_record_cmd(
+    member: str,
+    record_id: str,
+    text: str = typer.Option("", "--text", "-m"),
+    kind: str = typer.Option("review", "--kind"),
+) -> None:
+    """Append to a record's chain under a member, like a commit."""
+    root = _griplink_root_or_refuse("record", "git commit")
+    typer.echo(_griplink_call(root, "record", griplink_mod().record, member, record_id, text=text, kind=kind))
+
+
+def griplink_mod():
+    from . import griplink
+
+    return griplink
+
+
+def _root_add(root, args: list[str]) -> None:
+    """At a root, `gr2 add <url> [<name>]` clones a new member and records it."""
+    from . import root_verbs
+
+    if len(args) > 2:
+        typer.echo("gr2 add at a workspace root takes <url> [<name>]; to stage paths, use git add inside the member",
+                   err=True)
+        raise typer.Exit(code=2)
+    url = args[0]
+    name = args[1] if len(args) == 2 else _member_name_from_url(url)
+    if root.shape == root_verbs.STORE:
+        from .grip_cli import grip_add_cmd
+
+        grip_add_cmd(value=f"{name}={url}", ref=None, root=root.path, json_output=False)
+        return
+    shadow = _griplink_call(root, "add", griplink_mod().add, name, url)
+    typer.echo(f"added {name} at {url}; shadow {shadow}")
+
+
+def _root_commit(root, message: str, *, stage_all: bool, amend: bool) -> None:
+    from . import root_verbs
+
+    if amend:
+        typer.echo("Error: --amend is a one-repo commit; at a workspace root use git commit --amend inside the member",
+                   err=True)
+        raise typer.Exit(code=2)
+    if root.shape == root_verbs.STORE:
+        if stage_all:
+            typer.echo("Error: -a/--all is for a full-mode workspace; this store records each member's own commit",
+                       err=True)
+            raise typer.Exit(code=2)
+        from .grip_cli import grip_commit_cmd
+
+        grip_commit_cmd(message=message, root=root.path, json_output=False, allow_rewind=False)
+        return
+    done = _griplink_call(root, "commit", griplink_mod().commit, message, stage_all=stage_all)
+    moved = ", ".join(done["moved"]) or "names only"
+    typer.echo(f"committed {done['shadow']} ({moved})")
+
+
+def _root_push(root, *, root_push: bool, remote: str | None, allow_rewind: bool) -> None:
+    """A workspace root's push is not a visible verb yet: the public-push guard does not yet read what a root push
+    sends. Until it does, gr2 push at a root refuses; an older-shape store keeps gr2 store push."""
+    from . import root_verbs
+
+    if root.shape == root_verbs.STORE or not root_push:
+        hint = "; gr2 store push pushes this store" if root.shape == root_verbs.STORE else ""
+        typer.echo(f"gr2 push at a workspace root is not available yet{hint}", err=True)
+        raise typer.Exit(code=4)
+    done = _griplink_call(root, "push", griplink_mod().push, remote=remote or "origin", allow_rewind=allow_rewind)
+    typer.echo(json.dumps(done) if not isinstance(done, str) else done)
+
+
 @app.command("add")
 def add_cmd(
     paths: list[str] = typer.Argument(..., help="Paths or pathspecs to stage"),
@@ -2523,6 +2706,10 @@ def add_cmd(
         _add_in_lane(paths, include_bytecode)
         return
     if repo_path is None:
+        root = _root_for("add", "git add")
+        if root is not None:
+            _root_add(root, paths)
+            return
         _refuse_add_at_a_workspace_root_with_a_lane()
     target = (repo_path or Path.cwd()).resolve()
     try:
@@ -2564,14 +2751,29 @@ def commit_cmd(
         "--lane",
         help="Lane-aware: lane name (defaults to the unit's current lane)",
     ),
+    stage_all: bool = typer.Option(
+        False,
+        "-a",
+        "--all",
+        help="At a full-mode workspace root: stage each member's tracked changes first, as git commit -a does",
+    ),
 ) -> None:
     """Create or amend a commit from the staged index.
 
-    Single-repo by default (cwd or --repo-path). With --workspace-root and
-    --owner-unit, commits each repo of a materialized lane under one message
-    (bound lanes stay single-repo).
+    At a workspace root (or below one), commits the root: in full mode each member's staged change becomes the next
+    commit of its workspace chain; in an older-shape store the member pins are recorded. Elsewhere single-repo
+    (cwd or --repo-path). With --workspace-root and --owner-unit, commits each repo of a materialized lane under one
+    message (bound lanes stay single-repo).
     """
     lane_mode = workspace_root is not None and owner_unit is not None
+    if not lane_mode and repo_path is None and workspace_root is None and owner_unit is None:
+        root = _root_for("commit", "git commit")
+        if root is not None:
+            _root_commit(root, message, stage_all=stage_all, amend=amend)
+            return
+    if stage_all:
+        typer.echo("Error: -a/--all acts on a full-mode workspace root; none is at or above here", err=True)
+        raise typer.Exit(code=2)
     if lane_mode and repo_path is not None:
         typer.echo("Error: --repo-path is single-repo; do not combine it with --workspace-root/--owner-unit", err=True)
         raise typer.Exit(code=1)
@@ -2633,8 +2835,18 @@ def push_cmd(
         "--repo-path",
         help="Repo to operate on (defaults to cwd; gr2 verbs are single-repo)",
     ),
+    root_push: bool = typer.Option(False, "--root", hidden=True),
+    allow_rewind: bool = typer.Option(False, "--allow-rewind", hidden=True),
 ) -> None:
     """Push one branch and verify its immutable remote commit."""
+    if repo_path is None:
+        root = _root_for("push", "git push")
+        if root is not None:
+            _root_push(root, root_push=root_push, remote=remote, allow_rewind=allow_rewind)
+            return
+    if root_push or allow_rewind:
+        typer.echo("Error: no full-mode workspace root at or above here", err=True)
+        raise typer.Exit(code=2)
     target = (repo_path or Path.cwd()).resolve()
     try:
         read_review.refuse_if_read_only(target, "push")

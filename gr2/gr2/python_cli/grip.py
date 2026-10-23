@@ -801,8 +801,11 @@ def _bind_review_rows_body(
         )
         for name, value, sha in (("remote", remote, False), ("path", path, False),
                                  ("commit", head, True), ("base", base, True), ("ref", ref, False)):
-            if not value or (sha and not _SHA40.match(value)):
+            if not value:
                 raise GripReviewRefused("invalid_field", f"{key}/{name}", value)
+            if sha and not _SHA40.match(value):
+                # Say what the field needs: an abbreviated sha reads as "expected 'grip/base'" otherwise.
+                raise GripReviewRefused("invalid_field", f"{key}/{name} as a full 40-hex commit sha", value)
 
         _refuse_remote_credentials(key, remote)
         _refuse_option_shaped_remote(key, remote)

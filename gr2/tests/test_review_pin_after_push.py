@@ -389,3 +389,15 @@ def test_p12e_bidi_override_in_a_branch_name_is_escaped_on_the_check_line(tmp_pa
     assert "‮" not in result.output, result.output
     assert ("check: 'refs/heads/a\\u202eb', refs/heads/feat all hold this head; "
             "--source must be a clone checked out on one of them") in result.output.splitlines(), result.output
+
+
+def test_p13_a_short_sha_is_refused_by_naming_the_full_sha_it_needs(tmp_path):
+    w = _world(tmp_path)
+    for field, kw in (("base", {"base": w["base"][:8]}), ("commit", {"head": w["head"][:8]})):
+        result = _pin(w, **kw)
+        short = next(iter(kw.values()))
+        assert result.exit_code == 2, result.output
+        assert (f"invalid_field: expected 'src/{field} as a full 40-hex commit sha', observed '{short}'"
+                in result.output), result.output
+        assert _review_refs(w["ws"]) == ""
+    assert _gr_id(_pin(w))  # the same world with both full shas pins

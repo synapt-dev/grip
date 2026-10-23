@@ -5798,7 +5798,11 @@ def review_publish(
         if isinstance(exc, grip.GripReviewRefused):
             shown = grip.show_review_commit(ws, review_id[3:], visibility=True)["members"]
             hit = [m for m in shown if m["key"] == exc.expected]
-            clone = f"{str(ws).rstrip('/')}/{hit[0]['path']}" if hit else str(ws)
+            try:
+                roots = commit_ops.entered_member_roots(ws)
+            except commit_ops.LaneAmbiguous:
+                roots = {}
+            clone = str(roots.get(exc.expected, f"{str(ws).rstrip('/')}/{hit[0]['path']}" if hit else str(ws)))
             try:
                 declared, unread = _repin_visibility(ws, shown), None
             except _RepinRowsUnread as why:

@@ -87,10 +87,9 @@ def _stamp_remote_unreadable(remote: str | None, review: str) -> str:
             f"from this machine, then stamp {_shown(review)} again")
 
 
-def _publish_unresolved_merge(workspace: str, review: str, path: str) -> str:
+def _publish_unresolved_merge(workspace: str, review: str, clone: str) -> str:
     """The `next` of a bare `review publish` refused because a member clone is mid-merge. Not update's line: a merge
     commit moves HEAD past the pin (publish then refuses head_moved_since_pin), so the publish rerun follows an abort."""
-    clone = f"{workspace.rstrip('/')}/{path}"
     return (f"gr2 review publish {_shown(workspace)} {_shown(review)}   # after git -C {_shown(clone)} merge --abort; "
             f"to keep the merge instead, commit it and run gr2 review update {_shown(workspace)} {_shown(review)}")
 
@@ -111,7 +110,7 @@ def _publish_feature_moved(workspace: str, clone: str, remote: str, observed: st
 # remote, observed) -> the next command. None is deliberate: no command is safe to print, so the human lines say what to
 # check instead (PUBLISH_REFUSED_CHECK). A refusal in neither table prints next: null and nothing to check.
 PUBLISH_REFUSED_NEXT = {
-    "unresolved_merge": lambda ws, rid, key, clone, remote, seen: _publish_unresolved_merge(ws, rid, clone[len(ws.rstrip("/")) + 1:]),
+    "unresolved_merge": lambda ws, rid, key, clone, remote, seen: _publish_unresolved_merge(ws, rid, clone),
     "no_branch": None,
     "head_moved_since_pin": lambda ws, rid, key, clone, remote, seen: (
         f"gr2 review pin {_shown(ws)}   # pins the clones' current heads as a new review; publish that gr: id. "

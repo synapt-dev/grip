@@ -117,6 +117,33 @@ def close_open_gr_lane(lane_dir: Path, *, workspace_root: Path | None = None) ->
     return result
 
 
+_RECEIPT_MAX_DEPTH = 64
+
+
+def _nested_too_deep(text: str, limit: int = _RECEIPT_MAX_DEPTH) -> bool:
+    """Whether `text` opens more than `limit` brackets at once, counting outside strings only, so brackets or
+    an escaped quote inside a string do not count. It walks the same decoded text json.loads reads and stops
+    at the first bracket past the limit, without recursion."""
+    depth, in_string, escaped = 0, False, False
+    for ch in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+        elif ch == '"':
+            in_string = True
+        elif ch in "[{":
+            depth += 1
+            if depth > limit:
+                return True
+        elif ch in "]}":
+            depth -= 1
+    return False
+
+
 def _read_run_receipt(path: Path) -> dict:
     """The run receipt at `path`, or {} when there is none. A receipt that exists but cannot be read or
     parsed, or is not a JSON object, is corrupt: close refuses it by name before anything moves."""
@@ -129,7 +156,14 @@ def _read_run_receipt(path: Path) -> dict:
         raise OpenGrReviewError(f"corrupt run receipt: cannot be read ({type(exc).__name__}); "
                                 f"nothing removed, recovery at {path}") from exc
     try:
-        receipt = json.loads(raw.decode("utf-8"))
+        text = raw.decode("utf-8")
+    except ValueError:
+        raise OpenGrReviewError(f"corrupt run receipt: not valid JSON; nothing removed, recovery at {path}") from None
+    if _nested_too_deep(text):
+        raise OpenGrReviewError(f"corrupt run receipt: nested deeper than {_RECEIPT_MAX_DEPTH} levels; "
+                                f"nothing removed, recovery at {path}")
+    try:
+        receipt = json.loads(text)
     # Nesting deeper than the parser's recursion limit is RecursionError, not ValueError.
     except (ValueError, RecursionError):
         raise OpenGrReviewError(f"corrupt run receipt: not valid JSON; nothing removed, recovery at {path}") from None

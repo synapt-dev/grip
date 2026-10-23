@@ -108,7 +108,8 @@ def _publish_feature_moved(workspace: str, clone: str, remote: str, observed: st
 
 # The `next` of each refusal a bare `review publish` raises, keyed by refusal: (workspace, review, member key, clone,
 # remote, observed) -> the next command. None is deliberate: no command is safe to print, so the human lines say what to
-# check instead (PUBLISH_REFUSED_CHECK). A refusal in neither table prints next: null and nothing to check.
+# check instead (PUBLISH_REFUSED_CHECK). Every refusal a publish raises has a key here and a check where its key
+# is None, except local_path_remote: its detail names the fix, and it prints next: null and no check line yet.
 PUBLISH_REFUSED_NEXT = {
     "unresolved_merge": lambda ws, rid, key, clone, remote, seen: _publish_unresolved_merge(ws, rid, clone),
     "no_branch": None,
@@ -120,6 +121,8 @@ PUBLISH_REFUSED_NEXT = {
     "feature_moved": lambda ws, rid, key, clone, remote, seen: _publish_feature_moved(ws, clone, remote, seen),
     "remote_unreadable": None,
     "remote_credentials": None,
+    "visibility_mismatch": None,
+    "lane_ambiguous": None,
 }
 # A `next` runs as printed, so it never carries a `<placeholder>`: a value the review does not record is a check.
 # A check is a line, or (clone) -> the line where the clone's path is known.
@@ -134,6 +137,11 @@ PUBLISH_REFUSED_CHECK = {
                                "is neither HTTPS nor an absolute path, and --remote sends the review ref only"),
     "remote_unreadable": "check: the member's recorded remote URL, the network, and your access to it; then rerun",
     "remote_credentials": "check: the recorded remote carries a credential; pin again from a clone whose remote has none",
+    "visibility_mismatch": ("check: a member with no declared visibility must declare one (gr2 review pin --visibility "
+                            "<key>=public|private); a private member can go only to a private or host-local remote "
+                            "(gr2 review publish --remote <path>); then rerun"),
+    "lane_ambiguous": ("check: which units have a lane entered (gr2 lane list <workspace>); exit all but the one under "
+                       "review (gr2 lane exit <workspace> <unit>), then rerun gr2 review publish"),
 }
 
 

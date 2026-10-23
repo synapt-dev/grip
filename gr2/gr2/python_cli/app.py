@@ -2590,14 +2590,20 @@ def root_pull_cmd(remote: str = typer.Option("origin", "--remote", help="The roo
 
 
 @app.command("pin", hidden=True)
-def root_pin_cmd(member: str, record_id: Optional[str] = typer.Option(None, "--record")) -> None:
+def root_pin_cmd(
+    member: str = typer.Argument(..., help="The member whose entry is held"),
+    record_id: Optional[str] = typer.Option(None, "--record", help="A record of that member instead of the member itself"),
+) -> None:
     """Hold an entry at the sha its branch points at now."""
     root = _griplink_root_or_refuse("pin", "git checkout --detach")
     typer.echo(_griplink_call(root, "pin", griplink_mod().pin, member, record_id))
 
 
 @app.command("follow", hidden=True)
-def root_follow_cmd(member: str, record_id: Optional[str] = typer.Option(None, "--record")) -> None:
+def root_follow_cmd(
+    member: str = typer.Argument(..., help="The member whose entry follows its branch again"),
+    record_id: Optional[str] = typer.Option(None, "--record", help="A record of that member instead of the member itself"),
+) -> None:
     """Make an entry follow its branch again."""
     root = _griplink_root_or_refuse("follow", "git checkout")
     typer.echo(_griplink_call(root, "follow", griplink_mod().follow, member, record_id))
@@ -2605,10 +2611,10 @@ def root_follow_cmd(member: str, record_id: Optional[str] = typer.Option(None, "
 
 @app.command("record", hidden=True)
 def root_record_cmd(
-    member: str,
-    record_id: str,
-    text: str = typer.Option("", "--text", "-m"),
-    kind: str = typer.Option("review", "--kind"),
+    member: str = typer.Argument(..., help="The member the record names"),
+    record_id: str = typer.Argument(..., help="The record's id"),
+    text: str = typer.Option("", "--text", "-m", help="The entry's text"),
+    kind: str = typer.Option("review", "--kind", help="The entry's kind"),
 ) -> None:
     """Append to a record's chain under a member, like a commit."""
     root = _griplink_root_or_refuse("record", "git commit")
@@ -2835,8 +2841,10 @@ def push_cmd(
         "--repo-path",
         help="Repo to operate on (defaults to cwd; gr2 verbs are single-repo)",
     ),
-    root_push: bool = typer.Option(False, "--root", hidden=True),
-    allow_rewind: bool = typer.Option(False, "--allow-rewind", hidden=True),
+    root_push: bool = typer.Option(False, "--root", hidden=True, help="Push the full-mode workspace root"),
+    allow_rewind: bool = typer.Option(
+        False, "--allow-rewind", hidden=True, help="Let a member move back from what the remote recorded, recorded"
+    ),
 ) -> None:
     """Push one branch and verify its immutable remote commit."""
     if repo_path is None:

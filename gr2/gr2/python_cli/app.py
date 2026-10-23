@@ -5904,7 +5904,10 @@ def review_show(
         _show_project_review(workspace_root.resolve(), project, json_output=json_output, member=member,
                              with_diff=diff or stat)
         return
-    result = _review_call(grip.show_review_commit, workspace_root.resolve(), _strip_gr_prefix(commit))
+    result = _review_call(grip.show_review_commit, workspace_root.resolve(), _strip_gr_prefix(commit), visibility=True)
+    for m in result["members"]:  # the declared visibility; a record bound before the field reads undeclared
+        m["visibility"] = m.get("visibility") or "undeclared"
+    result["publish_visibility"] = _bare_publish_visibility(workspace_root.resolve(), str(result["id"]))
     if member is not None:
         keys = [str(m["key"]) for m in result["members"]]
         if member not in keys:
@@ -5933,6 +5936,7 @@ def review_show(
     typer.echo(f"{result['id']}  ({len(members)} member{'s' if len(members) != 1 else ''})")
     for m in members:
         typer.echo(f"{m['key']}: {str(m['base'])[:12]}..{str(m['head'])[:12]}  {m['remote']}")
+        typer.echo(f"  visibility: {m['visibility']}")
         if str(m["title"]).strip():
             typer.echo(f"  title: {str(m['title']).strip()}")
         body = str(m["body"]).strip()
@@ -5951,6 +5955,21 @@ def review_show(
             typer.echo("  " + ("diff: (not recorded)" if m["diffstat"] is None else review_diff.summary(m["diffstat"])))
         for line in str(m.get("diff") or "").splitlines():
             typer.echo(review_diff.printable(line))
+    vis = result["publish_visibility"]
+    typer.echo("bare publish visibility: " + ("ok" if vis["ok"] else f"refuses {review_diff.printable(str(vis['refusal']))}"))
+
+
+def _bare_publish_visibility(workspace: Path, review_id: str) -> dict[str, object]:
+    """The visibility rule bare `review publish` runs (each member to its own remote), and only that rule: the same
+    `grip._refuse_visibility_mismatch` per member remote, in member key order as publish's rows are, reporting the
+    first refusal. It claims nothing about publish's other refusals and reads no clone."""
+    states = grip._read_repo_state(workspace, review_id.removeprefix("gr:"), bind=True)
+    for key in sorted(states):
+        try:
+            grip._refuse_visibility_mismatch(states, states[key]["remote"])
+        except grip.GripReviewRefused as exc:
+            return {"ok": False, "refusal": f"{exc.refusal}: {exc.observed}"}
+    return {"ok": True, "refusal": None}
 
 
 def _show_project_review(workspace: Path, project: str, *, json_output: bool, member: Optional[str],

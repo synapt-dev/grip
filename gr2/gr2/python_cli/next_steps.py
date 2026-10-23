@@ -138,7 +138,7 @@ PUBLISH_REFUSED_CHECK = {
                                "is neither HTTPS nor an absolute path, and --remote sends the review ref only"),
     "remote_unreadable": "check: the member's recorded remote URL, the network, and your access to it; then rerun",
     "remote_credentials": "check: the recorded remote carries a credential; pin again from a clone whose remote has none",
-    "visibility_mismatch": ("check: a member with no declared visibility must declare one (gr2 review pin --visibility "
+    "visibility_mismatch": ("check: see each member's visibility with gr2 review show <workspace> <review>; a member with no declared visibility must declare one (gr2 review pin --visibility "
                             "<key>=public|private); a private member can go only to a private or host-local remote "
                             "(gr2 review publish --remote <path>); then rerun"),
     "local_path_remote": ("check: the member's recorded remote is a path on this host, so its review stays here; "

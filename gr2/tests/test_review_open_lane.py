@@ -23,10 +23,12 @@ from __future__ import annotations
 import json
 import re
 import subprocess
-from pathlib import Path
+import warnings
+from pathlib import Path, PureWindowsPath
 
 import pytest
 from gr2.python_cli import clone_exec
+from gr2.python_cli import review as review_mod
 from gr2.python_cli.gitops import remote_origin_url
 from gr2.python_cli.review import (
     ReviewError,
@@ -1335,3 +1337,24 @@ def test_canonical_identity_refuses_a_file_url_naming_another_host():
         canonical_source_identity("file://elsewhere/some/bare.git", allow_local=True)
     with pytest.raises(ReviewError, match="not a canonical GitHub source"):
         canonical_source_identity("file:///some/bare.git")
+
+
+class _WindowsPath(PureWindowsPath):
+    # a Windows path that resolves to itself, so the rows can run off Windows
+    def resolve(self):
+        return self
+
+
+@pytest.mark.parametrize(
+    ("url", "want"),
+    [("file:///C:/p", r"local:C:\p"), ("file:///C:/a%20b", r"local:C:\a b")],
+)
+def test_canonical_identity_reads_a_file_url_as_a_windows_path(url, want, monkeypatch):
+    # force the Windows reading of a URL path; a drive-letter URL is C:\p, not /C:/p
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        import nturl2path
+    # canonical_source_identity imports url2pathname at the call, so patch it where it is imported from
+    monkeypatch.setattr("urllib.request.url2pathname", nturl2path.url2pathname)
+    monkeypatch.setattr(review_mod, "Path", _WindowsPath)
+    assert canonical_source_identity(url, allow_local=True) == want

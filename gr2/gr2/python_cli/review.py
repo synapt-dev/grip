@@ -37,7 +37,7 @@ import subprocess
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import unquote, urlsplit
+from urllib.parse import urlsplit
 
 from . import gitops
 from .clone_exec import CloneExecutionError, IncompleteRemoval, rmtree_or_refuse
@@ -125,7 +125,13 @@ def canonical_source_identity(remote_url: str, *, allow_local: bool = False) -> 
                     f"origin {url!r} names host {parts.netloc!r}; a local "
                     "identity must be a path on this machine."
                 )
-            path = unquote(parts.path)
+            # url2pathname is the platform's own reading: /C:/p is C:\p on
+            # Windows and stays /p on POSIX, with %-escapes decoded on both.
+            # Imported here, not at module top: urllib.request is one of the slow modules the CLI
+            # keeps out of its import (tests/test_cli_import_deferred.py).
+            from urllib.request import url2pathname
+
+            path = url2pathname(parts.path)
         return f"local:{Path(path).resolve()}"
     raise ReviewError(
         f"origin {url!r} is not a canonical GitHub source; a review record's repo "

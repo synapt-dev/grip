@@ -401,3 +401,21 @@ def test_p13_a_short_sha_is_refused_by_naming_the_full_sha_it_needs(tmp_path):
                 in result.output), result.output
         assert _review_refs(w["ws"]) == ""
     assert _gr_id(_pin(w))  # the same world with both full shas pins
+
+
+def test_p13_an_empty_sha_field_keeps_the_plain_refusal_text(tmp_path):
+    # The CLI refuses an empty --base before the writer (its required-field check;
+    # rows-json the same), so call the writer directly with the field empty.
+    from gr2.python_cli import grip
+
+    full = {"key": "src", "remote": "origin", "path": "src", "head": "a" * 40, "base": "b" * 40, "ref": "trunk"}
+    for field, column in (("base", "base"), ("commit", "head")):
+        (tmp_path / field).mkdir()
+        try:
+            grip.create_review_bind_commit(_world(tmp_path / field)["ws"], [{**full, column: ""}])
+        except grip.GripReviewRefused as refused:
+            assert refused.refusal == "invalid_field", str(refused)
+            assert str(refused) == f"invalid_field: expected 'src/{field}', observed ''"
+            assert "as a full 40-hex commit sha" not in str(refused)
+        else:
+            raise AssertionError(f"an empty {field} was not refused")

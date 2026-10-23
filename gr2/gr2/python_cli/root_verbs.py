@@ -97,8 +97,17 @@ def find(start: Path | None = None) -> Root | None:
         if stook or _has_griplink_gitlink(d):
             return Root(d, GRIPLINK, stook, _member_of(d, start))
         if _is_store_root(d):
+            if _in_spec_workspace(d):
+                return None  # a lane's root (lanes are held): the lane and one-repo forms run unchanged
             return Root(d, STORE, False, _member_of(d, start))
     return None
+
+
+def _in_spec_workspace(d: Path) -> bool:
+    """d is, or sits inside, a spec workspace (.grip/workspace_spec.toml): where lanes live."""
+    from .layout import grip_dir
+
+    return any((grip_dir(p) / "workspace_spec.toml").is_file() for p in (d, *d.parents))
 
 
 def inside_member(root: Path) -> str:

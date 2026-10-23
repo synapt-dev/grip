@@ -205,3 +205,25 @@ def test_full_mode_init_refuses_an_existing_repo_and_member_paths(tmp_path, monk
     assert r.exit_code == 4 and "already holds a git repository" in r.stderr
     r = gr2(tmp_path, monkeypatch, "store", "init", "--mode", "full", "--member", "x", "N")
     assert r.exit_code == 4 and not (tmp_path / "N").exists()
+
+
+def test_full_mode_init_refuses_a_directory_of_checkouts_and_writes_nothing(tmp_path, monkeypatch):
+    for k, v in ENV.items():
+        monkeypatch.setenv(k, v)
+    root = tmp_path / "W"
+    (root / "alpha").mkdir(parents=True)
+    git(root / "alpha", "init", "-q")
+    r = gr2(tmp_path, monkeypatch, "store", "init", "--mode", "full", str(root))
+    assert r.exit_code == 4 and "already holds git checkouts (alpha)" in r.stderr
+    assert not (root / ".git").exists()
+
+
+def test_init_on_a_griplink_root_never_switches_it_and_a_second_full_init_changes_nothing(world, monkeypatch):
+    root = world["root"]
+    before = {ref: _ref(root, ref) for ref in ("HEAD", griplink.STOOK)}
+    r = gr2(root, monkeypatch, "store", "init", "--mode", "compat", str(root))
+    assert r.exit_code == 4 and "init does not switch a workspace's mode" in r.stderr
+    assert not (root / "grip.toml").exists()
+    r = gr2(root, monkeypatch, "store", "init", "--mode", "full", str(root))
+    assert r.exit_code == 0 and "already a full-mode workspace root" in r.stdout
+    assert {ref: _ref(root, ref) for ref in before} == before

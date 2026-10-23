@@ -1340,6 +1340,11 @@ def _griplink_init(root: Path, *, member_paths, clone_values, json_output: bool)
     if (root / ".git").exists():
         typer.echo(f"{root} already holds a git repository; full mode makes a new workspace root", err=True)
         raise typer.Exit(code=4)
+    checkouts = sorted(p.name for p in root.iterdir() if (p / ".git").exists()) if root.is_dir() else []
+    if checkouts:
+        typer.echo(f"{root} already holds git checkouts ({', '.join(checkouts)}); full mode adds members by url, so "
+                   "make the root in a new directory with --clone NAME=URL for each", err=True)
+        raise typer.Exit(code=4)
     clones = _parse_clone_values(clone_values) if clone_values else []
     try:
         griplink.init(root)
@@ -3992,7 +3997,21 @@ def grip_init_cmd(
     if mode is not None and mode not in workspace_mode.MODES:
         typer.echo(f'--mode must be "compat" or "full", got {mode!r}', err=True)
         raise typer.Exit(code=2)
-    if mode == "full":
+    from . import root_verbs
+
+    if root_verbs._is_git_root(root) and (root_verbs._has_stook(root) or root_verbs._has_griplink_gitlink(root)):
+        # An existing full-mode root: init does not switch a workspace's mode, and a second full init changes nothing.
+        if mode != "full" or member_paths or clone_values:
+            typer.echo(f"{root} is a full-mode workspace root; init does not switch a workspace's mode, and members "
+                       "are added with gr2 add <url>", err=True)
+            raise typer.Exit(code=4)
+        typer.echo(f"{root} is already a full-mode workspace root")
+        return
+    from .grip import _is_native_workspace
+
+    if mode == "full" and not _is_native_workspace(root):
+        # A new full-mode root is a griplink root (section 13); an existing store keeps its own engine below, which
+        # refuses a mode switch by name.
         _griplink_init(root, member_paths=member_paths, clone_values=clone_values, json_output=json_output)
         return
     try:

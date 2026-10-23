@@ -684,3 +684,126 @@ def test_a4u_a_printed_repin_whose_rows_pin_cannot_read_says_why_it_carries_no_v
     nxt = receipt(out)["next"]
     assert "review pin" in nxt and "--visibility" not in nxt.split("   # ")[0], nxt
     assert "carries no --visibility: review pin could not read this workspace's rows (rows unread)" in nxt, nxt
+
+
+# a4v-a4y: a refusal's printed next acts on the entered lane's clone.
+import os  # noqa: E402
+from tests.test_review_reads_entered_lane import _commit_in_lane, _g, _lane, _pin_row, ws_at_pin  # noqa: E402,F401
+from tests.test_review_a4_v2 import _invoke  # noqa: E402
+from tests.test_store_break_attempts import two_member_ws  # noqa: E402,F401
+
+_LANE_ID = ["-c", "user.name=probe", "-c", "user.email=probe@example.invalid"]
+
+
+def _lane_receipt(res) -> dict:
+    line = next(l for l in res.stdout.splitlines() if l.startswith("{"))
+    return json.loads(line)
+
+
+def _lane_mid_merge(repo: Path, base: str, name: str) -> str:
+    head = _g(repo, "rev-parse", "HEAD")
+    branch = _g(repo, "symbolic-ref", "--short", "HEAD")
+    subprocess.run(["git", "-C", str(repo), "branch", "probe-other", base], check=True)
+    subprocess.run(["git", "-C", str(repo), "checkout", "-q", "probe-other"], check=True)
+    (repo / name).write_text("conflicting\n")
+    subprocess.run(["git", "-C", str(repo), "add", name], check=True)
+    subprocess.run(["git", *_LANE_ID, "-C", str(repo), "commit", "-qm", "conflicting"], check=True)
+    subprocess.run(["git", "-C", str(repo), "checkout", "-q", branch], check=True)
+    subprocess.run(["git", *_LANE_ID, "-C", str(repo), "merge", "probe-other"], capture_output=True)
+    assert subprocess.run(["git", "-C", str(repo), "rev-parse", "-q", "--verify", "MERGE_HEAD"],
+                          capture_output=True).returncode == 0
+    assert _g(repo, "rev-parse", "HEAD") == head
+    return head
+
+
+def _lane_abort_and_rerun(ws: Path, nxt: str, tag: str):
+    m = re.search(r"after (git -C .*? merge --abort)", nxt)
+    assert m, nxt
+    argv = shlex.split(m.group(1))
+    ran = subprocess.run(argv, capture_output=True, text=True)
+    print(f"{tag} ABORT argv={argv} rc={ran.returncode} err={ran.stderr.strip()[:120]!r}")
+    pub_argv = shlex.split(nxt.split("   #", 1)[0])
+    again = _invoke(*pub_argv[1:])
+    print(f"{tag} RERUN exit={again.exit_code}")
+    return ran, again
+
+
+def test_a4v_no_lane_unresolved_merge_next_names_the_shared_clone_and_runs(ws_at_pin) -> None:
+    ws, remote, base, _head = ws_at_pin
+    shared = ws / "alpha"
+    _lane(ws, "north", enter=False)
+    _g(shared, "checkout", "-q", "-b", "shared-feat")
+    (shared / "shared.txt").write_text("shared\n")
+    _g(shared, "add", "shared.txt")
+    subprocess.run(["git", *_LANE_ID, "-C", str(shared), "commit", "-qm", "shared change"], check=True)
+    gr_id = _pin_row(ws, remote, base, _g(shared, "rev-parse", "HEAD"), shared)
+    _lane_mid_merge(shared, base, "shared.txt")
+    pub = _invoke("review", "publish", str(ws), gr_id)
+    assert pub.exit_code == 2, pub.stdout + pub.stderr
+    nxt = _lane_receipt(pub)["next"]
+    print(f"Q0 NEXT {nxt}")
+    assert f"{shared} merge --abort" in nxt, nxt
+    ran, again = _lane_abort_and_rerun(ws, nxt, "Q0")
+    assert ran.returncode == 0 and again.exit_code == 0, again.stdout + again.stderr
+
+
+def test_a4w_entered_lane_unresolved_merge_printed_abort_runs_in_the_lane_clone(ws_at_pin) -> None:
+    ws, remote, base, _head = ws_at_pin
+    clone = _lane(ws, "north")
+    lane_head = _commit_in_lane(ws, clone)
+    gr_id = _pin_row(ws, remote, base, lane_head, clone)
+    _lane_mid_merge(clone, base, "lane.txt")
+    pub = _invoke("review", "publish", str(ws), gr_id)
+    assert pub.exit_code == 2 and _lane_receipt(pub)["refused"].startswith("unresolved_merge"), pub.stdout + pub.stderr
+    nxt = _lane_receipt(pub)["next"]
+    print(f"Q1 NEXT {nxt}")
+    print(f"Q1 LANE_CLONE {clone}")
+    ran, again = _lane_abort_and_rerun(ws, nxt, "Q1")
+    assert f"{clone} merge --abort" in nxt, nxt
+    assert ran.returncode == 0 and again.exit_code == 0, again.stdout + again.stderr
+
+
+def test_a4x_entered_lane_feature_moved_printed_pull_lands_in_the_lane_clone(ws_at_pin, tmp_path) -> None:
+    ws, remote, base, _head = ws_at_pin
+    clone = _lane(ws, "north")
+    lane_head = _commit_in_lane(ws, clone)
+    gr_id = _pin_row(ws, remote, base, lane_head, clone)
+    mover = tmp_path / "mover"
+    subprocess.run(["git", "clone", "-q", remote, str(mover)], check=True)
+    (mover / "theirs.txt").write_text("theirs\n")
+    _g(mover, "add", "theirs.txt")
+    subprocess.run(["git", *_LANE_ID, "-C", str(mover), "commit", "-qm", "theirs"], check=True)
+    subprocess.run(["git", "-C", str(mover), "push", "-q", "origin", "HEAD:refs/heads/feat"], check=True)
+    ahead = _g(mover, "rev-parse", "HEAD")
+    pub = _invoke("review", "publish", str(ws), gr_id)
+    assert pub.exit_code == 2 and _lane_receipt(pub)["refused"].startswith("feature_moved"), pub.stdout + pub.stderr
+    nxt = _lane_receipt(pub)["next"]
+    print(f"Q2 NEXT {nxt}")
+    print(f"Q2 LANE_CLONE {clone}")
+    shared_before = _g(ws / "alpha", "rev-parse", "HEAD")
+    pull = shlex.split(re.search(r"# after (git .*?);", nxt).group(1))
+    env = dict(os.environ, GIT_AUTHOR_NAME="probe", GIT_AUTHOR_EMAIL="probe@example.invalid",
+               GIT_COMMITTER_NAME="probe", GIT_COMMITTER_EMAIL="probe@example.invalid")
+    pulled = subprocess.run(pull, capture_output=True, text=True, env=env)
+    shared_after = _g(ws / "alpha", "rev-parse", "HEAD")
+    lane_has = subprocess.run(["git", "-C", str(clone), "merge-base", "--is-ancestor", ahead, "HEAD"]).returncode == 0
+    print(f"Q2 PULL argv={pull} rc={pulled.returncode} shared_moved={shared_before != shared_after} "
+          f"lane_has_theirs={lane_has}")
+    assert shared_before == shared_after, "the printed pull moved the shared checkout, not the clone publish refused"
+    assert lane_has, "the lane clone publish refused did not receive the remote's commits"
+
+
+def test_a4y_entered_lane_head_moved_comment_names_the_lane_clone_and_pin_runs(ws_at_pin) -> None:
+    ws, remote, base, _head = ws_at_pin
+    clone = _lane(ws, "north")
+    lane_head = _commit_in_lane(ws, clone)
+    gr_id = _pin_row(ws, remote, base, lane_head, clone)
+    subprocess.run(["git", *_LANE_ID, "-C", str(clone), "commit", "-q", "--allow-empty", "-m", "later"], check=True)
+    pub = _invoke("review", "publish", str(ws), gr_id)
+    assert pub.exit_code == 2 and _lane_receipt(pub)["refused"].startswith("head_moved_since_pin"), pub.stdout + pub.stderr
+    nxt = _lane_receipt(pub)["next"]
+    print(f"Q3 NEXT {nxt}")
+    pin = _invoke(*shlex.split(nxt.split("   #", 1)[0])[1:])
+    print(f"Q3 PIN exit={pin.exit_code}")
+    assert f"move {clone} back" in nxt or f"move '{clone}' back" in nxt, nxt
+    assert pin.exit_code == 0, pin.stdout + pin.stderr

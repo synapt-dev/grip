@@ -243,8 +243,8 @@ def test_s3_a_review_lane_clone_failure_names_the_remote_without_its_token(monke
     record = {"k": {"remote": USERINFO_URL, "base": "0" * 40, "commit": "1" * 40}}
     monkeypatch.setattr(grip, "_validate_bind_store", lambda ws: None)
     monkeypatch.setattr(grip, "_resolve_bound", lambda ws, c: c)
-    monkeypatch.setattr(grip, "_carries_objects", lambda ws, c, k: True)
-    monkeypatch.setattr(grip, "_read_repo_state", lambda ws, c, bind=False: record)
+    monkeypatch.setattr(grip, "_carries_objects", lambda ws, c, k, facts=None: True)
+    monkeypatch.setattr(grip, "_read_repo_state", lambda ws, c, bind=False, facts=None: record)
     monkeypatch.setattr(grip, "_refuse_remote_credentials", lambda k, r: None)
     monkeypatch.setattr(grip, "_carried", lambda *a: "")
     monkeypatch.setattr(gitops, "clone", lambda *a, **kw: subprocess.CompletedProcess(a, 128, "", "fatal: 403"))

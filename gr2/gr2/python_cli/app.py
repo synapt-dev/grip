@@ -2528,6 +2528,10 @@ def _griplink_call(root, verb: str, fn, *args, needs_stook: bool = True, **kwarg
     except (griplink.GriplinkRefusal, root_verbs.RootVerbRefusal) as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=exc.code) from exc
+    except gitops.GitError as exc:
+        first = next((ln for ln in exc.stderr.splitlines() if ln.strip()), "").strip() or str(exc)
+        typer.echo(f"gr2 {verb}: git failed: {first}; nothing past that step was written", err=True)
+        raise typer.Exit(code=3) from exc
 
 
 def _griplink_root_or_refuse(verb: str, git_word: str):

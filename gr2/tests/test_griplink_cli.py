@@ -227,3 +227,29 @@ def test_init_on_a_griplink_root_never_switches_it_and_a_second_full_init_change
     r = gr2(root, monkeypatch, "store", "init", "--mode", "full", str(root))
     assert r.exit_code == 0 and "already a full-mode workspace root" in r.stdout
     assert {ref: _ref(root, ref) for ref in before} == before
+
+
+def _root_state(root: Path) -> tuple:
+    return (git(root, "rev-parse", "HEAD"), _ref(root, griplink.STOOK), (root / ".gitmodules").read_text(),
+            sorted(p.name for p in root.iterdir()))
+
+
+def test_add_whose_clone_fails_refuses_with_gits_line_and_leaves_no_member_dir(world, monkeypatch):
+    root = world["root"]
+    (root / "notes.txt").write_text("not a repository\n")
+    before = _root_state(root)
+    r = gr2(root, monkeypatch, "add", "notes.txt")
+    assert r.exit_code == 3, (r.exit_code, r.stderr)
+    assert r.stderr.startswith("gr2 add: git failed: ") and "nothing past that step was written" in r.stderr, r.stderr
+    assert "Traceback" not in r.stderr + r.stdout
+    assert not (root / "notes.txt.griplink").exists()
+    assert _root_state(root) == before
+
+
+def test_add_of_an_existing_member_refuses_naming_it_and_changes_nothing(world, monkeypatch):
+    root = world["root"]
+    before = _root_state(root)
+    r = gr2(root, monkeypatch, "add", str(world["url"]), "api")
+    assert r.exit_code == 3, (r.exit_code, r.stderr)
+    assert r.stderr.startswith("api: api.griplink is already at this root"), r.stderr
+    assert _root_state(root) == before

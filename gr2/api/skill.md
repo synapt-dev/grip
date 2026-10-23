@@ -116,7 +116,7 @@ WS=/path/to/your/workspace                         # EDIT: your workspace root
 REVIEW=gr:0000000000000000000000000000000000000000 # EDIT: the full review ID the author sent you
 REMOTE=/path/to/alpha.git                          # EDIT: any one member's remote (the author published the review to each)
 gr2 review receive "$WS" "$REVIEW" --remote "$REMOTE" --all   # also fetches every member's pinned head from its own remote; exit 4 names any it could not
-gr2 review show "$WS" "$REVIEW"                    # each member's commit range and the files it changes
+gr2 review show "$WS" "$REVIEW"                    # each member's commit range, visibility and the files it changes
 [ "${APPROVE:-}" = 1 ] || { echo "Read each member's range above (git diff <start>..<end> in that member), then run this again with APPROVE=1 to test and stamp."; exit 0; }
 T=$(mktemp -d)
 cat > "$T/set-test.sh" <<'EOF'

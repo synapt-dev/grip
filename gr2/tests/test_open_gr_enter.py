@@ -6,12 +6,14 @@ from __future__ import annotations
 from tests.native_root_helper import native_root, workspace_kind_commit
 
 import argparse
+import json
 import subprocess
 from pathlib import Path
 
 import pytest
 
 import typer
+from typer.testing import CliRunner
 
 from gr2.prototypes import lane_workspace_prototype as lanes
 from gr2.python_cli import app as gr2_app
@@ -680,3 +682,35 @@ def test_bind_help_names_accepted_remote_path_forms() -> None:
     # true text uses)
     assert "cwd-relative" not in text
     assert "configured remote name" not in text
+
+
+@pytest.mark.parametrize("spoil, cause", [
+    (lambda p: p.mkdir(), "cannot be read"),
+    (lambda p: p.write_text("{not json"), "not valid JSON"),
+], ids=["a-directory", "not-valid-json"])
+def test_exit_of_an_ephemeral_review_refuses_a_corrupt_member_receipt(tmp_path: Path, spoil, cause) -> None:
+    """Exit preserves member run receipts before removing an ephemeral tree; a receipt it cannot read
+    is refused with exit 2 and its cause on stderr (no traceback), and the tree, its clones and the
+    allocation stay."""
+    from gr2.python_cli import review_allocation, review_run
+    workspace, source, base, head, prior_cwd = _prepush_world(tmp_path)
+    gr_commit = _prepush_gr_commit(workspace, source, base, head)
+    outcome = open_gr_review.open_gr_enter(
+        workspace, "atlas", "review-m1", gr_commit, None,
+        prior_cwd=prior_cwd, allow_local=True, local_sources={"alpha": source},
+    )
+    review_root = outcome.review_root
+    alloc = review_allocation.allocation_path(workspace.resolve(), review_root.resolve())
+    members = json.loads(alloc.read_text())["members"]
+    assert members, alloc
+    member = review_root / members[0]["path"]
+    spoil(member / review_run._RECEIPT_NAME)
+    result = CliRunner().invoke(gr2_app.app, [
+        "review", "exit-gr", str(workspace), "atlas", str(review_root), "--actor", "agent:atlas",
+    ])
+    out = result.output
+    assert result.exit_code == 2, (result.exit_code, out, repr(result.exception))
+    assert "corrupt run receipt" in out and cause in out, out
+    assert "Traceback" not in out, out
+    assert (member / ".git").exists() and alloc.is_file()
+    assert lanes.require_current_lane(workspace, "atlas")["lane_name"] == "review-m1"

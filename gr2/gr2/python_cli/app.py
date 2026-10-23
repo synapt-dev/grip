@@ -4965,8 +4965,9 @@ def review_exit_gr(
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=4)
     ctx_mod.announce({"actor": actor_item}, root=None, quiet=ctx_mod.quiet_from_env())
-    result = open_gr_review.exit_gr_review(
-        workspace_root.resolve(), owner_unit, review_root.resolve(), actor=actor_item.value, adopt_legacy=adopt_legacy
+    result = _review_call(
+        open_gr_review.exit_gr_review,
+        workspace_root.resolve(), owner_unit, review_root.resolve(), actor=actor_item.value, adopt_legacy=adopt_legacy,
     )
     if json_output:
         typer.echo(json.dumps({

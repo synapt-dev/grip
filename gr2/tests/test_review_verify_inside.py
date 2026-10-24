@@ -635,3 +635,74 @@ def test_extras_field_in_the_spec_installs_the_dep_through_the_multi_repo_verify
     assert records[0]["exit_code"] == 0      # the extra from the toml reached provision
     assert records[0]["provisioned"] is True
     assert records[0]["head_tested"] == head
+
+
+def _failing_bootstrap(tmp_path: Path, *, out: str, err: str) -> str:
+    """A bootstrap python that fails venv creation, saying ``out``/``err`` on each stream."""
+    (tmp_path / "out.txt").write_text(out, encoding="utf-8")
+    (tmp_path / "err.txt").write_text(err, encoding="utf-8")
+    stub = tmp_path / "bootpy"
+    stub.write_text(f"#!/bin/sh\ncat \"{tmp_path}/out.txt\"\ncat \"{tmp_path}/err.txt\" >&2\nexit 3\n")
+    stub.chmod(0o755)
+    return str(stub)
+
+
+_ENSUREPIP = "Error: Command [\x27/x/.venv/bin/python\x27, \x27-m\x27, \x27ensurepip\x27] returned non-zero exit status 1."
+
+
+@pytest.mark.parametrize("out,err,said", [
+    (_ENSUREPIP + "\n", "", _ENSUREPIP),
+    ("", "venv: cannot write\n", "venv: cannot write"),
+    ("first on stdout\n", "then on stderr\n", "first on stdout\nthen on stderr"),
+    ("", "", "no output"),
+], ids=["stdout-only", "stderr-only", "both", "neither"])
+def test_lane_venv_create_failure_names_the_reason(tmp_path, out, err, said):
+    lane = tmp_path / "lane"
+    lane.mkdir()
+    with pytest.raises(open_gr_review.OpenGrReviewError) as raised:
+        open_gr_review.provision_lane_venv(lane, _failing_bootstrap(tmp_path, out=out, err=err))
+    assert str(raised.value) == f"lane venv creation failed in {lane} (exit 3): {said}"
+
+
+@pytest.mark.parametrize("pad", ["x" * 80, "é" * 80, "\U0001f525" * 80], ids=["ascii", "latin", "emoji"])
+def test_lane_venv_create_failure_keeps_the_tail_within_the_cap(tmp_path, pad):
+    lane = tmp_path / "lane"
+    lane.mkdir()
+    out = "".join(f"{pad} {n}\n" for n in range(10)) + _ENSUREPIP + "\n"
+    assert len(out) > 500
+    with pytest.raises(open_gr_review.OpenGrReviewError) as raised:
+        open_gr_review.provision_lane_venv(lane, _failing_bootstrap(tmp_path, out=out, err=""))
+    message = str(raised.value)
+    head = f"lane venv creation failed in {lane} (exit 3): "
+    assert message.startswith(head)
+    said = message[len(head):]
+    assert isinstance(said, str) and len(said) == 500
+    assert said == out.strip()[-500:]
+    assert said.endswith(_ENSUREPIP)
+
+
+def _create_reason(tmp_path: Path, out: str, err: str) -> str:
+    lane = tmp_path / "lane"
+    lane.mkdir()
+    with pytest.raises(open_gr_review.OpenGrReviewError) as raised:
+        open_gr_review.provision_lane_venv(lane, _failing_bootstrap(tmp_path, out=out, err=err))
+    head = f"lane venv creation failed in {lane} (exit 3): "
+    message = str(raised.value)
+    assert message.startswith(head)
+    return message[len(head):]
+
+
+def test_lane_venv_create_failure_keeps_a_stdout_reason_behind_a_long_stderr(tmp_path):
+    said = _create_reason(tmp_path, _ENSUREPIP + "\n", "N" * 600 + "\n")
+    assert said == _ENSUREPIP + "\n" + "N" * 500
+
+
+def test_lane_venv_create_failure_keeps_a_stderr_reason_behind_a_long_stdout(tmp_path):
+    said = _create_reason(tmp_path, "x" * 600 + "\n", "venv: cannot write\n")
+    assert said == "x" * 500 + "\nvenv: cannot write"
+
+
+def test_lane_venv_create_failure_caps_each_long_stream_on_its_own(tmp_path):
+    said = _create_reason(tmp_path, "o" * 599 + "O\n", "e" * 599 + "E\n")
+    assert len(said) == 1001
+    assert said == "o" * 499 + "O\n" + "e" * 499 + "E"

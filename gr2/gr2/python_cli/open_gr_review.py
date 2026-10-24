@@ -687,8 +687,12 @@ def provision_lane_venv(
         cwd=lane_dir, text=True, capture_output=True,
     )
     if create.returncode != 0:
+        # venv reports some failures (a missing ensurepip) on stdout alone, so the
+        # reason is read from both streams, tail-capped like the install step below.
+        said = "\n".join(s for s in (create.stdout.strip(), create.stderr.strip()) if s)
         raise OpenGrReviewError(
-            f"lane venv creation failed in {lane_dir}: {create.stderr.strip()}"
+            f"lane venv creation failed in {lane_dir} (exit {create.returncode}): "
+            f"{said[-500:] or 'no output'}"
         )
     # One editable install; when extras are declared they ride the SAME install so the
     # test deps land in the venv, not the desk. A stray extra name pip cannot resolve

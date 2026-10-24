@@ -460,6 +460,9 @@ def test_checkout_takes_a_scratch_only_when_it_holds_the_pin_from_the_members_ur
     st.parent.mkdir(parents=True)
     subprocess.run(["git", "clone", "-q", "--no-checkout", str(world["tmp"] / "remote-web.git"), str(st)], check=True,
                    capture_output=True)  # a scratch from the wrong url
+    pin = git(d, "rev-parse", f"HEAD:api.griplink/{griplink.PIN}")
+    git(st, "fetch", "-q", str(world["tmp"] / "remote-api.git"), pin)
+    assert griplink._has(st, pin)  # the precondition: only its url tells it apart
     griplink.checkout(d)
     api = griplink.member_dir(d, "api")
     assert git(api, "config", "--get", "remote.origin.url") == str(world["tmp"] / "remote-api.git")

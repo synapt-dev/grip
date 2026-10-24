@@ -610,11 +610,19 @@ def checkout(root: Path, committed_from: str | None = None) -> dict[str, int]:
                 st.rename(mrepo)
             else:
                 _remove_scratch(root, m)
-                gitops.out(root, "clone", "-q", "--no-checkout", "--", url, str(mrepo))
+                try:
+                    gitops.out(root, "clone", "-q", "--no-checkout", "--", url, str(mrepo))
+                except gitops.GitError as e:
+                    raise GriplinkRefusal(f"{m}: cannot clone it from {url}: {e}; next: check the url in .gitmodules, "
+                                          "then gr2 checkout again", 3) from e
         link = root / m
         if not link.is_symlink() and not link.exists():
             link.symlink_to(f"{m}.griplink/{PIN}")
-        _git(mrepo, "checkout", "-q", "--detach", "-f", pin)
+        try:
+            _git(mrepo, "checkout", "-q", "--detach", "-f", pin)
+        except gitops.GitError as e:
+            raise GriplinkRefusal(f"{m}: cannot check out its pin {pin[:12]}: {e}; next: fetch the pin into {m}, or push "
+                                  "it from the desk that made it, then gr2 checkout again", 3) from e
         for p, mode, b in overlay:
             _copy_blob(root, mrepo, b)
             for args in (("update-index", "--add", "--cacheinfo", f"{mode},{b},{p}"), ("checkout-index", "-f", "--", p)):
@@ -844,15 +852,32 @@ def _drop_scratch(root: Path, members, exc: BaseException) -> None:
         raise GriplinkRefusal(f"{exc}; and a scratch could not be removed: {'; '.join(left)}", exc.code) from exc
 
 
-def _pins_readable(root: Path, rev: str) -> list[str]:
-    """Every pin of shadow `rev` readable in its member, before any ref moves. A member with a checkout fetches a
-    missing pin (_member_has). A member with none (never checked out here, or new in `rev`) is cloned with no checkout
-    into its scratch and must hold its pin there; checkout moves the scratch into place. A scratch already there was
-    left by a pull that stopped before its checkout, so it is removed, never read as this pull's. Returns the members
-    given a scratch; on a refusal every scratch made here is removed."""
+def _merged_pins(root: Path, base: str | None, mine: str, theirs: str, decided: dict[str, str]) -> dict[str, tuple]:
+    """{member: (pin, shadow whose .gitmodules names its url)}: the pin a merge of `mine` and `theirs` records for each
+    member. Both sides moved it: the decided one (_decide_pins). Only my side moved it since the base: mine. A member
+    only my side has: mine. Otherwise theirs."""
+    b, o, t = _pins(root, base), _pins(root, mine), _pins(root, theirs)
+    out = {}
+    for m in sorted(set(o) | set(t)):
+        if m in decided:
+            out[m] = (decided[m], theirs)
+        elif m not in t or (m in o and t[m] == b.get(m) and o[m] != t[m]):
+            out[m] = (o[m], mine)
+        else:
+            out[m] = (t[m], theirs)
+    return out
+
+
+def _pins_readable(root: Path, pins: dict[str, tuple]) -> list[str]:
+    """Every pin in `pins` ({member: (pin, shadow naming its url)}) readable in its member, before any ref moves. A
+    member with a checkout reads it there first and fetches it only when missing (_member_has), so a pin my own
+    checkout holds and no remote serves still passes. A member with none (never checked out here, or new on either
+    side) is cloned with no checkout into its scratch and must hold its pin there; checkout moves the scratch into
+    place. A scratch already there was left by a pull that stopped before its checkout, so it is removed, never read
+    as this pull's. Returns the members given a scratch; on a refusal every scratch made here is removed."""
     scratched: list[str] = []
     try:
-        for m, pin in _pins(root, rev).items():
+        for m, (pin, rev) in pins.items():
             if (member_dir(root, m) / ".git").exists():
                 _member_has(root, m, pin)
                 continue
@@ -992,7 +1017,7 @@ def pull(root: Path, remote: str = "origin") -> dict:
             _git(root, "update-ref", local, sha)
         return {"how": "up to date", "shadow": mine, "merged": merged, "updated": [u[0] for u in updates]}
     if ff:
-        scratched = _pins_readable(root, theirs)
+        scratched = _pins_readable(root, {m: (p, theirs) for m, p in _pins(root, theirs).items()})
         try:
             _plan(root, theirs, committed_from=mine)  # the remote's content, checked before any ref moves
         except BaseException as exc:
@@ -1009,8 +1034,10 @@ def pull(root: Path, remote: str = "origin") -> dict:
         _git(root, "checkout-index", "-a", "-f")
         how = "fast-forward"
     else:
-        pins = _decide_pins(root, _try(root, "merge-base", mine, theirs), mine, theirs)
-        scratched = _pins_readable(root, theirs)
+        base = _try(root, "merge-base", mine, theirs)
+        pins = _decide_pins(root, base, mine, theirs)
+        # the pins the merge records, mine where only my side moved one, each read before any ref moves
+        scratched = _pins_readable(root, _merged_pins(root, base, mine, theirs, pins))
         try:
             _plan(root, theirs, committed_from=mine)  # the remote's content, checked before any ref moves
             names = _merged_names(root, their_stook)

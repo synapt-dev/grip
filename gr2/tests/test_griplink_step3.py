@@ -297,6 +297,19 @@ def _pin_on_no_remote(w: dict, m: str = "api") -> str:
     return sha
 
 
+def _theirs_said(m: str, sha: str) -> str:
+    """The refusal for a pin someone else pushed to the root and m's remote does not serve."""
+    return (f"{m}: its remote does not serve {sha[:12]}; nothing was pulled. next: whoever pushed this root's pin for "
+            f"{m} publishes {sha[:12]} to {m}'s remote, then gr2 pull again")
+
+
+def _mine_said(m: str, sha: str) -> str:
+    """The refusal for a pin made on this desk that m's remote does not serve."""
+    return (f"{m}: its remote does not serve {sha[:12]}; nothing was pulled. next: this root's pin {sha[:12]} was made "
+            f"on this desk and is not on {m}'s remote; push it to {m}'s remote from where it was made (or move the pin), "
+            "then gr2 pull again")
+
+
 def _pin_served(w: dict, m: str = "api") -> str:
     """A peer moves member m's pin to a commit m's own remote serves, and pushes the root. Returns the pin."""
     p = _peer(w, "mover")
@@ -342,7 +355,7 @@ def test_a_pin_on_no_remote_refuses_a_fast_forward_on_a_desk_with_no_checkout_an
     before = _desk_state(d)
     with pytest.raises(GriplinkRefusal) as exc:
         griplink.pull(d)
-    assert exc.value.code == 5 and str(exc.value) == f"api: its remote does not serve {pin[:12]}; nothing was pulled"
+    assert exc.value.code == 5 and str(exc.value) == _theirs_said("api", pin)
     assert _desk_state(d) == before and _scratches(d) == []
 
 
@@ -353,7 +366,7 @@ def test_a_pin_on_no_remote_refuses_a_merge_on_a_desk_with_no_api_checkout_and_m
     before = _desk_state(d)
     with pytest.raises(GriplinkRefusal) as exc:
         griplink.pull(d)
-    assert exc.value.code == 5 and str(exc.value) == f"api: its remote does not serve {pin[:12]}; nothing was pulled"
+    assert exc.value.code == 5 and str(exc.value) == _theirs_said("api", pin)
     assert _desk_state(d) == before and _scratches(d) == []
     assert not (d / ".git" / "MERGE_HEAD").exists()
 
@@ -412,7 +425,7 @@ def test_a_pull_that_adds_a_member_whose_pin_is_not_served_refuses_and_moves_not
     before = _desk_state(ws)
     with pytest.raises(GriplinkRefusal) as exc:
         griplink.pull(ws)
-    assert exc.value.code == 5 and str(exc.value) == f"lib: its remote does not serve {pin[:12]}; nothing was pulled"
+    assert exc.value.code == 5 and str(exc.value) == _theirs_said("lib", pin)
     assert _desk_state(ws) == before and _scratches(ws) == []
     assert not (ws / "lib.griplink").exists()
 
@@ -450,7 +463,7 @@ def test_a_scratch_left_by_a_killed_pull_is_never_read_as_this_pulls_fetch(world
     before = _desk_state(d)
     with pytest.raises(GriplinkRefusal) as exc:
         griplink.pull(d)
-    assert exc.value.code == 5 and str(exc.value) == f"api: its remote does not serve {pin[:12]}; nothing was pulled"
+    assert exc.value.code == 5 and str(exc.value) == _theirs_said("api", pin)
     assert _desk_state(d) == before and _scratches(d) == []
 
 
@@ -484,7 +497,7 @@ def test_a_scratch_that_cannot_be_removed_is_named_in_the_refusal(world, monkeyp
     with pytest.raises(GriplinkRefusal) as exc:
         griplink.pull(d)
     said = str(exc.value)
-    assert exc.value.code == 5 and said.startswith(f"api: its remote does not serve {pin[:12]}; nothing was pulled"), said
+    assert exc.value.code == 5 and said.startswith(_theirs_said("api", pin)), said
     assert "; and a scratch could not be removed: " in said and "pull-scratch/api could not be fully removed" in said, said
 
 
@@ -521,7 +534,7 @@ def test_a_merge_whose_pin_is_mine_and_on_no_remote_refuses_with_no_checkout_and
     before = _desk_state(d)
     with pytest.raises(GriplinkRefusal) as exc:
         griplink.pull(d)
-    assert exc.value.code == 5 and str(exc.value) == f"api: its remote does not serve {mine[:12]}; nothing was pulled"
+    assert exc.value.code == 5 and str(exc.value) == _mine_said("api", mine)
     assert _desk_state(d) == before and _scratches(d) == []
     assert not (d / ".git" / "MERGE_HEAD").exists()
 
@@ -585,5 +598,87 @@ def test_a_merge_reads_a_member_only_my_side_added(world):
     before = _desk_state(d)
     with pytest.raises(GriplinkRefusal) as exc:
         griplink.pull(d)
-    assert exc.value.code == 5 and str(exc.value) == f"zed: its remote does not serve {mine[:12]}; nothing was pulled"
+    assert exc.value.code == 5 and str(exc.value) == _mine_said("zed", mine)
     assert _desk_state(d) == before and _scratches(d) == []
+
+
+# ---- a refusal for an unserved pin names the next step by who owns the pin -------------------------------------------
+
+
+def test_a_pin_on_no_remote_refuses_a_fast_forward_on_a_desk_with_its_checkout_naming_whoever_pushed_it(world):
+    ws = world["ws"]
+    pin = _pin_on_no_remote(world)
+    before = _desk_state(ws)
+    with pytest.raises(GriplinkRefusal) as exc:
+        griplink.pull(ws)
+    assert exc.value.code == 5 and str(exc.value) == _theirs_said("api", pin)
+    assert _desk_state(ws) == before
+
+
+def test_a_pin_both_sides_moved_whose_theirs_is_on_no_remote_refuses_naming_whoever_pushed_it(world):
+    ws = world["ws"]
+    base = git(griplink.member_dir(ws, "api"), "rev-parse", "HEAD")
+    one = _member_commit(world, "api", "one", base)
+    pin = _pin_on_no_remote(world)
+    _move_pin(ws, "api", one)
+    before = _desk_state(ws)
+    with pytest.raises(GriplinkRefusal) as exc:
+        griplink.pull(ws)
+    assert exc.value.code == 5 and str(exc.value) == _theirs_said("api", pin)
+    assert _desk_state(ws) == before
+
+
+def test_a_decided_pin_that_is_theirs_and_on_no_remote_refuses_naming_whoever_pushed_it(world, monkeypatch):
+    """A decided pin only their side recorded is theirs, so its step is theirs. A pull cannot reach this with a checkout
+    (deciding reads both pins in it first), so the decision is stubbed and the checkout removed: the scratch path reads
+    the pin."""
+    ws = world["ws"]
+    pin = _pin_on_no_remote(world)
+    ours = _local_pin(ws)
+    import shutil
+    shutil.rmtree(griplink.member_dir(ws, "api"))
+    monkeypatch.setattr(griplink, "_decide_pins", lambda root, base, mine, theirs: {"api": pin})
+    before = _desk_state(ws)
+    with pytest.raises(GriplinkRefusal) as exc:
+        griplink.pull(ws)
+    assert ours != pin
+    assert exc.value.code == 5 and str(exc.value) == _theirs_said("api", pin)
+    assert _desk_state(ws) == before and _scratches(ws) == []
+
+
+def test_a_decided_pin_that_is_my_sha_and_on_no_remote_refuses_naming_this_desk(world, monkeypatch):
+    """A decided pin only my side recorded was made on this desk, whatever shadow names its url, so its step is mine.
+    A pull cannot reach this with a checkout (deciding reads both pins in it first), so the decision is stubbed and the
+    checkout removed: the scratch path reads the pin."""
+    ws = world["ws"]
+    _pin_served(world, "api")
+    ours = _local_pin(ws)
+    import shutil
+    shutil.rmtree(griplink.member_dir(ws, "api"))
+    monkeypatch.setattr(griplink, "_decide_pins", lambda root, base, mine, theirs: {"api": ours})
+    before = _desk_state(ws)
+    with pytest.raises(GriplinkRefusal) as exc:
+        griplink.pull(ws)
+    assert exc.value.code == 5 and str(exc.value) == _mine_said("api", ours)
+    assert _desk_state(ws) == before and _scratches(ws) == []
+
+
+def test_a_pin_both_sides_recorded_and_on_no_remote_refuses_naming_whoever_pushed_it(world):
+    """Both sides' root commits record the same api sha, on no remote, and this desk has no api checkout: the pin is
+    not only this desk's, so its step is theirs."""
+    ws = world["ws"]
+    same = _local_pin(ws)
+    p = _peer(world, "twin")
+    _move_pin(p, "web", _member_commit(world, "web", "twin"))  # first, so no root commit of theirs equals this desk's
+    git(griplink.member_dir(p, "api"), "fetch", "-q", str(griplink.member_dir(ws, "api")), same)
+    git(p, "update-index", "--cacheinfo", f"160000,{same},api.griplink/{griplink.PIN}")
+    griplink._cut(p, "pin api", [git(p, "rev-parse", "HEAD")])
+    griplink.push(p)
+    import shutil
+    shutil.rmtree(griplink.member_dir(ws, "api"))
+    before = _desk_state(ws)
+    with pytest.raises(GriplinkRefusal) as exc:
+        griplink.pull(ws)
+    assert exc.value.code == 5 and str(exc.value) == _theirs_said("api", same)
+    assert _desk_state(ws) == before and _scratches(ws) == []
+    assert not (ws / ".git" / "MERGE_HEAD").exists()

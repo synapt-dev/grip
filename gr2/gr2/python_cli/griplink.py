@@ -806,8 +806,25 @@ def _pins(root: Path, rev: str | None) -> dict[str, str]:
     return {m: _ls_tree(root, s)[PIN][2] for m, s in _links(root, _tree_of(root, rev)).items()} if rev else {}
 
 
-def _member_has(root: Path, m: str, *shas: str) -> Path:
-    """The member's checkout, holding every sha (fetched from the member's url when missing)."""
+def _unserved(m: str, missing, mine=()) -> GriplinkRefusal:
+    """The refusal for pins of member m its remote does not serve, naming the step by who owns each: a pin in `mine`
+    was made on this desk; any other was pushed to this root by whoever moved it."""
+    def shown(shas):
+        return ", ".join(s[:12] for s in shas)
+    theirs, ours = [s for s in missing if s not in mine], [s for s in missing if s in mine]
+    steps = []
+    if theirs:
+        steps.append(f"whoever pushed this root's pin for {m} publishes {shown(theirs)} to {m}'s remote")
+    if ours:
+        steps.append(f"this root's pin {shown(ours)} was made on this desk and is not on {m}'s remote; push it to {m}'s "
+                     "remote from where it was made (or move the pin)")
+    return GriplinkRefusal(f"{m}: its remote does not serve {shown(missing)}; nothing was pulled. next: "
+                           f"{'; then '.join(steps)}, then gr2 pull again", 5)
+
+
+def _member_has(root: Path, m: str, *shas: str, mine=()) -> Path:
+    """The member's checkout, holding every sha (fetched from the member's url when missing); `mine` names the shas
+    made on this desk, for the refusal's next step."""
     mrepo = member_dir(root, m)
     if not (mrepo / ".git").exists():
         raise GriplinkRefusal(f"{m}: no checkout to read its pins in; nothing was pulled. next: gr2 checkout, then pull "
@@ -818,8 +835,7 @@ def _member_has(root: Path, m: str, *shas: str) -> Path:
         _check_url(m, url)
         gitops.run(mrepo, "fetch", "-q", "--no-tags", "--no-write-fetch-head", "--", url, *missing)
         if any(not _has(mrepo, f"{s}^{{commit}}") for s in missing):
-            raise GriplinkRefusal(f"{m}: its remote does not serve {', '.join(s[:12] for s in missing)}; nothing was "
-                                  "pulled", 5)
+            raise _unserved(m, missing, mine)
     return mrepo
 
 
@@ -868,18 +884,21 @@ def _merged_pins(root: Path, base: str | None, mine: str, theirs: str, decided: 
     return out
 
 
-def _pins_readable(root: Path, pins: dict[str, tuple]) -> list[str]:
+def _pins_readable(root: Path, pins: dict[str, tuple], mine: str | None = None, theirs: str | None = None) -> list[str]:
     """Every pin in `pins` ({member: (pin, shadow naming its url)}) readable in its member, before any ref moves. A
     member with a checkout reads it there first and fetches it only when missing (_member_has), so a pin my own
     checkout holds and no remote serves still passes. A member with none (never checked out here, or new on either
     side) is cloned with no checkout into its scratch and must hold its pin there; checkout moves the scratch into
     place. A scratch already there was left by a pull that stopped before its checkout, so it is removed, never read
-    as this pull's. Returns the members given a scratch; on a refusal every scratch made here is removed."""
+    as this pull's. A pin is this desk's when only `mine` recorded it, not `theirs`. Returns the members given a
+    scratch; on a refusal every scratch made here is removed."""
+    o, t = (_pins(root, mine), _pins(root, theirs)) if mine is not None else ({}, {})
     scratched: list[str] = []
     try:
         for m, (pin, rev) in pins.items():
+            owned = (pin,) if o.get(m) == pin != t.get(m) else ()
             if (member_dir(root, m) / ".git").exists():
-                _member_has(root, m, pin)
+                _member_has(root, m, pin, mine=owned)
                 continue
             _check_name(m)
             url = _git(root, "config", "--blob", f"{rev}:.gitmodules", f"submodule.{m}.url")
@@ -895,7 +914,7 @@ def _pins_readable(root: Path, pins: dict[str, tuple]) -> list[str]:
             if not _has(st, f"{pin}^{{commit}}"):
                 gitops.run(st, "fetch", "-q", "--no-tags", "--no-write-fetch-head", "--", url, pin)
                 if not _has(st, f"{pin}^{{commit}}"):
-                    raise GriplinkRefusal(f"{m}: its remote does not serve {pin[:12]}; nothing was pulled", 5)
+                    raise _unserved(m, [pin], owned)
     except BaseException as exc:
         _drop_scratch(root, scratched, exc)
         raise
@@ -911,7 +930,7 @@ def _decide_pins(root: Path, base: str | None, mine: str, theirs: str) -> dict[s
     for m in sorted(set(o) & set(t)):
         if o[m] == t[m] or o[m] == b.get(m) or t[m] == b.get(m):
             continue
-        mrepo = _member_has(root, m, o[m], t[m])
+        mrepo = _member_has(root, m, o[m], t[m], mine=(o[m],))
         if _anc(mrepo, o[m], t[m]) is True:
             out[m] = t[m]
         elif _anc(mrepo, t[m], o[m]) is True:
@@ -1037,7 +1056,7 @@ def pull(root: Path, remote: str = "origin") -> dict:
         base = _try(root, "merge-base", mine, theirs)
         pins = _decide_pins(root, base, mine, theirs)
         # the pins the merge records, mine where only my side moved one, each read before any ref moves
-        scratched = _pins_readable(root, _merged_pins(root, base, mine, theirs, pins))
+        scratched = _pins_readable(root, _merged_pins(root, base, mine, theirs, pins), mine, theirs)
         try:
             _plan(root, theirs, committed_from=mine)  # the remote's content, checked before any ref moves
             names = _merged_names(root, their_stook)

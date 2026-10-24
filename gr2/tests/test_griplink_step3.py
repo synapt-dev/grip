@@ -486,3 +486,90 @@ def test_a_scratch_that_cannot_be_removed_is_named_in_the_refusal(world, monkeyp
     said = str(exc.value)
     assert exc.value.code == 5 and said.startswith(f"api: its remote does not serve {pin[:12]}; nothing was pulled"), said
     assert "; and a scratch could not be removed: " in said and "pull-scratch/api could not be fully removed" in said, said
+
+
+# ---- the merge path reads the pins the merge records, mine where only my side moved one ----------------------------
+def _local_pin(d: Path, m: str = "api") -> str:
+    """Desk d moves member m's pin to a commit only d holds (a promote whose member was never pushed)."""
+    mrepo = griplink.member_dir(d, m)
+    (mrepo / "src" / "f2.py").write_text("the desk's own promote, never pushed\n")
+    git(mrepo, "add", "src/f2.py")
+    git(mrepo, "commit", "-q", "-m", "desk promote")
+    sha = git(mrepo, "rev-parse", "HEAD")
+    git(d, "update-index", "--cacheinfo", f"160000,{sha},{m}.griplink/{griplink.PIN}")
+    griplink._cut(d, f"pin {m}", [git(d, "rev-parse", "HEAD")])
+    return sha
+
+
+def _mine_moved(w: dict, push: bool = False, keep_checkout: bool = False) -> tuple[Path, str]:
+    """A desk moves api's pin to its own commit (pushed to api's remote or not), keeps or loses api's checkout, and a
+    peer moves web, so the pull merges with api's merged pin being MINE."""
+    d = _desk(w)
+    griplink.checkout(d)
+    mine = _local_pin(d)
+    if push:
+        git(griplink.member_dir(d, "api"), "push", "-q", str(w["tmp"] / "remote-api.git"), f"{mine}:refs/heads/x-mine")
+    if not keep_checkout:
+        import shutil
+        shutil.rmtree(griplink.member_dir(d, "api"))
+    _pin_served(w, "web")
+    return d, mine
+
+
+def test_a_merge_whose_pin_is_mine_and_on_no_remote_refuses_with_no_checkout_and_moves_nothing(world):
+    d, mine = _mine_moved(world)
+    before = _desk_state(d)
+    with pytest.raises(GriplinkRefusal) as exc:
+        griplink.pull(d)
+    assert exc.value.code == 5 and str(exc.value) == f"api: its remote does not serve {mine[:12]}; nothing was pulled"
+    assert _desk_state(d) == before and _scratches(d) == []
+    assert not (d / ".git" / "MERGE_HEAD").exists()
+
+
+def test_a_merge_whose_pin_is_mine_and_served_checks_api_out_at_mine(world):
+    d, mine = _mine_moved(world, push=True)
+    assert griplink.pull(d)["how"] == "merged"
+    assert git(d, "rev-parse", f"HEAD:api.griplink/{griplink.PIN}") == mine
+    assert git(griplink.member_dir(d, "api"), "rev-parse", "HEAD") == mine and _scratches(d) == []
+
+
+def test_a_merge_whose_pin_is_mine_and_only_in_my_checkout_still_merges(world):
+    """The common path: an unpushed local commit at a member's pin, its checkout present. Readable means my own
+    checkout holds it, not only that a remote serves it."""
+    d, mine = _mine_moved(world, keep_checkout=True)
+    assert griplink.pull(d)["how"] == "merged"
+    assert git(d, "rev-parse", f"HEAD:api.griplink/{griplink.PIN}") == mine
+    assert git(griplink.member_dir(d, "api"), "rev-parse", "HEAD") == mine
+
+
+def test_checkout_of_a_pin_no_clone_can_read_refuses_naming_the_member(world):
+    d, mine = _mine_moved(world)
+    with pytest.raises(GriplinkRefusal) as exc:
+        griplink.checkout(d)
+    said = str(exc.value)
+    assert exc.value.code == 3 and said.startswith(f"api: cannot check out its pin {mine[:12]}: "), said
+    assert said.endswith("then gr2 checkout again"), said
+
+
+def test_a_merge_reads_a_member_only_my_side_added(world):
+    d = _desk(world)
+    griplink.checkout(d)
+    tmp = world["tmp"]
+    git(tmp, "init", "-q", "--bare", "-b", "main", str(tmp / "remote-zed.git"))
+    src = tmp / "src-zed"
+    (src / "src").mkdir(parents=True)
+    git(src, "init", "-q", "-b", "main")
+    (src / "src" / "z.py").write_text("zed v1\n")
+    git(src, "add", ".")
+    git(src, "commit", "-q", "-m", "zed: v1")
+    git(src, "push", "-q", str(tmp / "remote-zed.git"), "HEAD:main")
+    griplink.add(d, "zed", str(tmp / "remote-zed.git"))
+    mine = _local_pin(d, "zed")
+    import shutil
+    shutil.rmtree(griplink.member_dir(d, "zed"))
+    _pin_served(world, "web")
+    before = _desk_state(d)
+    with pytest.raises(GriplinkRefusal) as exc:
+        griplink.pull(d)
+    assert exc.value.code == 5 and str(exc.value) == f"zed: its remote does not serve {mine[:12]}; nothing was pulled"
+    assert _desk_state(d) == before and _scratches(d) == []

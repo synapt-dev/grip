@@ -2735,6 +2735,9 @@ def add_cmd(
 ) -> None:
     """Stage paths in one repository, including tracked deletions.
 
+    Inside a member checkout of a workspace root, use git add there: gr2 add refuses at exit 2 and names the root,
+    unless the root's grip.toml sets inside_member = "root". At the root itself, gr2 add <url> [<name>] adds a member.
+
     Standing inside a lane's repo, `add .` stages that repo. Standing at the workspace root with a lane entered,
     it refuses rather than stage the root's own repository by accident: pass --lane for every repo of the lane,
     or --repo-path for one. Untracked Python bytecode (__pycache__/, *.pyc, *.pyo) is skipped and named in one
@@ -2800,7 +2803,10 @@ def commit_cmd(
 ) -> None:
     """Create or amend a commit from the staged index.
 
-    At a workspace root (or below one), commits the root: in full mode each member's staged change becomes the next
+    Inside a member checkout of a workspace root, use git commit there: gr2 commit refuses at exit 2 and names the
+    root, unless the root's grip.toml sets inside_member = "root".
+
+    At a workspace root (outside its members), commits the root: in full mode each member's staged change becomes the next
     commit of its workspace chain; in an older-shape store the member pins are recorded. Elsewhere single-repo
     (cwd or --repo-path). With --workspace-root and --owner-unit, commits each repo of a materialized lane under one
     message (bound lanes stay single-repo).
@@ -2880,7 +2886,10 @@ def push_cmd(
         False, "--allow-rewind", hidden=True, help="Let a member move back from what the remote recorded, recorded"
     ),
 ) -> None:
-    """Push one branch and verify its immutable remote commit."""
+    """Push one branch and verify its immutable remote commit.
+
+    Inside a member checkout of a workspace root, use git push there: gr2 push refuses at exit 2 and names the
+    root, unless the root's grip.toml sets inside_member = "root"."""
     if repo_path is None:
         root = _root_for("push", "git push")
         if root is not None:

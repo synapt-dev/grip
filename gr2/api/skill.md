@@ -265,8 +265,8 @@ Push one branch and verify its immutable remote commit.
 - `--set-upstream/-u`: (no help text in the code)
 - `--force-with-lease`: Replace the remote ref only if its observed value still matches
 - `--repo-path`: Repo to operate on (defaults to cwd; gr2 verbs are single-repo)
-- `--root`: Push the full-mode workspace root
-- `--allow-rewind`: Let a member move back from what the remote recorded, recorded
+- `--root`: Push the full-mode workspace root (the default)
+- `--allow-rewind`: At a full-mode workspace root: let a member move back from what the remote recorded, recorded
 
 ### gr2 review publish
 

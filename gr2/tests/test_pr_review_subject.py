@@ -377,3 +377,117 @@ def test_a_remote_that_never_answers_is_refused_within_the_bound(reviewed, monke
         for connection, _ in held:
             connection.close()
     assert not listener.is_alive(), "silent peer fixture listener did not stop"
+
+
+def _adopt_then_count(reviewed, monkeypatch, closed):
+    """Adopt PRs 40/41 by head, then (when `closed`) close alpha's and open PR 50 at the same head."""
+    from types import SimpleNamespace
+
+    reviewed["adapter"].pr_for_head = _open_prs_by_head(reviewed)
+    seen = {}
+    monkeypatch.setattr(pr_ops, "merge_pr_group", lambda **kw: seen.update(kw) or {"pr_group_id": kw["pr_group_id"], "completed": []})
+    assert gr2(reviewed["author"], monkeypatch, "pr", "merge", "--json").exit_code == 0
+    alpha = reviewed["repos"]["alpha"]
+    state = {(alpha, 40): "CLOSED"} if closed else {}
+    queried = []
+
+    def pr_for_head(repo, sha):
+        queried.append(repo)
+        number = 50 if repo == alpha and closed else 40 + [reviewed["repos"][k] for k in KEYS].index(repo)
+        return [{"number": number, "state": "open", "head": sha}] if sha == reviewed["heads"][repo.split("/")[1]] else []
+
+    reviewed["adapter"].pr_for_head = pr_for_head
+    reviewed["adapter"].pr_status = lambda repo, number, **_: SimpleNamespace(state=state.get((repo, number), "OPEN"))
+    merged = gr2(reviewed["author"], monkeypatch, "pr", "merge", "--json")
+    assert merged.exit_code == 0, merged.output
+    group = json.loads(next((reviewed["author"] / ".grip" / "pr_groups").glob("*.json")).read_text())
+    return group, queried
+
+
+def test_merge_re_adopts_a_closed_adopted_pr_reopened_at_the_reviewed_head(reviewed, monkeypatch):
+    group, _ = _adopt_then_count(reviewed, monkeypatch, closed=True)
+    assert {p["repo"]: p["pr_number"] for p in group["prs"]} == {reviewed["repos"]["alpha"]: 50, reviewed["repos"]["beta"]: 41}
+
+
+@pytest.mark.parametrize("open_numbers", [[], [50, 51]], ids=["none", "several"])
+def test_a_closed_adopted_pr_with_no_or_several_open_prs_at_its_head_keeps_the_record(tmp_path, open_numbers):
+    """Only ONE open PR at the reviewed head re-adopts; none or several leaves 40/41 and the file as they were."""
+    from types import SimpleNamespace
+
+    group = {"prs": [{"repo": "o/alpha", "pr_number": 40, "adopted": True}, {"repo": "o/beta", "pr_number": 41, "adopted": True}]}
+    group_path = tmp_path / "pg.json"
+    group_path.write_text(json.dumps(group, indent=2) + "\n")
+    before_bytes = group_path.read_bytes()
+    before_prs = json.loads(json.dumps(group["prs"]))
+    heads = {"o/alpha": ("origin", "a" * 40), "o/beta": ("origin", "b" * 40)}
+    state = {("o/alpha", 40): "CLOSED"}
+    adapter = SimpleNamespace(
+        pr_status=lambda repo, number, **_: SimpleNamespace(state=state.get((repo, number), "OPEN")),
+        pr_for_head=lambda repo, sha: [{"number": n, "state": "open", "head": sha} for n in open_numbers] if sha == heads[repo][1] else [],
+    )
+    result = pr_ops.refresh_adopted_review_pr_group(group_path, group, adapter, heads)
+    assert result["prs"] == before_prs
+    assert group_path.read_bytes() == before_bytes
+
+
+def test_an_adopted_pr_still_open_keeps_its_number_and_is_not_re_queried(reviewed, monkeypatch):
+    group, queried = _adopt_then_count(reviewed, monkeypatch, closed=False)
+    assert {p["repo"]: p["pr_number"] for p in group["prs"]} == {reviewed["repos"]["alpha"]: 40, reviewed["repos"]["beta"]: 41}
+    assert queried == [], "an open adopted PR is not looked up by head again"
+
+
+def _down(*_, **__):
+    from gr2.python_cli.platform import AdapterError
+
+    raise AdapterError("HTTP 502 from the platform")
+
+
+@pytest.mark.parametrize("failing", ["pr_status", "pr_for_head"])
+def test_a_platform_error_while_re_checking_an_adopted_pr_leaves_the_record(tmp_path, failing):
+    """A 502 from the re-check is not raised out of the refresh; the group and its file stay as they were."""
+    from types import SimpleNamespace
+
+    group = {"prs": [{"repo": "o/alpha", "pr_number": 40, "adopted": True}, {"repo": "o/beta", "pr_number": 41, "adopted": True}]}
+    group_path = tmp_path / "pg.json"
+    group_path.write_text(json.dumps(group, indent=2) + "\n")
+    before_bytes = group_path.read_bytes()
+    before_prs = json.loads(json.dumps(group["prs"]))
+    closed = lambda repo, number, **_: SimpleNamespace(state="CLOSED")  # noqa: E731
+    adapter = SimpleNamespace(pr_status=_down if failing == "pr_status" else closed, pr_for_head=_down)
+    heads = {"o/alpha": ("origin", "a" * 40), "o/beta": ("origin", "b" * 40)}
+    result = pr_ops.refresh_adopted_review_pr_group(group_path, group, adapter, heads)
+    assert result["prs"] == before_prs
+    assert group_path.read_bytes() == before_bytes
+
+
+def test_a_platform_error_only_in_the_re_check_lets_the_merge_meet_the_platform_itself(reviewed, monkeypatch):
+    """The re-check's pr_status 502s; the pin pass reads the pinned heads; merge_pr 502s inside merge_pr_group's loop."""
+    from types import SimpleNamespace
+
+    real_merge = pr_ops.merge_pr_group
+    reviewed["adapter"].pr_for_head = _open_prs_by_head(reviewed)
+    monkeypatch.setattr(pr_ops, "merge_pr_group", lambda **kw: {"pr_group_id": kw["pr_group_id"], "completed": []})
+    assert gr2(reviewed["author"], monkeypatch, "pr", "merge", "--json").exit_code == 0
+    monkeypatch.setattr(pr_ops, "merge_pr_group", real_merge)
+    group_file = next((reviewed["author"] / ".grip" / "pr_groups").glob("*.json"))
+    before = json.loads(group_file.read_text())["prs"]
+    calls = []
+
+    def pr_status(repo, number, **_):
+        calls.append(repo)
+        if len(calls) <= len(KEYS):  # the re-check queries each adopted member once, before the pin pass
+            _down()
+        return SimpleNamespace(state="OPEN", head_oid=reviewed["heads"][repo.split("/")[1]])
+
+    adapter = reviewed["adapter"]
+    adapter.pr_status = pr_status
+    adapter.pr_for_head = _down
+    adapter.merge_pr = _down
+    merged = gr2(reviewed["author"], monkeypatch, "pr", "merge", "--json")
+    assert merged.exception is None or isinstance(merged.exception, SystemExit), repr(merged.exception)
+    assert merged.exit_code == 1, merged.output
+    assert len(calls) > len(KEYS), "the pin pass reached the platform after the re-check"
+    payload = json.loads(merged.stdout[merged.stdout.index("{"):])
+    assert payload["status"] == "failed"
+    assert payload["failed"][0]["reason"] == "HTTP 502 from the platform"
+    assert json.loads(group_file.read_text())["prs"] == before

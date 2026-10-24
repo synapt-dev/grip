@@ -7076,6 +7076,11 @@ def pr_merge(
         on_host = _review_members_on_host(workspace_root, members)
         if pr_ops.review_pr_groups(workspace_root, target):
             group_path, group = _find_review_pr_group(workspace_root, target)
+            if any(pr.get("adopted") for pr in group.get("prs", [])):  # a closed adopted PR is re-adopted by its head
+                group = pr_ops.refresh_adopted_review_pr_group(
+                    group_path, group, platform_ops.get_platform_adapter(str(group.get("platform", "github"))),
+                    {slug: (m["remote"], m["commit"]) for slug, (m, _) in on_host.items()},
+                )
         else:  # PRs opened outside gr2: adopt each one by its reviewed head commit
             try:
                 group_path, group = pr_ops.adopt_review_pr_group(

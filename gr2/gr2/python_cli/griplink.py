@@ -26,11 +26,11 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
 import unicodedata
 from pathlib import Path
 
 from . import gitops
+from .clone_exec import IncompleteRemoval, rmtree_or_refuse
 
 NS = "refs/dev.synapt.grip"
 STOOK = NS + "/STOOK"
@@ -608,7 +608,7 @@ def checkout(root: Path, committed_from: str | None = None) -> dict[str, int]:
                     mrepo.rmdir()
                 st.rename(mrepo)
             else:
-                shutil.rmtree(st, ignore_errors=True)
+                _remove_scratch(root, m)
                 gitops.out(root, "clone", "-q", "--no-checkout", "--", url, str(mrepo))
         link = root / m
         if not link.is_symlink() and not link.exists():
@@ -813,9 +813,26 @@ def _scratch(root: Path, m: str) -> Path:
     return _git_dir(root) / "gr2" / "pull-scratch" / m
 
 
-def _drop_scratch(root: Path, members) -> None:
+def _remove_scratch(root: Path, m: str) -> None:
+    """Remove member m's scratch, or refuse naming what is left (rmtree_or_refuse): a scratch that is still there
+    could be read later as this pull's."""
+    try:
+        rmtree_or_refuse(_scratch(root, m))
+    except IncompleteRemoval as e:
+        raise GriplinkRefusal(f"{m}: its scratch could not be removed: {e}; nothing was pulled", 3) from e
+
+
+def _drop_scratch(root: Path, members, exc: BaseException) -> None:
+    """After a refusal before the ref writes: remove each scratch this pull made. One that cannot be removed is named
+    in the refusal, never dropped; the caller re-raises `exc` when this returns."""
+    left = []
     for m in members:
-        shutil.rmtree(_scratch(root, m), ignore_errors=True)
+        try:
+            _remove_scratch(root, m)
+        except GriplinkRefusal as e:
+            left.append(str(e.__cause__))
+    if left and isinstance(exc, GriplinkRefusal):
+        raise GriplinkRefusal(f"{exc}; and a scratch could not be removed: {'; '.join(left)}", exc.code) from exc
 
 
 def _pins_readable(root: Path, rev: str) -> list[str]:
@@ -834,7 +851,7 @@ def _pins_readable(root: Path, rev: str) -> list[str]:
             url = _git(root, "config", "--blob", f"{rev}:.gitmodules", f"submodule.{m}.url")
             _check_url(m, url)
             st = _scratch(root, m)
-            shutil.rmtree(st, ignore_errors=True)
+            _remove_scratch(root, m)
             st.parent.mkdir(parents=True, exist_ok=True)
             scratched.append(m)
             done = gitops.run(root, "clone", "-q", "--no-checkout", "--", url, str(st))
@@ -845,8 +862,8 @@ def _pins_readable(root: Path, rev: str) -> list[str]:
                 gitops.run(st, "fetch", "-q", "--no-tags", "--no-write-fetch-head", "--", url, pin)
                 if not _has(st, f"{pin}^{{commit}}"):
                     raise GriplinkRefusal(f"{m}: its remote does not serve {pin[:12]}; nothing was pulled", 5)
-    except BaseException:
-        _drop_scratch(root, scratched)
+    except BaseException as exc:
+        _drop_scratch(root, scratched, exc)
         raise
     return scratched
 
@@ -968,8 +985,8 @@ def pull(root: Path, remote: str = "origin") -> dict:
         scratched = _pins_readable(root, theirs)
         try:
             _plan(root, theirs, committed_from=mine)  # the remote's content, checked before any ref moves
-        except BaseException:
-            _drop_scratch(root, scratched)
+        except BaseException as exc:
+            _drop_scratch(root, scratched, exc)
             raise
         for local, sha in updates:
             _git(root, "update-ref", local, sha)
@@ -996,8 +1013,8 @@ def pull(root: Path, remote: str = "origin") -> dict:
                 said = ((r.stderr or "") + (r.stdout or "")).strip()
                 gitops.run(root, "merge", "--abort")
                 raise GriplinkRefusal(f"the root merge stopped: {said}; nothing was pulled", 3)
-        except BaseException:
-            _drop_scratch(root, scratched)
+        except BaseException as exc:
+            _drop_scratch(root, scratched, exc)
             raise
         for p in un:
             if _is_field(p):  # a head both sides named: the cut writes every head again from the merged names

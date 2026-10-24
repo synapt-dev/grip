@@ -468,3 +468,21 @@ def test_checkout_takes_a_scratch_only_when_it_holds_the_pin_from_the_members_ur
     assert git(api, "config", "--get", "remote.origin.url") == str(world["tmp"] / "remote-api.git")
     assert git(api, "rev-parse", "HEAD") == git(d, "rev-parse", f"HEAD:api.griplink/{griplink.PIN}")
     assert _scratches(d) == []
+
+
+def test_a_scratch_that_cannot_be_removed_is_named_in_the_refusal(world, monkeypatch):
+    d = _desk(world)
+    pin = _pin_on_no_remote(world)
+    real = griplink.rmtree_or_refuse
+
+    def stuck(p: Path) -> None:
+        if p.exists():
+            raise griplink.IncompleteRemoval(f"{p} could not be fully removed")
+        real(p)
+
+    monkeypatch.setattr(griplink, "rmtree_or_refuse", stuck)
+    with pytest.raises(GriplinkRefusal) as exc:
+        griplink.pull(d)
+    said = str(exc.value)
+    assert exc.value.code == 5 and said.startswith(f"api: its remote does not serve {pin[:12]}; nothing was pulled"), said
+    assert "; and a scratch could not be removed: " in said and "pull-scratch/api could not be fully removed" in said, said

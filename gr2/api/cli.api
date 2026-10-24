@@ -64,6 +64,8 @@ json  check show .records[].v  enum(1)                                stable
 json  check show .snapshot_oid                                        stable
 json  check show .status  enum(pass,fail,absent)                      stable
 verb  check show                                                      stable
+# checkout
+verb  checkout (hidden)                                               stable
 # commit
 flag  commit --amend                                                  stable
 flag  commit --lane <str>                                             stable
@@ -71,6 +73,7 @@ flag  commit --message/-m <str>                                       stable
 flag  commit --owner-unit <str>                                       stable
 flag  commit --repo-path <str>                                        stable
 flag  commit --workspace-root <str>                                   stable
+flag  commit -a/--all                                                 stable
 verb  commit                                                          stable
 # config apply
 arg   config apply base_path <str> (hidden:config)                    stable
@@ -111,6 +114,10 @@ flag  exec status --json (hidden:exec)                                stable
 flag  exec status --repos <str> (hidden:exec)                         stable
 flag  exec status --root/-C <str> (hidden:exec)                       stable
 verb  exec status (hidden:exec)                                       stable
+# follow
+arg   follow member <str> (hidden)                                    stable
+flag  follow --record <str> (hidden)                                  stable
+verb  follow (hidden)                                                 stable
 # grip add
 arg   grip add value <str> (hidden:grip)                              stable
 flag  grip add --ref <str> (hidden:grip)                              stable
@@ -409,6 +416,10 @@ flag  lane show --json (hidden)                                       stable
 flag  lane show --root/-C <str> (hidden)                              stable
 flag  lane show --unit <str> (hidden)                                 stable
 verb  lane show (hidden)                                              stable
+# pin
+arg   pin member <str> (hidden)                                       stable
+flag  pin --record <str> (hidden)                                     stable
+verb  pin (hidden)                                                    stable
 # plan
 arg   plan workspace_root <str> (hidden)                              stable
 flag  plan --json (hidden)                                            stable
@@ -464,6 +475,9 @@ flag  pr view --repo <str>                                            stable
 flag  pr view --review <str>                                          stable
 flag  pr view --root/-C <str>                                         stable
 verb  pr view                                                         stable
+# promote
+arg   promote member <str> (hidden)                                   stable
+verb  promote (hidden)                                                stable
 # proto json
 arg   proto json target <str> (hidden:proto)                          stable
 flag  proto json --message <str> (hidden:proto)                       stable
@@ -476,12 +490,23 @@ flag  prune --remote <str> (hidden)                                   stable
 flag  prune --repo-path <str> (hidden)                                stable
 flag  prune --target <str> (hidden)                                   stable
 verb  prune (hidden)                                                  stable
+# pull
+flag  pull --remote <str> (hidden)                                    stable
+verb  pull (hidden)                                                   stable
 # push
+flag  push --allow-rewind                                             stable
 flag  push --force-with-lease                                         stable
 flag  push --remote <str>                                             stable
 flag  push --repo-path <str>                                          stable
+flag  push --root                                                     stable
 flag  push --set-upstream/-u                                          stable
 verb  push                                                            stable
+# record
+arg   record member <str> (hidden)                                    stable
+arg   record record_id <str> (hidden)                                 stable
+flag  record --kind <str> (hidden)                                    stable
+flag  record --text/-m <str> (hidden)                                 stable
+verb  record (hidden)                                                 stable
 # repo hook-run
 arg   repo hook-run repo_root <str> (hidden)                          stable
 arg   repo hook-run stage <str> (hidden)                              stable

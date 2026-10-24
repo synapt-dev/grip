@@ -181,6 +181,7 @@ Create or amend a commit from the staged index.
 - `--workspace-root`: Lane-aware: commit each repo of a lane in this workspace (requires --owner-unit)
 - `--owner-unit`: Lane-aware: the unit whose lane to commit across
 - `--lane`: Lane-aware: lane name (defaults to the unit's current lane)
+- `-a/--all`: At a full-mode workspace root: stage each member's tracked changes first, as git commit -a does
 
 ### gr2 store init
 
@@ -264,6 +265,8 @@ Push one branch and verify its immutable remote commit.
 - `--set-upstream/-u`: (no help text in the code)
 - `--force-with-lease`: Replace the remote ref only if its observed value still matches
 - `--repo-path`: Repo to operate on (defaults to cwd; gr2 verbs are single-repo)
+- `--root`: Push the full-mode workspace root
+- `--allow-rewind`: Let a member move back from what the remote recorded, recorded
 
 ### gr2 review publish
 

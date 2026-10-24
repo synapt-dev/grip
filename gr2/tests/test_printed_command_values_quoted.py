@@ -33,6 +33,18 @@ _DIAGNOSTIC = re.compile(r"^(?:git|gr2) [\w-]+:|\b(?:failed|exited|timed out|ret
 _QUOTERS = {"_shown", "shown", "quote"}
 
 ALLOWLIST: dict[tuple[str, str], str] = {
+    ('gr2/python_cli/app.py', 'typer.echo(f"gr2 {verb}: no workspace root at or above {Path.cwd()}", err=True)'):
+        'placeholder: verb is a literal root verb name from the caller (app.py root verbs)',
+    ('gr2/python_cli/app.py', 'typer.echo(f"gr2 {verb}: this workspace is in an older shape; {verb} needs the full-mode shape, which "'):
+        'placeholder: verb is a literal root verb name from the caller (app.py root verbs)',
+    ('gr2/python_cli/app.py', 'typer.echo(f"gr2 push at a workspace root is not available yet{hint}", err=True)'):
+        'hint is one of two string constants in _root_push, no outside value',
+    ('gr2/python_cli/app.py', 'typer.echo(f"gr2 {verb}: git failed: {first}; nothing past that step was written", err=True)'):
+        'placeholder: verb is a literal root verb name from the caller; first is git\'s own message, not a command value',
+    ('gr2/python_cli/root_verbs.py', 'f"gr2 {verb}: this workspace\'s names were not fetched (a plain git clone has main only); run "'):
+        'placeholder: verb is a literal root verb name from the caller',
+    ('gr2/python_cli/root_verbs.py', 'f"{STOOK_FETCH}, then gr2 {verb} again", 4)'):
+        'STOOK_FETCH is a module constant and verb a literal root verb name from the caller',
     ('gr2/python_cli/app.py', 'f"another branch belongs in a new lane: gr2 lane create <workspace> {next_steps._shown(unit)} <lane>{repos} "'):
         "repos is built quoted: ' --repos ' + next_steps._shown(key), app.py:2090",
     ('gr2/python_cli/app.py', 'stash_if_dirty(path, f"gr2 exit {owner_unit}/{lane_name}")'):

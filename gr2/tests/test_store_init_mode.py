@@ -2,6 +2,9 @@
 
 A new store is written in the mode asked for; a root whose grip.toml already declares another mode is refused before
 anything is cloned or written, because init does not switch a workspace's mode.
+
+A NEW full-mode root is a griplink root (section 13), which adds members by url, so the rows that built a full store by
+adopting existing checkouts were removed with that change; the griplink init rows live in test_griplink_cli.py.
 """
 from __future__ import annotations
 
@@ -21,21 +24,6 @@ def _two_members(tmp_path: Path) -> Path:
         run(root, "git", "clone", str(remote), name)
         configure_identity(root / name)
     return root
-
-
-def test_mode_full_writes_the_line_and_the_first_commit_records_the_sidecar(tmp_path):
-    root = _two_members(tmp_path)
-
-    assert gr2(root, "init", "--mode", "full").returncode == 0
-    configure_identity(root)
-
-    assert workspace_mode.of_root(root) == "full"
-    first = gr2(root, "commit", "-m", "first")
-    assert first.returncode == 0, f"{first.stdout}\n{first.stderr}"
-    # In full mode the gitlink is the member's own commit, and the fields sit in the sidecar beside it.
-    gitlink = git(root, "ls-tree", "HEAD", "--", "alpha").stdout.split()[2]
-    assert gitlink == git(root / "alpha", "rev-parse", "HEAD").stdout.strip()
-    assert git(root, "ls-tree", "-d", "HEAD", "--", ".grip/fields/alpha").stdout, "the fields sit in the sidecar"
 
 
 @pytest.mark.parametrize("args", [(), ("--mode", "compat")], ids=["no-mode", "mode-compat"])
@@ -58,7 +46,7 @@ def test_an_unknown_mode_is_a_usage_error_that_creates_nothing(tmp_path):
     assert not (root / ".git").exists() and not (root / "grip.toml").exists()
 
 
-@pytest.mark.parametrize("first,second", [("compat", "full"), ("full", "compat")])
+@pytest.mark.parametrize("first,second", [("compat", "full")])
 def test_init_does_not_switch_an_existing_stores_mode(tmp_path, first, second):
     root = _two_members(tmp_path)
     assert gr2(root, "init", "--mode", first).returncode == 0
@@ -68,16 +56,6 @@ def test_init_does_not_switch_an_existing_stores_mode(tmp_path, first, second):
 
     assert result.returncode == 4, (result.stdout, result.stderr)
     assert f"in mode {first!r}" in result.stderr and f"--mode {second}" in result.stderr
-    assert (root / "grip.toml").read_bytes() == before
-
-
-def test_reinit_with_the_same_mode_is_idempotent(tmp_path):
-    root = _two_members(tmp_path)
-    assert gr2(root, "init", "--mode", "full").returncode == 0
-    before = (root / "grip.toml").read_bytes()
-
-    assert gr2(root, "init", "--mode", "full").returncode == 0
-
     assert (root / "grip.toml").read_bytes() == before
 
 
@@ -94,15 +72,3 @@ def test_the_mode_refusal_comes_before_any_clone(tmp_path, args, refused):
 
     assert result.returncode == (4 if refused else 0), (result.stdout, result.stderr)
     assert (root / "gamma").exists() is not refused
-
-
-def test_a_grip_toml_with_no_mode_line_and_no_store_takes_the_mode_asked_for(tmp_path):
-    """A spec-only root (a grip.toml with no `mode` line and no `.git` of its own) has declared nothing, so
-    `--mode full` writes full mode rather than reading the absent key as compat and refusing."""
-    root = _two_members(tmp_path)
-    (root / "grip.toml").write_text('schema_version = 1\nworkspace_name = "workspace"\n', encoding="utf-8")
-
-    result = gr2(root, "init", "--mode", "full", check=False)
-
-    assert result.returncode == 0, (result.stdout, result.stderr)
-    assert workspace_mode.of_root(root) == "full"

@@ -301,8 +301,17 @@ def add(root: Path, m: str, url: str) -> str:
     _check_name(m)
     _check_url(m, url)
     mrepo = member_dir(root, m)
-    mrepo.parent.mkdir(parents=True, exist_ok=True)
-    gitops.out(root, "clone", "-q", "--", url, str(mrepo))
+    if mrepo.parent.exists():
+        raise GriplinkRefusal(f"{m}: {mrepo.parent.name} is already at this root (an existing member, or one left by an "
+                              "earlier add); nothing was changed", 3)
+    mrepo.parent.mkdir(parents=True)
+    try:
+        gitops.out(root, "clone", "-q", "--", url, str(mrepo))
+    except gitops.GitError:
+        import shutil
+
+        shutil.rmtree(mrepo.parent)  # this call made it, and the clone left it unusable
+        raise
     pin = _git(mrepo, "rev-parse", "HEAD")
     gm = str(root / ".gitmodules")
     _git(root, "config", "-f", gm, f"submodule.{m}.path", f"{m}.griplink/{PIN}")

@@ -551,6 +551,20 @@ def test_checkout_of_a_pin_no_clone_can_read_refuses_naming_the_member(world):
     assert said.endswith("then gr2 checkout again"), said
 
 
+def test_checkout_of_a_member_its_url_cannot_clone_refuses_naming_the_member(world):
+    d = _desk(world)
+    url = str(world["tmp"] / "remote-api.git")
+    (world["tmp"] / "remote-api.git").rename(world["tmp"] / "remote-api.gone")
+    with pytest.raises(GriplinkRefusal) as exc:
+        griplink.checkout(d)
+    said = str(exc.value)
+    head, tail = f"api: cannot clone it from {url}: ", "; next: check the url in .gitmodules, then gr2 checkout again"
+    assert exc.value.code == 3 and said.startswith(head) and said.endswith(tail), said
+    # git's own reason sits between them; its wording varies by git version, so only its presence is asserted
+    assert said[len(head):-len(tail)].strip(), said
+    assert not (griplink.member_dir(d, "api") / ".git").exists() and _scratches(d) == []
+
+
 def test_a_merge_reads_a_member_only_my_side_added(world):
     d = _desk(world)
     griplink.checkout(d)

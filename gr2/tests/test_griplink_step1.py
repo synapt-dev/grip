@@ -406,6 +406,32 @@ def test_push_refuses_at_exit_5_when_the_remote_cannot_be_read(world):
     assert exc.value.code == 5 and str(exc.value).startswith("cannot read the remote shadow from origin"), str(exc.value)
 
 
+def test_push_at_a_root_with_no_remote_names_the_remote_to_add(world):
+    ws = world["ws"]
+    git(ws, "remote", "remove", "origin")
+    _edits(ws)
+    griplink.commit(ws, "change", stage_all=True)
+    refs = git(ws, "for-each-ref")
+    with pytest.raises(GriplinkRefusal) as exc:
+        griplink.push(ws)
+    assert git(ws, "for-each-ref") == refs
+    msg = str(exc.value)
+    assert exc.value.code == 5 and msg.startswith("origin is not a remote of this root; nothing was pushed"), msg
+    assert "next: git remote add origin <url> at the root, then gr2 push again" in msg, msg
+
+
+def test_pull_at_a_root_with_no_remote_names_the_remote_to_add(world):
+    ws = world["ws"]
+    git(ws, "remote", "remove", "origin")
+    refs = git(ws, "for-each-ref")
+    with pytest.raises(GriplinkRefusal) as exc:
+        griplink.pull(ws)
+    assert git(ws, "for-each-ref") == refs
+    msg = str(exc.value)
+    assert exc.value.code == 5 and msg.startswith("origin is not a remote of this root; nothing was pulled"), msg
+    assert "next: git remote add origin <url> at the root, then gr2 pull again" in msg, msg
+
+
 def test_push_refuses_at_exit_5_when_the_fetch_fails(world, monkeypatch):
     ws = world["ws"]
     _edits(ws)

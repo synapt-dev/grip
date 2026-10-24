@@ -262,3 +262,196 @@ def test_a_name_both_sides_set_to_the_same_value_merges(world):
     assert griplink.pull(ws)["how"] == "merged"
     tip = git(ws, "rev-parse", griplink.member_ref("api"))
     assert git(ws, "cat-file", "blob", f"{griplink.STOOK}:api.griplink/{griplink.HEADF}").strip() == tip
+
+
+# ---- a member with no checkout: its pin is read before any ref moves ---------------------------------------------
+def _desk(w: dict, name: str = "desk") -> Path:
+    """A clone of the root with the root's names, never checked out: no member has a checkout here."""
+    d = w["tmp"] / name
+    subprocess.run(["git", "clone", "-q", "--no-local", f"file://{w['remote']}", str(d)], check=True, capture_output=True)
+    git(d, "fetch", "-q", "origin", f"+{griplink.NS}/*:{griplink.NS}/*")
+    return d
+
+
+def _scratches(root: Path) -> list[str]:
+    st = griplink._git_dir(root) / "gr2" / "pull-scratch"
+    return sorted(p.name for p in st.iterdir()) if st.exists() else []
+
+
+def _desk_state(root: Path) -> tuple:
+    files = sorted(str(p.relative_to(root)) for p in root.rglob("*") if ".git" not in p.relative_to(root).parts)
+    return _state(root), git(root, "status", "--porcelain"), files
+
+
+def _pin_on_no_remote(w: dict, m: str = "api") -> str:
+    """A peer commits in member m's own git and moves m's pin to it, as promote does; the root push sends no member,
+    so the new pin is on no remote. Returns it."""
+    p = _peer(w, "promoter")
+    mrepo = griplink.member_dir(p, m)
+    (mrepo / "src" / "f1.py").write_text("promoted, never pushed to the member's remote\n")
+    git(mrepo, "commit", "-q", "-am", "promoted")
+    sha = git(mrepo, "rev-parse", "HEAD")
+    git(p, "update-index", "--cacheinfo", f"160000,{sha},{m}.griplink/{griplink.PIN}")
+    griplink._cut(p, f"pin {m}", [git(p, "rev-parse", "HEAD")])
+    griplink.push(p)
+    return sha
+
+
+def _pin_served(w: dict, m: str = "api") -> str:
+    """A peer moves member m's pin to a commit m's own remote serves, and pushes the root. Returns the pin."""
+    p = _peer(w, "mover")
+    sha = _member_commit(w, m, "served")
+    _move_pin(p, m, sha)
+    griplink.push(p)
+    return sha
+
+
+def _diverge_without_api(w: dict, d: Path) -> None:
+    """Desk d checks out, changes web and commits (so a pull merges), then loses api's checkout."""
+    griplink.checkout(d)
+    _write(d, "web", "src/f1.py", "the desk's own change\n")
+    griplink.commit(d, "desk web", stage_all=True)
+    import shutil
+    shutil.rmtree(griplink.member_dir(d, "api"))
+
+
+def _add_member(w: dict, p: Path, m: str = "lib", serve: bool = True) -> str:
+    """Peer p adds member m from a new remote; with serve=False its pin then moves to a commit only p holds."""
+    git(w["tmp"], "init", "-q", "--bare", "-b", "main", str(w["tmp"] / f"remote-{m}.git"))
+    src = w["tmp"] / f"src-{m}"
+    (src / "src").mkdir(parents=True)
+    git(src, "init", "-q", "-b", "main")
+    (src / "src" / "l.py").write_text(f"{m} v1\n")
+    git(src, "add", ".")
+    git(src, "commit", "-q", "-m", f"{m}: v1")
+    git(src, "push", "-q", str(w["tmp"] / f"remote-{m}.git"), "HEAD:main")
+    griplink.add(p, m, str(w["tmp"] / f"remote-{m}.git"))
+    if not serve:
+        mrepo = griplink.member_dir(p, m)
+        (mrepo / "src" / "l.py").write_text("only the peer holds this\n")
+        git(mrepo, "commit", "-q", "-am", "unserved")
+        git(p, "update-index", "--cacheinfo", f"160000,{git(mrepo, 'rev-parse', 'HEAD')},{m}.griplink/{griplink.PIN}")
+        griplink._cut(p, f"pin {m}", [git(p, "rev-parse", "HEAD")])
+    griplink.push(p)
+    return git(p, "rev-parse", f"HEAD:{m}.griplink/{griplink.PIN}")
+
+
+def test_a_pin_on_no_remote_refuses_a_fast_forward_on_a_desk_with_no_checkout_and_moves_nothing(world):
+    d = _desk(world)
+    pin = _pin_on_no_remote(world)
+    before = _desk_state(d)
+    with pytest.raises(GriplinkRefusal) as exc:
+        griplink.pull(d)
+    assert exc.value.code == 5 and str(exc.value) == f"api: its remote does not serve {pin[:12]}; nothing was pulled"
+    assert _desk_state(d) == before and _scratches(d) == []
+
+
+def test_a_pin_on_no_remote_refuses_a_merge_on_a_desk_with_no_api_checkout_and_moves_nothing(world):
+    d = _desk(world)
+    _diverge_without_api(world, d)
+    pin = _pin_on_no_remote(world)
+    before = _desk_state(d)
+    with pytest.raises(GriplinkRefusal) as exc:
+        griplink.pull(d)
+    assert exc.value.code == 5 and str(exc.value) == f"api: its remote does not serve {pin[:12]}; nothing was pulled"
+    assert _desk_state(d) == before and _scratches(d) == []
+    assert not (d / ".git" / "MERGE_HEAD").exists()
+
+
+def test_a_served_pin_fast_forwards_a_desk_with_no_checkout_and_checks_every_member_out(world):
+    d = _desk(world)
+    pin = _pin_served(world)
+    got = griplink.pull(d)
+    assert got["how"] == "fast-forward", got
+    assert git(griplink.member_dir(d, "api"), "rev-parse", "HEAD") == pin
+    assert (griplink.member_dir(d, "web") / ".git").exists()
+    assert _scratches(d) == []
+    assert git(griplink.member_dir(d, "api"), "config", "--get", "remote.origin.url") == str(
+        world["tmp"] / "remote-api.git")
+
+
+def test_a_served_pin_merges_on_a_desk_with_no_api_checkout(world):
+    d = _desk(world)
+    _diverge_without_api(world, d)
+    pin = _pin_served(world)
+    assert griplink.pull(d)["how"] == "merged"
+    assert git(griplink.member_dir(d, "api"), "rev-parse", "HEAD") == pin
+    assert _read(d, "web", "src/f1.py") == "the desk's own change\n"
+    assert _scratches(d) == []
+
+
+@pytest.mark.parametrize("diverge", [False, True], ids=["fast-forward", "merge"])
+def test_a_pull_that_adds_a_member_its_remote_serves_checks_it_out(world, diverge):
+    ws = world["ws"]
+    if diverge:
+        _write(ws, "web", "src/f1.py", "so the shadows diverge\n")
+        griplink.commit(ws, "ws", stage_all=True)
+    pin = _add_member(world, _peer(world))
+    assert griplink.pull(ws)["how"] == ("merged" if diverge else "fast-forward")
+    assert git(griplink.member_dir(ws, "lib"), "rev-parse", "HEAD") == pin
+    assert _read(ws, "lib", "src/l.py") == "lib v1\n" and _scratches(ws) == []
+
+
+@pytest.mark.parametrize("diverge", [False, True], ids=["fast-forward", "merge"])
+def test_a_pull_that_adds_a_member_whose_pin_is_not_served_refuses_and_moves_nothing(world, diverge):
+    ws = world["ws"]
+    if diverge:
+        _write(ws, "web", "src/f1.py", "so the shadows diverge\n")
+        griplink.commit(ws, "ws", stage_all=True)
+    pin = _add_member(world, _peer(world), serve=False)
+    before = _desk_state(ws)
+    with pytest.raises(GriplinkRefusal) as exc:
+        griplink.pull(ws)
+    assert exc.value.code == 5 and str(exc.value) == f"lib: its remote does not serve {pin[:12]}; nothing was pulled"
+    assert _desk_state(ws) == before and _scratches(ws) == []
+    assert not (ws / "lib.griplink").exists()
+
+
+@pytest.mark.parametrize("diverge", [False, True], ids=["fast-forward", "merge"])
+def test_a_later_refusal_removes_the_scratch_it_made(world, diverge):
+    ws = world["ws"]
+    if diverge:
+        _write(ws, "web", "src/f1.py", "so the shadows diverge\n")
+        griplink.commit(ws, "ws", stage_all=True)
+    p = _peer(world, "adder")
+    _add_member(world, p)
+    git(p, "config", "-f", ".gitmodules", "submodule.api.url", "-uploadpack=x")
+    git(p, "add", ".gitmodules")
+    git(p, "commit", "-q", "-m", "a url gr2 refuses")
+    git(p, "push", "-q", "origin", "main")
+    before = _desk_state(ws)
+    with pytest.raises(GriplinkRefusal) as exc:
+        griplink.pull(ws)
+    assert exc.value.code == 3 and str(exc.value).startswith("api: the url '-uploadpack=x'"), str(exc.value)
+    assert _desk_state(ws) == before and _scratches(ws) == []
+
+
+def test_a_scratch_left_by_a_killed_pull_is_never_read_as_this_pulls_fetch(world):
+    """A pull killed between its scratch and its ref writes leaves the scratch. Here the stale scratch holds the very pin,
+    which the remote no longer serves; the next pull must not take it as fetched."""
+    d = _desk(world)
+    pin = _pin_on_no_remote(world)
+    st = griplink._git_dir(d) / "gr2" / "pull-scratch" / "api"
+    st.parent.mkdir(parents=True)
+    subprocess.run(["git", "clone", "-q", "--no-checkout", str(world["tmp"] / "remote-api.git"), str(st)], check=True,
+                   capture_output=True)
+    git(st, "fetch", "-q", str(griplink.member_dir(world["tmp"] / "promoter", "api")), pin)
+    assert griplink._has(st, pin)  # the precondition: the stale scratch holds the pin
+    before = _desk_state(d)
+    with pytest.raises(GriplinkRefusal) as exc:
+        griplink.pull(d)
+    assert exc.value.code == 5 and str(exc.value) == f"api: its remote does not serve {pin[:12]}; nothing was pulled"
+    assert _desk_state(d) == before and _scratches(d) == []
+
+
+def test_checkout_takes_a_scratch_only_when_it_holds_the_pin_from_the_members_url(world):
+    d = _desk(world)
+    st = griplink._git_dir(d) / "gr2" / "pull-scratch" / "api"
+    st.parent.mkdir(parents=True)
+    subprocess.run(["git", "clone", "-q", "--no-checkout", str(world["tmp"] / "remote-web.git"), str(st)], check=True,
+                   capture_output=True)  # a scratch from the wrong url
+    griplink.checkout(d)
+    api = griplink.member_dir(d, "api")
+    assert git(api, "config", "--get", "remote.origin.url") == str(world["tmp"] / "remote-api.git")
+    assert git(api, "rev-parse", "HEAD") == git(d, "rev-parse", f"HEAD:api.griplink/{griplink.PIN}")
+    assert _scratches(d) == []

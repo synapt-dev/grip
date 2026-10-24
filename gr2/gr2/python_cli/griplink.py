@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import unicodedata
 from pathlib import Path
 
@@ -599,7 +600,16 @@ def checkout(root: Path, committed_from: str | None = None) -> dict[str, int]:
         mrepo = member_dir(root, m)
         if not (mrepo / ".git").exists():
             mrepo.parent.mkdir(parents=True, exist_ok=True)
-            gitops.out(root, "clone", "-q", "--no-checkout", "--", url, str(mrepo))
+            st = _scratch(root, m)
+            # A pull's scratch is used only when it holds this pin and came from this url; anything else is removed.
+            if (st / ".git").exists() and _has(st, f"{pin}^{{commit}}") and _try(
+                    st, "config", "--get", "remote.origin.url") == url and not (mrepo.exists() and any(mrepo.iterdir())):
+                if mrepo.exists():
+                    mrepo.rmdir()
+                st.rename(mrepo)
+            else:
+                shutil.rmtree(st, ignore_errors=True)
+                gitops.out(root, "clone", "-q", "--no-checkout", "--", url, str(mrepo))
         link = root / m
         if not link.is_symlink() and not link.exists():
             link.symlink_to(f"{m}.griplink/{PIN}")
@@ -796,6 +806,51 @@ def _member_has(root: Path, m: str, *shas: str) -> Path:
     return mrepo
 
 
+def _scratch(root: Path, m: str) -> Path:
+    """The scratch clone a pull makes of a member that has no checkout yet, kept until the refs move: inside the
+    root's git dir, as git keeps submodule repositories, out of the member's path, where a clone with no files checked
+    out would read as uncommitted work."""
+    return _git_dir(root) / "gr2" / "pull-scratch" / m
+
+
+def _drop_scratch(root: Path, members) -> None:
+    for m in members:
+        shutil.rmtree(_scratch(root, m), ignore_errors=True)
+
+
+def _pins_readable(root: Path, rev: str) -> list[str]:
+    """Every pin of shadow `rev` readable in its member, before any ref moves. A member with a checkout fetches a
+    missing pin (_member_has). A member with none (never checked out here, or new in `rev`) is cloned with no checkout
+    into its scratch and must hold its pin there; checkout moves the scratch into place. A scratch already there was
+    left by a pull that stopped before its checkout, so it is removed, never read as this pull's. Returns the members
+    given a scratch; on a refusal every scratch made here is removed."""
+    scratched: list[str] = []
+    try:
+        for m, pin in _pins(root, rev).items():
+            if (member_dir(root, m) / ".git").exists():
+                _member_has(root, m, pin)
+                continue
+            _check_name(m)
+            url = _git(root, "config", "--blob", f"{rev}:.gitmodules", f"submodule.{m}.url")
+            _check_url(m, url)
+            st = _scratch(root, m)
+            shutil.rmtree(st, ignore_errors=True)
+            st.parent.mkdir(parents=True, exist_ok=True)
+            scratched.append(m)
+            done = gitops.run(root, "clone", "-q", "--no-checkout", "--", url, str(st))
+            if done.returncode:
+                raise GriplinkRefusal(f"{m}: cannot clone it from {url}: {(done.stderr or '').strip()}; nothing was "
+                                      "pulled", 5)
+            if not _has(st, f"{pin}^{{commit}}"):
+                gitops.run(st, "fetch", "-q", "--no-tags", "--no-write-fetch-head", "--", url, pin)
+                if not _has(st, f"{pin}^{{commit}}"):
+                    raise GriplinkRefusal(f"{m}: its remote does not serve {pin[:12]}; nothing was pulled", 5)
+    except BaseException:
+        _drop_scratch(root, scratched)
+        raise
+    return scratched
+
+
 def _decide_pins(root: Path, base: str | None, mine: str, theirs: str) -> dict[str, str]:
     """{member: pin} where both sides moved the pin to different shas: the one that contains the other, read in the
     member's own git. A plain-git merge of the gitlink never stands in: what it does depends on what the checkout has
@@ -910,9 +965,12 @@ def pull(root: Path, remote: str = "origin") -> dict:
             _git(root, "update-ref", local, sha)
         return {"how": "up to date", "shadow": mine, "merged": merged, "updated": [u[0] for u in updates]}
     if ff:
-        for m, pin in _pins(root, theirs).items():
-            _member_has(root, m, pin) if (member_dir(root, m) / ".git").exists() else None
-        _plan(root, theirs, committed_from=mine)  # the remote's content, checked before any ref moves
+        scratched = _pins_readable(root, theirs)
+        try:
+            _plan(root, theirs, committed_from=mine)  # the remote's content, checked before any ref moves
+        except BaseException:
+            _drop_scratch(root, scratched)
+            raise
         for local, sha in updates:
             _git(root, "update-ref", local, sha)
         for ref in (MAIN, SHADOW):
@@ -925,18 +983,22 @@ def pull(root: Path, remote: str = "origin") -> dict:
         how = "fast-forward"
     else:
         pins = _decide_pins(root, _try(root, "merge-base", mine, theirs), mine, theirs)
-        for m, pin in _pins(root, theirs).items():
-            _member_has(root, m, pin) if (member_dir(root, m) / ".git").exists() else None
-        _plan(root, theirs, committed_from=mine)  # the remote's content, checked before any ref moves
-        names = _merged_names(root, their_stook)
-        r = gitops.run(root, "merge", "-q", "--no-commit", "--no-ff", "--no-verify", theirs)
-        un = [p for p in (gitops.run(root, "diff", "--name-only", "-z", "--diff-filter=U").stdout or "").split("\0") if p]
-        pin_paths = {f"{m}.griplink/{PIN}": pin for m, pin in pins.items()}
-        real = [p for p in un if not _is_field(p) and p not in pin_paths]
-        if (r.returncode and not un) or real:
-            said = ((r.stderr or "") + (r.stdout or "")).strip()
-            gitops.run(root, "merge", "--abort")
-            raise GriplinkRefusal(f"the root merge stopped: {said}; nothing was pulled", 3)
+        scratched = _pins_readable(root, theirs)
+        try:
+            _plan(root, theirs, committed_from=mine)  # the remote's content, checked before any ref moves
+            names = _merged_names(root, their_stook)
+            r = gitops.run(root, "merge", "-q", "--no-commit", "--no-ff", "--no-verify", theirs)
+            un = [p for p in (gitops.run(root, "diff", "--name-only", "-z", "--diff-filter=U").stdout or "").split("\0")
+                  if p]
+            pin_paths = {f"{m}.griplink/{PIN}": pin for m, pin in pins.items()}
+            real = [p for p in un if not _is_field(p) and p not in pin_paths]
+            if (r.returncode and not un) or real:
+                said = ((r.stderr or "") + (r.stdout or "")).strip()
+                gitops.run(root, "merge", "--abort")
+                raise GriplinkRefusal(f"the root merge stopped: {said}; nothing was pulled", 3)
+        except BaseException:
+            _drop_scratch(root, scratched)
+            raise
         for p in un:
             if _is_field(p):  # a head both sides named: the cut writes every head again from the merged names
                 _git(root, "checkout", "--ours", "--", p)

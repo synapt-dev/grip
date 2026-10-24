@@ -633,6 +633,13 @@ def size_sentence(found: tuple[str, str, tuple[str, ...], str]) -> str:
     return host_size_line(found[0], ", ".join(found[2]) or None, found[1], found[3])
 
 
+def _require_remote(root: Path, remote: str, done: str, verb: str) -> None:
+    """Refuse at exit 5, naming the step that adds it, when the root has no remote of that name."""
+    if gitops.run(root, "remote", "get-url", remote).returncode:
+        raise GriplinkRefusal(f"{remote} is not a remote of this root; nothing was {done}. next: git remote add "
+                              f"{remote} <url> at the root, then gr2 {verb} again", 5)
+
+
 def push(root: Path, remote: str = "origin", allow_rewind: bool = False) -> dict:
     """One atomic push of main, SHADOW, STOOK and every member and record ref that is ahead; never forced. Refused, with nothing
     pushed: (1) "fetch first" when the remote's shadow is not an ancestor of ours after a fresh fetch; (2) an entry
@@ -640,6 +647,7 @@ def push(root: Path, remote: str = "origin", allow_rewind: bool = False) -> dict
     exception). A remote whose shadow cannot be read (ls-remote or the fetch fails) refuses at exit 5. When git
     refuses the push, its own words are printed, after the size sentence for a size refusal."""
     _one_branch(root)
+    _require_remote(root, remote, "pushed", "push")
     theirs = None
     listed = gitops.run(root, "ls-remote", remote, MAIN)
     if listed.returncode:
@@ -937,6 +945,7 @@ def pull(root: Path, remote: str = "origin") -> dict:
         raise GriplinkRefusal(f"your changes in {', '.join(left)} are not committed and the checkout would overwrite "
                               "them; nothing was pulled. next: gr2 commit -a, then pull again", 3)
     rg = f"refs/remotes/{remote}/grip"
+    _require_remote(root, remote, "pulled", "pull")
     listed = gitops.run(root, "ls-remote", remote, MAIN)
     if listed.returncode:
         raise GriplinkRefusal(f"cannot read the remote shadow from {remote}: {(listed.stderr or '').strip()}; nothing "

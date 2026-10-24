@@ -132,14 +132,14 @@ def test_a_plain_clone_checks_out_and_refuses_commit_until_the_names_are_fetched
     assert "nothing to commit" in r.stderr
 
 
-def test_push_at_a_root_refuses_and_the_hidden_root_push_runs(world, monkeypatch):
+def test_push_at_a_root_pushes_and_the_hidden_root_flag_changes_nothing(world, monkeypatch):
     root = world["root"]
     remote = world["tmp"] / "root.git"
     git(world["tmp"], "init", "-q", "--bare", "-b", "main", str(remote))
     git(root, "remote", "add", "origin", str(remote))
     r = gr2(root, monkeypatch, "push")
-    assert r.exit_code == 4 and "not available yet" in r.stderr
-    assert git(remote, "for-each-ref") == ""
+    assert r.exit_code == 0, r.stderr
+    assert _ref(remote, "refs/heads/main") == _ref(root, "HEAD")
     r = gr2(root, monkeypatch, "push", "--root")
     assert r.exit_code == 0, r.stderr
     assert _ref(remote, "refs/heads/main") == _ref(root, "HEAD")

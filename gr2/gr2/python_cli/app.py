@@ -2702,11 +2702,11 @@ def _root_commit(root, message: str, *, stage_all: bool, amend: bool) -> None:
 
 
 def _root_push(root, *, root_push: bool, remote: str | None, allow_rewind: bool) -> None:
-    """A workspace root's push is not a visible verb yet: the public-push guard does not yet read what a root push
-    sends. Until it does, gr2 push at a root refuses; an older-shape store keeps gr2 store push."""
+    """gr2 push at a griplink root pushes the root (--root is accepted and changes nothing); an older-shape store
+    refuses and keeps gr2 store push. A root found by its gitlink alone refuses in _griplink_call, naming the fetch."""
     from . import root_verbs
 
-    if root.shape == root_verbs.STORE or not root_push:
+    if root.shape == root_verbs.STORE:
         hint = "; gr2 store push pushes this store" if root.shape == root_verbs.STORE else ""
         typer.echo(f"gr2 push at a workspace root is not available yet{hint}", err=True)
         raise typer.Exit(code=4)
@@ -2881,9 +2881,10 @@ def push_cmd(
         "--repo-path",
         help="Repo to operate on (defaults to cwd; gr2 verbs are single-repo)",
     ),
-    root_push: bool = typer.Option(False, "--root", hidden=True, help="Push the full-mode workspace root"),
+    root_push: bool = typer.Option(False, "--root", hidden=True, help="Push the full-mode workspace root (the default)"),
     allow_rewind: bool = typer.Option(
-        False, "--allow-rewind", hidden=True, help="Let a member move back from what the remote recorded, recorded"
+        False, "--allow-rewind", help="At a full-mode workspace root: let a member move back from what the remote "
+        "recorded, recorded"
     ),
 ) -> None:
     """Push one branch and verify its immutable remote commit.

@@ -358,10 +358,20 @@ def test_a_pin_on_no_remote_refuses_a_merge_on_a_desk_with_no_api_checkout_and_m
     assert not (d / ".git" / "MERGE_HEAD").exists()
 
 
-def test_a_served_pin_fast_forwards_a_desk_with_no_checkout_and_checks_every_member_out(world):
+def test_a_served_pin_fast_forwards_a_desk_with_no_checkout_and_checks_every_member_out(world, monkeypatch):
     d = _desk(world)
     pin = _pin_served(world)
+    clones = []
+    run = griplink.gitops.run
+
+    def counted(repo, *args, **kw):
+        if args[:1] == ("clone",):
+            clones.append(args[-1])
+        return run(repo, *args, **kw)
+
+    monkeypatch.setattr(griplink.gitops, "run", counted)
     got = griplink.pull(d)
+    assert len(clones) == 2, clones  # one clone per member: checkout moves the scratch into place, never clones again
     assert got["how"] == "fast-forward", got
     assert git(griplink.member_dir(d, "api"), "rev-parse", "HEAD") == pin
     assert (griplink.member_dir(d, "web") / ".git").exists()

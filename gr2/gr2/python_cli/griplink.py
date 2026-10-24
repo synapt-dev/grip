@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import unicodedata
 from pathlib import Path
 
@@ -637,7 +638,7 @@ def _require_remote(root: Path, remote: str, done: str, verb: str) -> None:
     """Refuse at exit 5, naming the step that adds it, when the root has no remote of that name."""
     if gitops.run(root, "remote", "get-url", remote).returncode:
         raise GriplinkRefusal(f"{remote} is not a remote of this root; nothing was {done}. next: git remote add "
-                              f"{remote} <url> at the root, then gr2 {verb} again", 5)
+                              f"{shlex.quote(remote)} <url> at the root, then gr2 {shlex.quote(verb)} again", 5)
 
 
 def push(root: Path, remote: str = "origin", allow_rewind: bool = False) -> dict:

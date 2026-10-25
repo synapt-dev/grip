@@ -73,7 +73,7 @@ def test_proof_init_add_commit_status_clone_checkout_promote(world, monkeypatch)
     assert _ref(root, griplink.member_ref("api"))
     assert git(root / "api", "rev-parse", "HEAD") == pin  # the member's git is untouched until promote
     r = gr2(root, monkeypatch, "status")
-    assert r.exit_code == 0 and r.stdout.strip() == "status: shadow = stook", r.stdout
+    assert r.exit_code == 0 and r.stdout.strip() == "status: on main, upstream none; nothing to commit", r.stdout
     clone = world["tmp"] / "C"
     git(world["tmp"], "clone", "-q", str(root), str(clone))
     r = gr2(clone, monkeypatch, "checkout")

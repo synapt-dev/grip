@@ -2702,7 +2702,11 @@ def _root_commit(root, message: str, *, stage_all: bool, amend: bool) -> None:
     for m in done["skipped"]:
         typer.echo(f"{m}: no checkout here; skipped")
     moved = ", ".join(done["moved"]) or "names only"
-    typer.echo(f"committed {done['shadow']} ({moved})")
+    if done["moved"]:
+        typer.echo(f"committed {done['shadow']} at the root ({moved}); each member's own git is unchanged: "
+                   "its change stays staged there")
+    else:
+        typer.echo(f"committed {done['shadow']} ({moved})")
 
 
 def _root_push(root, *, root_push: bool, remote: str | None, allow_rewind: bool) -> None:

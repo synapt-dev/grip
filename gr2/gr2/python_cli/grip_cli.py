@@ -376,7 +376,8 @@ def _grip_document(root: Path) -> dict:
     if spec.returncode:
         raise NativeStoreRefusal(
             f"no grip.toml at {root} and no committed spec at HEAD; this root is not a "
-            f"store these verbs can measure -- run store init here",
+            f"store these verbs can measure -- run gr2 store init here (for full mode: gr2 store init "
+            f"--mode full <new dir> --clone NAME=URL for each member)",
             5,
         )
     return tomllib.loads(spec.stdout)
@@ -3983,9 +3984,9 @@ def grip_init_cmd(
         None,
         "--mode",
         help=(
-            'The workspace mode of a new store: "compat" (the default) or "full". Full writes '
-            '`mode = "full"` into grip.toml, so each member is recorded by its own commit as the gitlink, its '
-            "fields sit in the .grip/fields sidecar, and a pin need not be on a remote. A grip.toml that declares another mode, or an existing store in "
+            'The workspace mode of a new store: "compat" (the default) or "full". Full makes the root '
+            "a git repository on branch main with no grip.toml, so each member is recorded by its own commit as "
+            "the gitlink, its fields sit in the .grip/fields sidecar, and a pin need not be on a remote. A grip.toml that declares another mode, or an existing store in "
             "another mode (no mode line is compat), is refused."
         ),
     ),

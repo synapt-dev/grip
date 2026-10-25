@@ -149,7 +149,9 @@ def test_a_second_root_branch_is_refused_by_name(world, verb):
     with pytest.raises(GriplinkRefusal) as exc:
         griplink.commit(ws, "change", stage_all=True) if verb == "commit" else griplink.push(ws)
     assert exc.value.code == 3
-    assert str(exc.value) == "topic: full mode carries one root branch for now; more than one comes later", str(exc.value)
+    assert str(exc.value) == (
+        "topic: full mode works on the root branch main only for now; next: git switch main (or git branch -m topic main), "
+        f"then gr2 {verb} again"), str(exc.value)
 
 
 def _refusing_hook(remote: Path, text: str) -> None:

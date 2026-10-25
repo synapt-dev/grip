@@ -25,13 +25,13 @@ def _text(ws: Path, rev: str) -> str:
 
 
 def test_status_reads_shadow_equals_stook_on_a_committed_workspace(world):
-    assert griplink.status_lines(griplink.status(world["ws"])) == ["status: shadow = stook"]
+    assert griplink.status_lines(griplink.status(world["ws"])) == ["status: on main, upstream none; nothing to commit"]
 
 
 def test_a_record_is_a_chain_followed_by_its_branch_and_resolved_in_the_shadow(world):
     ws = world["ws"]
     tip = griplink.record(ws, "api", "r1", text="lgtm")
-    assert griplink.status_lines(griplink.status(ws)) == ["status: shadow BEHIND the stook: api/r1"]
+    assert griplink.status_lines(griplink.status(ws)) == ["status: on main, upstream none; changes to commit: api/r1"]
     griplink.commit(ws, "r1")
     assert git(ws, "cat-file", "blob", f"{griplink.STOOK}:{R1_FIELD}") == griplink.REFP + griplink.record_ref("r1")
     assert git(ws, "cat-file", "blob", f"HEAD:{R1_FIELD}") == tip
@@ -41,7 +41,7 @@ def test_a_record_is_a_chain_followed_by_its_branch_and_resolved_in_the_shadow(w
     assert git(ws, "rev-parse", f"{second}^") == tip, "a record appends to its chain"
     griplink.commit(ws, "r1 updated")
     assert _text(ws, "HEAD") == "lgtm, one nit"
-    assert griplink.status_lines(griplink.status(ws)) == ["status: shadow = stook"]
+    assert griplink.status_lines(griplink.status(ws)) == ["status: on main, upstream none; nothing to commit"]
 
 
 def test_pin_holds_a_record_at_its_sha_and_follow_takes_the_branch_again(world):
@@ -52,10 +52,10 @@ def test_pin_holds_a_record_at_its_sha_and_follow_takes_the_branch_again(world):
     griplink.commit(ws, "r1 pinned")
     assert git(ws, "cat-file", "blob", f"{griplink.STOOK}:{R1_FIELD}") == held
     griplink.record(ws, "api", "r1", text="a third version")
-    assert griplink.status_lines(griplink.status(ws)) == ["status: shadow = stook"], "a pinned entry followed its branch"
+    assert griplink.status_lines(griplink.status(ws)) == ["status: on main, upstream none; nothing to commit"], "a pinned entry followed its branch"
     assert git(ws, "cat-file", "blob", f"HEAD:{R1_FIELD}") == held
     assert griplink.follow(ws, "api", "r1") == griplink.record_ref("r1")
-    assert griplink.status_lines(griplink.status(ws)) == ["status: shadow BEHIND the stook: api/r1"]
+    assert griplink.status_lines(griplink.status(ws)) == ["status: on main, upstream none; changes to commit: api/r1"]
     griplink.commit(ws, "r1 follows again")
     assert _text(ws, "HEAD") == "a third version"
 
@@ -71,14 +71,14 @@ def test_pin_holds_a_member_at_its_chains_sha_while_the_chain_moves_on(world):
     assert git(ws, "rev-parse", griplink.member_ref("api")) != held, "the chain did not move"
     assert git(ws, "cat-file", "blob", f"HEAD:api.griplink/{griplink.HEADF}") == held
     griplink.follow(ws, "api")
-    assert griplink.status_lines(griplink.status(ws)) == ["status: shadow BEHIND the stook: api"]
+    assert griplink.status_lines(griplink.status(ws)) == ["status: on main, upstream none; changes to commit: api"]
 
 
 def test_status_names_each_members_unstaged_tracked_changes_as_git_status_does(world):
     ws = world["ws"]
     (ws / "web" / "src" / "f2.py").write_text("web edit\n")
     assert griplink.status_lines(griplink.status(ws)) == [
-        "status: shadow = stook",
+        "status: on main, upstream none; nothing to commit",
         'web: changes not staged for commit: src/f2.py (use "git add" inside web, or "gr2 commit -a")']
 
 

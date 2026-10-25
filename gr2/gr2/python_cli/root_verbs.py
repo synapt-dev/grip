@@ -166,8 +166,9 @@ def require_stook(root: Root, verb: str) -> None:
 def fetch_names(root: Root, verb: str, remote: str, lenient: bool = False) -> Root:
     """A root found by its gitlink alone fetches its gr2 names once from `remote`, taking only the names it does not
     hold, so a local name is never overwritten. Refused at exit 4 when the root has no such remote or the remote
-    holds no STOOK; `lenient` (checkout, push) returns the root unchanged in those two cases instead, so the verb runs
-    as it did before names were fetched. A root that has its STOOK is returned as it is, with no network."""
+    holds no STOOK, and at exit 5 when the names cannot be listed or fetched. `lenient` (checkout, push) returns the
+    root unchanged in each of those cases instead, so the verb runs as it did before names were fetched, with no remote
+    reachable included. A root that has its STOOK is returned as it is, with no network."""
     if root.shape != GRIPLINK or root.has_stook:
         return root
     if remote.startswith("-") or gitops.unsafe_in_identifier(remote) or gitops.run(
@@ -180,11 +181,15 @@ def fetch_names(root: Root, verb: str, remote: str, lenient: bool = False) -> Ro
             f"git remote add {shlex.quote(remote)} <url>, then gr2 {verb} again", 4)
     listed = gitops.run(root.path, "ls-remote", "--refs", remote, f"{griplink.NS}/*")
     if listed.returncode:
+        if lenient:
+            return root
         raise RootVerbRefusal(f"gr2 {verb}: cannot list the gr2 names on {shlex.quote(remote)}: "
                               f"{(listed.stderr or '').strip()}; nothing was fetched", 5)
     try:
         rows = gitops.ls_remote_rows(listed.stdout)
     except gitops.LsRemoteMalformed as exc:
+        if lenient:
+            return root
         raise RootVerbRefusal(f"gr2 {verb}: cannot list the gr2 names on {shlex.quote(remote)}: "
                               "a row was malformed; nothing was "
                               "fetched", 5) from exc
@@ -193,7 +198,7 @@ def fetch_names(root: Root, verb: str, remote: str, lenient: bool = False) -> Ro
     if griplink.STOOK in missing:
         fetched = gitops.run(root.path, "fetch", "-q", "--no-tags", "--no-recurse-submodules", "--no-write-fetch-head",
                              "--refmap=", remote, *[f"{n}:{n}" for n in missing])
-        if fetched.returncode:
+        if fetched.returncode and not lenient:
             raise RootVerbRefusal(f"gr2 {verb}: cannot fetch the gr2 names from {shlex.quote(remote)}: "
                                   f"{(fetched.stderr or '').strip()}; nothing past that step was written", 5)
     if not _has_stook(root.path):

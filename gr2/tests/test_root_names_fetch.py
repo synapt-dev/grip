@@ -167,3 +167,32 @@ def test_r11_a_remote_name_holding_a_line_separator_does_not_split_the_listing(w
     assert r.exit_code == 0, (r.stdout, r.stderr)
     assert _names(clone) == _names(origin)
     assert griplink.STOOK in _names(clone)
+
+
+def _unreachable(world, clone: Path) -> None:
+    git(clone, "remote", "set-url", "origin", str(world["tmp"] / "gone.git"))
+
+
+def test_r12_checkout_with_an_unreachable_remote_runs_as_before(world, monkeypatch):
+    _, bare_clone = _no_names_clone(world, monkeypatch)
+    named_clone = world["tmp"] / "named"
+    git(world["tmp"], "clone", "-q", str(world["origin"]), str(named_clone))
+    for clone in (bare_clone, named_clone):
+        _unreachable(world, clone)
+        r = gr2(clone, monkeypatch, "checkout")
+        no_trace(r)
+        assert r.exit_code == 0, (clone.name, r.stdout, r.stderr)
+        assert "api: at its pin" in r.stdout
+        assert _names(clone) == ""
+
+
+def test_r13_push_with_an_unreachable_remote_refuses_as_before(world, monkeypatch):
+    bare, clone = _no_names_clone(world, monkeypatch)
+    before = git(bare, "for-each-ref")
+    _unreachable(world, clone)
+    r = gr2(clone, monkeypatch, "push")
+    no_trace(r)
+    assert r.exit_code == 4, (r.stdout, r.stderr)
+    assert r.stderr.startswith("gr2 push: this workspace's names were not fetched"), r.stderr
+    assert git(bare, "for-each-ref") == before
+    assert _names(clone) == ""

@@ -430,6 +430,20 @@ def test_push_beside_a_lookalike_main_pushes_as_with_the_real_main_alone(world):
     assert git(remote, "rev-parse", "refs/a/refs/heads/main") == old
 
 
+def test_push_names_a_malformed_listing_as_unreadable_not_as_two_mains(world, monkeypatch):
+    ws, remote = world["ws"], world["remote"]
+    before = git(remote, "for-each-ref")
+    _edits(ws)
+    griplink.commit(ws, "change", stage_all=True)
+    _malformed_ls_remote(monkeypatch)
+    with pytest.raises(GriplinkRefusal) as exc:
+        griplink.push(ws)
+    assert exc.value.code == 5
+    assert str(exc.value) == ("cannot read the remote shadow from origin: a row of its listing is malformed; "
+                              "nothing was pushed")
+    assert git(remote, "for-each-ref") == before
+
+
 def test_push_at_a_root_with_no_remote_names_the_remote_to_add(world):
     ws = world["ws"]
     git(ws, "remote", "remove", "origin")
@@ -613,3 +627,15 @@ def test_checkout_refuses_a_member_checkout_that_lacks_the_pin(world):
     assert exc.value.code == 3 and str(exc.value).startswith(f"api: its checkout does not hold the pin {missing[:12]}"), \
         str(exc.value)
     assert git(api, "rev-parse", "HEAD") == head
+
+
+def _malformed_ls_remote(monkeypatch):
+    """ls-remote answers a line that is not a row; every other git call runs as it is."""
+    real = griplink.gitops.run
+
+    def fake(cwd, *args, **kw):
+        if args[:1] == ("ls-remote",):
+            return subprocess.CompletedProcess(["git", *args], 0, "not a row\n", "")
+        return real(cwd, *args, **kw)
+
+    monkeypatch.setattr(griplink.gitops, "run", fake)

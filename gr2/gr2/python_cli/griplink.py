@@ -680,6 +680,9 @@ def push(root: Path, remote: str = "origin", allow_rewind: bool = False) -> dict
                               "was pushed", 5)
     try:
         listed_main = gitops.ls_remote_oid(listed.stdout, MAIN)
+    except gitops.LsRemoteMalformed:
+        raise GriplinkRefusal(f"cannot read the remote shadow from {remote}: a row of its listing is malformed; "
+                              "nothing was pushed", 5) from None
     except ValueError:
         raise GriplinkRefusal(f"{remote} lists more than one row named {MAIN}; nothing was pushed", 5) from None
     if listed_main is not None:  # absent: the first push
@@ -1050,6 +1053,9 @@ def pull(root: Path, remote: str = "origin") -> dict:
                               "was pulled", 5)
     try:
         listed_main = gitops.ls_remote_oid(listed.stdout, MAIN)
+    except gitops.LsRemoteMalformed:
+        raise GriplinkRefusal(f"cannot read the remote shadow from {remote}: a row of its listing is malformed; "
+                              "nothing was pulled", 5) from None
     except ValueError:
         raise GriplinkRefusal(f"{remote} lists more than one row named {MAIN}; nothing was pulled", 5) from None
     if listed_main is None:

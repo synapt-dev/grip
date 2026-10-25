@@ -15,7 +15,7 @@ from gr2.python_cli.griplink import GriplinkRefusal
 from gr2.python_cli.app import app
 from tests.conftest import make_cli_runner
 
-from tests.test_griplink_step1 import git, world  # noqa: F401  (api and web, pushed once)
+from tests.test_griplink_step1 import _malformed_ls_remote, git, world  # noqa: F401  (api and web, pushed once)
 
 
 def _peer(w: dict, name: str = "peer") -> Path:
@@ -998,3 +998,15 @@ def test_a_lookalike_main_listed_first_does_not_hide_a_moved_real_main(world):
     griplink.pull(ws)
     assert git(ws, "rev-parse", "HEAD") == theirs != old
     assert (ws / "api" / "src" / "f1.py").read_text() == "from the peer\n"
+
+
+def test_pull_names_a_malformed_listing_as_unreadable_not_as_two_mains(world, monkeypatch):
+    ws = world["ws"]
+    before = _state(ws)
+    _malformed_ls_remote(monkeypatch)
+    with pytest.raises(GriplinkRefusal) as exc:
+        griplink.pull(ws)
+    assert exc.value.code == 5
+    assert str(exc.value) == ("cannot read the remote shadow from origin: a row of its listing is malformed; "
+                              "nothing was pulled")
+    assert _state(ws) == before

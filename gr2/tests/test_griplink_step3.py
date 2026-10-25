@@ -1010,3 +1010,24 @@ def test_pull_names_a_malformed_listing_as_unreadable_not_as_two_mains(world, mo
     assert str(exc.value) == ("cannot read the remote shadow from origin: a row of its listing is malformed; "
                               "nothing was pulled")
     assert _state(ws) == before
+
+
+def test_pull_from_a_remote_with_no_main_names_a_malformed_shadow_listing_as_unreadable(world, monkeypatch):
+    ws = world["ws"]
+    git(world["remote"], "update-ref", "-d", "refs/heads/main")
+    before = _state(ws)
+    _malformed_ls_remote(monkeypatch, griplink.SHADOW)
+    real_no_main, calls = griplink._pull_no_main, []
+
+    def counted(root, remote):
+        calls.append(remote)
+        return real_no_main(root, remote)
+
+    monkeypatch.setattr(griplink, "_pull_no_main", counted)
+    with pytest.raises(GriplinkRefusal) as exc:
+        griplink.pull(ws)
+    assert calls == ["origin"]
+    assert exc.value.code == 5
+    assert str(exc.value) == ("cannot read the remote shadow from origin: a row of its listing is malformed; "
+                              "nothing was pulled")
+    assert _state(ws) == before

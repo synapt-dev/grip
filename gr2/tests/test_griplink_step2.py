@@ -52,7 +52,9 @@ def test_pin_holds_a_record_at_its_sha_and_follow_takes_the_branch_again(world):
     griplink.commit(ws, "r1 pinned")
     assert git(ws, "cat-file", "blob", f"{griplink.STOOK}:{R1_FIELD}") == held
     griplink.record(ws, "api", "r1", text="a third version")
-    assert griplink.status_lines(griplink.status(ws)) == ["status: on main, upstream none; nothing to commit"], "a pinned entry followed its branch"
+    assert griplink.status_lines(griplink.status(ws)) == [
+        "status: on main, upstream none; nothing to commit"
+    ], "a pinned entry followed its branch"
     assert git(ws, "cat-file", "blob", f"HEAD:{R1_FIELD}") == held
     assert griplink.follow(ws, "api", "r1") == griplink.record_ref("r1")
     assert griplink.status_lines(griplink.status(ws)) == ["status: on main, upstream none; changes to commit: api/r1"]

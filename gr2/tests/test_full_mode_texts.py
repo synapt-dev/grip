@@ -76,5 +76,12 @@ def test_a_root_with_no_spec_is_told_both_inits(tmp_path, monkeypatch):
 def test_store_init_mode_help_says_what_full_makes():
     store = typer.main.get_command(app).commands["store"]
     (mode,) = [p for p in store.commands["init"].params if p.name == "mode"]
-    assert "Full makes the root a git repository on branch main with no grip.toml," in mode.help
+    assert "Full makes the root a git repository on branch main with no grip.toml." in mode.help
     assert "into grip.toml" not in mode.help
+    assert (
+        "Inside it, each member is checked out under <member>.griplink, holding the member's own commit as the "
+        "gitlink, and <member> links to that checkout. A pin need not be on a remote."
+    ) in mode.help
+    assert "beside it" not in mode.help
+    assert ".grip/fields" not in mode.help
+    assert "is refused." in mode.help

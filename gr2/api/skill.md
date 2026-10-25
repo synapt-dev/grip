@@ -190,7 +190,7 @@ Initialize a native store at cwd or the supplied root.
 - `<workspace_root>` (optional)
 - `--member`: Declare a member checkout by its path relative to the root (repeatable). Named paths win over the root's own spec and over sibling discovery; a named path that is not a checkout refuses the verb.
 - `--clone`: Declare a member from a url: NAME=URL clones it at <root>/NAME and records it (repeatable). The root is created when it does not exist.
-- `--mode`: The workspace mode of a new store: "compat" (the default) or "full". Full makes the root a git repository on branch main with no grip.toml, so each member is recorded by its own commit as the gitlink, its fields sit in the .grip/fields sidecar, and a pin need not be on a remote. A grip.toml that declares another mode, or an existing store in another mode (no mode line is compat), is refused.
+- `--mode`: The workspace mode of a new store: "compat" (the default) or "full". Full makes the root a git repository on branch main with no grip.toml. Inside it, each member is checked out under <member>.griplink, holding the member's own commit as the gitlink, and <member> links to that checkout. A pin need not be on a remote. A grip.toml that declares another mode, or an existing store in another mode (no mode line is compat), is refused.
 - `--root/-C`: The workspace root to act on (default: the current directory).
 - `--json`: Emit machine-readable JSON
 

@@ -3985,8 +3985,10 @@ def grip_init_cmd(
         "--mode",
         help=(
             'The workspace mode of a new store: "compat" (the default) or "full". Full makes the root '
-            "a git repository on branch main with no grip.toml, so each member is recorded by its own commit as "
-            "the gitlink, its fields sit in the .grip/fields sidecar, and a pin need not be on a remote. A grip.toml that declares another mode, or an existing store in "
+            "a git repository on branch main with no grip.toml. Inside it, each member is checked out under "
+            "<member>.griplink, holding the member's own commit as the gitlink, and <member> links to that "
+            "checkout. A pin need not be on a remote. "
+            "A grip.toml that declares another mode, or an existing store in "
             "another mode (no mode line is compat), is refused."
         ),
     ),

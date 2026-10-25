@@ -149,7 +149,8 @@ def test_a_root_on_another_branch_refuses_by_name(world, monkeypatch):
     no_trace(r)
     assert r.exit_code == 3, (r.stdout, r.stderr)
     assert r.stderr.strip() == (
-        "side: full mode works on the root branch main only for now; next: git switch main (or git branch -m side main), "
+        "side: full mode works on the root branch main only for now; "
+        "next: git switch main (or git branch -m side main), "
         "then gr2 push again")
     assert refs(origin) == ""
 

@@ -2591,6 +2591,8 @@ def root_pull_cmd(remote: str = typer.Option("origin", "--remote", help="The roo
     root = _griplink_root_or_refuse("pull", "git pull")
     done = _griplink_call(root, "pull", griplink_mod().pull, remote=remote)
     typer.echo(f"pull: {done['how']}; shadow {done['shadow']}")
+    if done.get("note"):
+        typer.echo(done["note"])
 
 
 @app.command("pin", hidden=True)

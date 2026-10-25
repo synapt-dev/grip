@@ -2703,8 +2703,8 @@ def _root_commit(root, message: str, *, stage_all: bool, amend: bool) -> None:
         typer.echo(f"{m}: no checkout here; skipped")
     moved = ", ".join(done["moved"]) or "names only"
     if done["moved"]:
-        typer.echo(f"committed {done['shadow']} at the root ({moved}); each member's own git is unchanged: "
-                   "its change stays staged there")
+        typer.echo(f"committed {done['shadow']} at the root ({moved}); each member's change stays staged in "
+                   "its own git, not committed there")
     else:
         typer.echo(f"committed {done['shadow']} ({moved})")
 

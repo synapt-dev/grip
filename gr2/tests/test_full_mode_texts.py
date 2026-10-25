@@ -51,14 +51,14 @@ def test_status_names_the_upstream_when_one_is_set(world):
     assert lines == ["status: on main, upstream origin/main; nothing to commit"]
 
 
-def test_commit_at_the_root_says_each_members_git_is_unchanged(cli_world, monkeypatch):
+def test_commit_at_the_root_says_each_members_change_stays_staged_there(cli_world, monkeypatch):
     root = cli_world["root"]
     _edit_and_stage(root)
     r = gr2(root, monkeypatch, "commit", "-m", "change a")
     assert r.exit_code == 0, r.stderr
     sha = git(root, "rev-parse", "HEAD")
-    assert r.stdout.strip() == (f"committed {sha} at the root (api); each member's own git is unchanged: "
-                                "its change stays staged there")
+    assert r.stdout.strip() == (f"committed {sha} at the root (api); each member's change stays staged in "
+                                "its own git, not committed there")
 
 
 def test_a_root_with_no_spec_is_told_both_inits(tmp_path, monkeypatch):

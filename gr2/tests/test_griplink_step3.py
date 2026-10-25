@@ -684,13 +684,13 @@ def test_a_pin_both_sides_recorded_and_on_no_remote_refuses_naming_whoever_pushe
     assert not (ws / ".git" / "MERGE_HEAD").exists()
 
 
-def _pin_lost(w: dict) -> tuple[Path, str]:
-    """A desk moves api's pin to its own commit, then api's checkout loses it (reset to the old pin, reflog expired,
-    pruned): api is checked out but does not hold its recorded pin. Returns the desk and the pin."""
+def _pin_lost(w: dict, m: str = "api") -> tuple[Path, str]:
+    """A desk moves m's pin to its own commit, then m's checkout loses it (reset to the old pin, reflog expired,
+    pruned): m is checked out but does not hold its recorded pin. Returns the desk and the pin."""
     d = _desk(w)
     griplink.checkout(d)
-    mine = _local_pin(d)
-    mrepo = griplink.member_dir(d, "api")
+    mine = _local_pin(d, m)
+    mrepo = griplink.member_dir(d, m)
     git(mrepo, "reset", "-q", "--hard", f"{mine}^")
     git(mrepo, "update-ref", "-d", "ORIG_HEAD")
     git(mrepo, "reflog", "expire", "--expire=now", "--all")
@@ -699,9 +699,9 @@ def _pin_lost(w: dict) -> tuple[Path, str]:
     return d, mine
 
 
-def _lost_said(sha: str, done: str, verb: str) -> str:
-    return (f"api: its checkout does not hold its recorded pin {sha[:12]}; nothing was {done}. next: fetch {sha[:12]} "
-            f"into api from where it was made, or move the pin, then gr2 {verb} again")
+def _lost_said(sha: str, done: str, verb: str, m: str = "api") -> str:
+    return (f"{m}: its checkout does not hold its recorded pin {sha[:12]}; nothing was {done}. next: fetch {sha[:12]} "
+            f"into {m} from where it was made, or move the pin, then gr2 {verb} again")
 
 
 def test_a_checkout_that_lost_its_recorded_pin_refuses_the_pull_and_changes_nothing(world):
@@ -734,13 +734,58 @@ def test_a_checkout_that_lost_its_recorded_pin_refuses_the_commit_and_cuts_nothi
     assert _state(d) == before
 
 
-def test_a_member_with_no_checkout_beside_one_holding_its_pin_is_not_refused(world):
-    d = _desk(world)
+def test_a_checkout_that_lost_its_recorded_pin_refuses_a_commit_of_what_is_staged_and_cuts_nothing(world):
+    d, mine = _pin_lost(world)
+    _write(d, "api", "src/f3.py", "staged on a lost pin\n")
+    git(griplink.member_dir(d, "api"), "add", "src/f3.py")
+    before = _state(d)
+    with pytest.raises(GriplinkRefusal) as exc:
+        griplink.commit(d, "lost")
+    assert exc.value.code == 3 and str(exc.value) == _lost_said(mine, "committed", "commit")
+    assert _state(d) == before
+
+
+def test_a_lost_pin_in_a_later_member_is_refused_by_name_when_an_earlier_member_holds_its_own(world):
+    d, mine = _pin_lost(world, "web")
+    before = _desk_state(d)
+    with pytest.raises(GriplinkRefusal) as exc:
+        griplink.pull(d)
+    assert exc.value.code == 3 and str(exc.value) == _lost_said(mine, "pulled", "pull", "web")
+    assert _desk_state(d) == before and _scratches(d) == []
+    with pytest.raises(GriplinkRefusal) as exc:
+        griplink.commit(d, "lost", stage_all=True)
+    assert exc.value.code == 3 and str(exc.value) == _lost_said(mine, "committed", "commit", "web")
+
+
+def test_a_commit_of_all_on_a_lost_pin_refuses_before_it_stages_anything(world):
+    d, mine = _pin_lost(world)
+    api = griplink.member_dir(d, "api")
+    (api / "src" / "f1.py").write_text("an unstaged edit on a lost pin\n")
+    staged = git(api, "diff", "--cached", "--name-only")
+    with pytest.raises(GriplinkRefusal) as exc:
+        griplink.commit(d, "lost", stage_all=True)
+    assert exc.value.code == 3 and str(exc.value) == _lost_said(mine, "committed", "commit")
+    assert git(api, "diff", "--cached", "--name-only") == staged
+
+
+def _no_api_checkout(w: dict) -> Path:
+    d = _desk(w)
     griplink.checkout(d)
     import shutil
     shutil.rmtree(griplink.member_dir(d, "api"))
+    return d
+
+
+def test_a_member_with_no_checkout_beside_one_holding_its_pin_is_not_refused_by_pull(world):
+    d = _no_api_checkout(world)
     griplink.pull(d)
+
+
+@pytest.mark.xfail(strict=True, raises=gitops.GitError, reason="commit diffs a member that has no checkout")
+def test_a_commit_beside_a_member_with_no_checkout_cuts_the_staged_change(world):
+    d = _no_api_checkout(world)
     _write(d, "web", "src/f3.py", "the desk's own change\n")
     git(griplink.member_dir(d, "web"), "add", "src/f3.py")
-    with pytest.raises(gitops.GitError, match="cannot change to"):  # commit's own diff of api, as before this check
-        griplink.commit(d, "desk web")
+    griplink.commit(d, "desk web")
+    names = git(d, "ls-tree", "-r", "--name-only", griplink.member_ref("web")).splitlines()
+    assert any(n.endswith("overlay/src/f3.py") for n in names)

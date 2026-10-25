@@ -827,3 +827,40 @@ def test_the_cli_commit_beside_a_member_with_no_checkout_says_it_skipped_the_mem
     r = make_cli_runner().invoke(app, ["commit", "-m", "desk web"])
     assert r.exit_code == 0, r.output
     assert r.output.count("api: no checkout here; skipped") == 1
+
+
+# ---- a refusal names only the pins still unserved after the fetch -----------------------------------------------------
+
+
+def test_member_has_fetches_a_served_pin_beside_an_unserved_one_and_names_only_the_unserved(world):
+    """git fails a whole fetch when one sha in it is not served, so a served sha asked for beside an unserved one used to
+    stay missing and be named unserved. Only the pin no remote serves is named, and the served one is fetched."""
+    ws = world["ws"]
+    served = _member_commit(world, "api", "served beside an unserved one")
+    src = world["tmp"] / "src-api"
+    (src / "src" / "pinned.txt").write_text("made here, never pushed\n")
+    git(src, "add", ".")
+    git(src, "commit", "-q", "-m", "never pushed")
+    unserved = git(src, "rev-parse", "HEAD")
+    mrepo = griplink.member_dir(ws, "api")
+    for s in (served, unserved):
+        assert subprocess.run(["git", "-C", str(mrepo), "cat-file", "-e", f"{s}^{{commit}}"]).returncode != 0
+    with pytest.raises(GriplinkRefusal) as exc:
+        griplink._member_has(ws, "api", unserved, served, mine=(unserved,))
+    assert exc.value.code == 5 and str(exc.value) == _mine_said("api", unserved)
+    assert subprocess.run(["git", "-C", str(mrepo), "cat-file", "-e", f"{served}^{{commit}}"]).returncode == 0
+
+
+def test_a_pull_whose_head_pin_is_lost_and_whose_peer_pin_is_served_names_only_the_lost_pin(world):
+    """This desk's HEAD records api at a commit its checkout no longer holds, its index stages a pin the checkout does
+    hold (so the pin-held check passes), and a peer moved api to a served pin: the pin decision reads both, and the
+    refusal names only this desk's pin, not the peer's served one."""
+    d, mine = _pin_lost(world)
+    held = git(griplink.member_dir(d, "api"), "rev-parse", "HEAD")
+    git(d, "update-index", "--cacheinfo", f"160000,{held},api.griplink/{griplink.PIN}")
+    _pin_served(world)
+    before = _desk_state(d)
+    with pytest.raises(GriplinkRefusal) as exc:
+        griplink.pull(d)
+    assert exc.value.code == 5 and str(exc.value) == _mine_said("api", mine)
+    assert _desk_state(d) == before and _scratches(d) == []

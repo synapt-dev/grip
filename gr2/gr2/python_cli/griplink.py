@@ -850,8 +850,14 @@ def _member_has(root: Path, m: str, *shas: str, mine=()) -> Path:
         url = _git(root, "config", "-f", str(root / ".gitmodules"), f"submodule.{m}.url")
         _check_url(m, url)
         gitops.run(mrepo, "fetch", "-q", "--no-tags", "--no-write-fetch-head", "--", url, *missing)
-        if any(not _has(mrepo, f"{s}^{{commit}}") for s in missing):
-            raise _unserved(m, missing, mine)
+        still = [s for s in missing if not _has(mrepo, f"{s}^{{commit}}")]
+        if len(missing) > 1 and still:
+            # one unserved sha fails git's whole fetch, so the served ones are fetched one at a time
+            for s in still:
+                gitops.run(mrepo, "fetch", "-q", "--no-tags", "--no-write-fetch-head", "--", url, s)
+            still = [s for s in still if not _has(mrepo, f"{s}^{{commit}}")]
+        if still:
+            raise _unserved(m, still, mine)
     return mrepo
 
 

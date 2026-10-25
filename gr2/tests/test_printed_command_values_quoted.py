@@ -43,8 +43,18 @@ ALLOWLIST: dict[tuple[str, str], str] = {
         'placeholder: verb is a literal root verb name from the caller; first is git\'s own message, not a command value',
     ('gr2/python_cli/root_verbs.py', 'f"gr2 {verb}: this workspace\'s names were not fetched (a plain git clone has main only); run "'):
         'placeholder: verb is a literal root verb name from the caller',
-    ('gr2/python_cli/root_verbs.py', 'f"{STOOK_FETCH}, then gr2 {verb} again", 4)'):
-        'STOOK_FETCH is a module constant and verb a literal root verb name from the caller',
+    ('gr2/python_cli/root_verbs.py', 'f"gr2 {verb}: this workspace\'s names were not fetched and {shlex.quote(remote)} is not a remote of this root; "'):
+        'placeholder: verb is a literal root verb name from the caller; remote is quoted',
+    ('gr2/python_cli/root_verbs.py', 'raise RootVerbRefusal(f"gr2 {verb}: cannot list the gr2 names on {shlex.quote(remote)}: "'):
+        'placeholder: verb is a literal root verb name from the caller; remote is quoted',
+    ('gr2/python_cli/root_verbs.py', 'f"gr2 {verb}: the remote {shlex.quote(remote)} has no gr2 names yet (no {griplink.STOOK}); nothing was "'):
+        'placeholder: verb is a literal root verb name from the caller; remote is quoted',
+    ('gr2/python_cli/root_verbs.py', 'raise RootVerbRefusal(f"gr2 {verb}: cannot fetch the gr2 names from {shlex.quote(remote)}: "'):
+        'placeholder: verb is a literal root verb name from the caller; remote is quoted',
+    ('gr2/python_cli/root_verbs.py', 'f"gr2 checkout (or gr2 pull), then gr2 {verb} again", 4)'):
+        'placeholder: verb is a literal root verb name from the caller',
+    ('gr2/python_cli/root_verbs.py', 'f"git remote add {shlex.quote(remote)} <url>, then gr2 {verb} again", 4)'):
+        'placeholder: verb is a literal root verb name from the caller; remote is quoted',
     ('gr2/python_cli/app.py', 'f"another branch belongs in a new lane: gr2 lane create <workspace> {next_steps._shown(unit)} <lane>{repos} "'):
         "repos is built quoted: ' --repos ' + next_steps._shown(key), app.py:2090",
     ('gr2/python_cli/app.py', 'stash_if_dirty(path, f"gr2 exit {owner_unit}/{lane_name}")'):

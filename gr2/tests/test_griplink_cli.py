@@ -115,7 +115,7 @@ def test_an_unknown_inside_member_value_refuses_every_root_verb(world, monkeypat
         assert "inside_member" in r.stderr and '"refuse"' in r.stderr and '"root"' in r.stderr
 
 
-def test_a_plain_clone_checks_out_and_refuses_commit_until_the_names_are_fetched(world, monkeypatch):
+def test_a_plain_clone_checks_out_with_its_names_fetched_then_commits(world, monkeypatch):
     root = world["root"]
     _edit_and_stage(root)
     assert gr2(root, monkeypatch, "commit", "-m", "c").exit_code == 0
@@ -123,10 +123,7 @@ def test_a_plain_clone_checks_out_and_refuses_commit_until_the_names_are_fetched
     git(world["tmp"], "clone", "-q", str(root), str(clone))
     assert _ref(clone, griplink.STOOK) is None
     assert gr2(clone, monkeypatch, "checkout").exit_code == 0
-    r = gr2(clone, monkeypatch, "commit", "-m", "x")
-    assert r.exit_code == 4
-    assert "git fetch origin '+refs/dev.synapt.grip/*:refs/dev.synapt.grip/*'" in r.stderr
-    git(clone, "fetch", "-q", "origin", f"+{griplink.NS}/*:{griplink.NS}/*")
+    assert _ref(clone, griplink.STOOK) == _ref(root, griplink.STOOK)
     r = gr2(clone, monkeypatch, "commit", "-m", "x")
     assert r.exit_code == 1  # griplink ran: nothing new, in git's words
     assert "nothing to commit" in r.stderr

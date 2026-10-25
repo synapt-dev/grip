@@ -2517,11 +2517,15 @@ def _root_for(verb: str, git_word: str):
         raise typer.Exit(code=exc.code) from exc
 
 
-def _griplink_call(root, verb: str, fn, *args, needs_stook: bool = True, **kwargs):
-    """Run one griplink step on a griplink root; a refusal prints its text and exits with its code."""
+def _griplink_call(root, verb: str, fn, *args, needs_stook: bool = True, fetch_from: str | None = None,
+                  fetch_lenient: bool = False, **kwargs):
+    """Run one griplink step on a griplink root; a refusal prints its text and exits with its code. `fetch_from` (the
+    verbs that talk to a remote) fetches the gr2 names once from that remote when the root has none."""
     from . import griplink, root_verbs
 
     try:
+        if fetch_from is not None:
+            root = root_verbs.fetch_names(root, verb, fetch_from, lenient=fetch_lenient)
         if needs_stook:
             root_verbs.require_stook(root, verb)
         return fn(root.path, *args, **kwargs)
@@ -2554,6 +2558,15 @@ def _member_name_from_url(url: str) -> str:
     return base[: -len(".git")] if base.endswith(".git") else base
 
 
+def _checkout_main_then_members(path: Path) -> dict[str, int]:
+    """A plain clone whose remote HEAD named a missing branch has an unborn HEAD: check out main from origin first."""
+    from . import root_verbs
+
+    if gitops.run(path, "rev-parse", "-q", "--verify", "HEAD").returncode:
+        gitops.out(path, "checkout", "-q", "-b", "main", "--track", root_verbs.ORIGIN_MAIN)
+    return griplink_mod().checkout(path)
+
+
 @app.command("checkout", hidden=True)
 def root_checkout_cmd() -> None:
     """Put each member at its pin with its workspace change applied and staged (full mode). On an older-shape store,
@@ -2569,7 +2582,8 @@ def root_checkout_cmd() -> None:
 
         grip_materialize_cmd(root=root.path, json_output=False)
         return
-    applied = _griplink_call(root, "checkout", griplink_mod().checkout, needs_stook=False)
+    applied = _griplink_call(root, "checkout", _checkout_main_then_members, needs_stook=False,
+                             fetch_from="origin", fetch_lenient=True)
     for m, n in applied.items():
         typer.echo(f"{m}: at its pin, {n} path(s) of its change applied and staged")
 
@@ -2589,7 +2603,7 @@ def root_promote_cmd(member: str = typer.Argument(..., help="The member whose wo
 def root_pull_cmd(remote: str = typer.Option("origin", "--remote", help="The root's remote")) -> None:
     """Fetch the root's remote and merge its shadow (full mode)."""
     root = _griplink_root_or_refuse("pull", "git pull")
-    done = _griplink_call(root, "pull", griplink_mod().pull, remote=remote)
+    done = _griplink_call(root, "pull", griplink_mod().pull, remote=remote, fetch_from=remote)
     typer.echo(f"pull: {done['how']}; shadow {done['shadow']}")
     if done.get("note"):
         typer.echo(done["note"])
@@ -2714,7 +2728,8 @@ def _root_push(root, *, root_push: bool, remote: str | None, allow_rewind: bool)
         hint = "; gr2 store push pushes this store" if root.shape == root_verbs.STORE else ""
         typer.echo(f"gr2 push at a workspace root is not available yet{hint}", err=True)
         raise typer.Exit(code=4)
-    done = _griplink_call(root, "push", griplink_mod().push, remote=remote or "origin", allow_rewind=allow_rewind)
+    done = _griplink_call(root, "push", griplink_mod().push, remote=remote or "origin", allow_rewind=allow_rewind,
+                         fetch_from=remote or "origin", fetch_lenient=True)
     typer.echo(json.dumps(done) if not isinstance(done, str) else done)
 
 

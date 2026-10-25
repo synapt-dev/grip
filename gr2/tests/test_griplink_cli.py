@@ -115,6 +115,19 @@ def test_an_unknown_inside_member_value_refuses_every_root_verb(world, monkeypat
         assert "inside_member" in r.stderr and '"refuse"' in r.stderr and '"root"' in r.stderr
 
 
+@pytest.mark.parametrize("value", ["true", '""'])
+def test_an_inside_member_value_of_another_type_refuses_and_writes_nothing(world, monkeypatch, value):
+    root = world["root"]
+    (root / "grip.toml").write_text(f"inside_member = {value}\n")
+    _edit_and_stage(root)
+    stook = _ref(root, griplink.STOOK)
+    for cwd in (root, root / "api"):
+        r = gr2(cwd, monkeypatch, "commit", "-m", "x")
+        assert r.exit_code == 2, (cwd, r.stderr)
+        assert "inside_member" in r.stderr and '"refuse"' in r.stderr and '"root"' in r.stderr
+    assert _ref(root, griplink.STOOK) == stook and _ref(root, griplink.member_ref("api")) is None
+
+
 def test_a_plain_clone_checks_out_with_its_names_fetched_then_commits(world, monkeypatch):
     root = world["root"]
     _edit_and_stage(root)

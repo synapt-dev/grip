@@ -42,7 +42,7 @@ gr2 store commit -m "first snapshot"    # record the workspace once; lanes start
 
 `store commit` reads the workspace from the current directory, which is why the walk starts with `cd ~/ws`; from anywhere else, name it: `gr2 store commit -C ~/ws -m "..."`. It prints nothing on success; each repo it records for the first time gets one note on stderr.
 
-For a full-mode workspace, where each member is recorded by its own commit as the gitlink, with its fields in the .grip/fields sidecar (the skill's Recipe 2), make the store with `gr2 store init --mode full ~/ws` in place of the `store init` line above. A store keeps the mode it was made with: `--mode` on an existing store that declares another mode is refused (exit 4).
+A full-mode workspace starts in a new directory and clones its members itself, so it does not follow the steps above: see [Full mode: one root, two desks](#full-mode-one-root-two-desks) below. A store keeps the mode it was made with: `--mode` on an existing store that declares another mode is refused (exit 4).
 
 A **unit** is one worker — you, or one agent — and `default` is created for you. A **lane** is one piece of work spanning repos, with its own clones, so two lanes never step on each other:
 
@@ -80,6 +80,61 @@ gr2 lane remove ~/ws default feat-x                        # end it: its clones 
 
 `lane remove` refuses while the lane is entered or leased, or was made by `lane bind`, while any of its repos holds uncommitted work, a stash, or a commit no remote has (on any branch or tag), or while its checkout holds anything that is not one of its repos; it names each one and removes nothing. `exec run` runs whatever follows `--` in each lane repo, with your own `PATH`: a test runner works there only if it is installed where your shell finds it. `review create-project` refuses a lane repo holding any uncommitted or untracked file, so whatever a command leaves behind (`__pycache__/` after a pytest run, say) has to be in the repo's `.gitignore`. `exec run` and `lane exit` require `--actor`. Every group and verb takes `--help` or `-h`, and a bare group prints its help. `gr2 --help` lists the everyday commands; `gr2 help -a` adds the plumbing that scripts, CI and other gr2 verbs call, each of which still runs by its full name.
 
+## Full mode: one root, two desks
+
+In full mode the workspace is one git repository, the root, that records each member by its own commit, and a change in a member is committed and pushed from the root. Two people (or two agents) each hold a clone of the root and move work between them with `gr2 push` and `gr2 pull`. Every command below was run, in this order, against two member repositories and one empty repository for the root. `$API` and `$WEB` stand for your members' URLs and `$ROOT` for the empty repository's URL.
+
+On desk A, make the root; it clones each member into it:
+
+```bash
+gr2 store init --mode full ~/full --clone api=$API --clone web=$WEB
+cd ~/full
+```
+
+Edit a file in `api` (say `api/README`), then commit it from the root, give the root its remote, and push:
+
+```bash
+gr2 commit -a -m "api: first change"    # -a stages each member's tracked changes, as git commit -a does
+git remote add origin $ROOT              # the new root has no remote yet
+gr2 push
+```
+
+On desk B, join by cloning the root and putting each member at what desk A pushed:
+
+```bash
+git clone $ROOT ~/full-b
+cd ~/full-b
+gr2 checkout                             # the first time, also fetches the names gr2 keeps beside main
+```
+
+A plain `git clone` brings the root's `main` but not the names gr2 keeps beside it. `gr2 checkout` fetches them from `origin` the first time and puts each member at its pin, with desk A's change applied and staged, not committed; `gr2 pull` and `gr2 push` fetch them too. Until a clone has them, `gr2 status` and `gr2 commit` refuse (exit 4) and name `gr2 checkout` as the step.
+
+Back on desk A, edit a file in `web`, then commit and push:
+
+```bash
+cd ~/full
+gr2 commit -a -m "web: a change"
+gr2 push
+```
+
+On desk B, pull brings desk A's change to `web` into the checkout:
+
+```bash
+cd ~/full-b
+gr2 pull
+```
+
+Desk B edits `api`, commits and pushes, and desk A pulls it:
+
+```bash
+gr2 commit -a -m "api: a change from desk B"
+gr2 push
+cd ~/full
+gr2 pull
+```
+
+`gr2 push` refuses when the root's remote has moved since your last pull, and pushes nothing; pull, then push again. `gr2 pull` refuses while any member holds work not yet in a commit, and pulls nothing; commit it with `gr2 commit -a` first. `gr2 checkout` and `gr2 pull` are listed by `gr2 help -a`.
+
 ## What works today, and what is not there yet
 
 Alpha 2 is a working local workspace layer. Verified by running the walk above:
@@ -114,7 +169,7 @@ What scripts, CI and other gr2 verbs call. These are hidden from `gr2 --help`, l
 
 | Group | Verbs |
 |---|---|
-| (top level) | change, plan, apply, prune |
+| (top level) | change, plan, apply, prune, checkout, pull, follow, pin, promote, record |
 | `workspace` | init, init-from-topology, materialize, status, convert-clone, detect-gr1, migrate-gr1, retire-gr1, migrate-lane-state, bootstrap-gr1, gitinclude |
 | `spec` | show, validate |
 | `lane` | show, resolve, bind, lease |

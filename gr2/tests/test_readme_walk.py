@@ -167,3 +167,89 @@ def test_the_readme_review_install_block_parses_to_an_install_that_brings_pytest
     venv_python = tmp_path / "venv" / "bin" / "python"
     tokens = rr._apply_install_placeholders(shlex.split(hint["install"]), venv_python, lane)
     assert tokens == [str(venv_python), "-m", "pip", "install", "-e", str(lane), "pytest"], tokens
+
+
+FULL_MODE = "## Full mode: one root, two desks"
+# The README's "edit a file" steps, keyed by the commit line that follows each one: the member whose README the
+# step edits in the desk the walk stands in. Keyed by the message, so moving or adding a block above does not shift it.
+FULL_MODE_EDITS = {"api: first change": "api", "web: a change": "web", "api: a change from desk B": "api"}
+
+
+def _named_section(heading: str) -> str:
+    text = README.read_text(encoding="utf-8")
+    start = text.index(heading + "\n")
+    end = text.index("\n## ", start + 1)
+    return text[start:end]
+
+
+def test_the_readme_full_mode_walk_runs_across_two_desks(tmp_path: Path, monkeypatch) -> None:
+    """The full-mode section, read from README.md by its heading and run in order: desk A makes the root and pushes,
+    desk B clones it and checks out, and each desk pulls the other's change. The hand step the section asks for (the
+    root's remote) turns this red at gr2 push when it is deleted."""
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_TERMINAL_PROMPT", "0")
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".gitconfig").write_text("[user]\n\tname = You\n\temail = you@example.com\n")
+    monkeypatch.setenv("HOME", str(home))
+    urls = {}
+    for name in ("api", "web"):
+        remote = tmp_path / f"{name}.git"
+        _git(tmp_path, "init", "-q", "--bare", "-b", "main", str(remote))
+        seed = tmp_path / f"seed-{name}"
+        _git(tmp_path, "clone", "-q", str(remote), str(seed))
+        (seed / "README").write_text(f"{name}\n")
+        _git(seed, "add", "README")
+        _git(seed, "commit", "-qm", "init")
+        _git(seed, "push", "-q", "origin", "HEAD:main")
+        urls[name] = str(remote)
+    root_remote = tmp_path / "root.git"
+    _git(tmp_path, "init", "-q", "--bare", str(root_remote))
+    desk_a, desk_b = tmp_path / "full", tmp_path / "full-b"
+    words = {"$API": urls["api"], "$WEB": urls["web"], "$ROOT": str(root_remote),
+             "~/full-b": str(desk_b), "~/full": str(desk_a)}
+    git_bin = tmp_path / "path-git-only"
+    git_bin.mkdir()
+    (git_bin / "git").symlink_to(shutil.which("git"))
+    git_exe = shutil.which("git")
+    monkeypatch.setenv("PATH", str(git_bin))
+    monkeypatch.chdir(tmp_path)
+
+    blocks = [body for lang, body in _blocks(_named_section(FULL_MODE)) if lang == "bash"]
+    assert len(blocks) >= 5, "fixture check: the section's command blocks were found"
+    ran, edited = 0, []
+    for body in blocks:
+        for line in body.splitlines():
+            line = line.split("  #", 1)[0].strip()
+            if not line:
+                continue
+            for word, value in words.items():
+                line = line.replace(word, value)
+            argv = shlex.split(line)
+            if argv[0] == "cd":
+                monkeypatch.chdir(argv[1])
+                continue
+            if argv[0] == "git":
+                result = subprocess.run([git_exe, *argv[1:]], capture_output=True, text=True)
+                assert result.returncode == 0, f"README line {line!r} exited {result.returncode}:\n{result.stderr}"
+                continue
+            assert argv[0] == "gr2", f"README full-mode line is neither gr2, git nor cd: {line!r}"
+            if argv[1:3] == ["commit", "-a"]:
+                message = argv[argv.index("-m") + 1]
+                member = Path.cwd() / FULL_MODE_EDITS[message]
+                with (member / "README").open("a") as handle:
+                    handle.write(f"{message}\n")
+                edited.append(message)
+            result = runner.invoke(app, argv[1:], catch_exceptions=False)
+            assert result.exit_code == 0, f"README line {line!r} exited {result.exit_code}:\n{result.output}"
+            ran += 1
+
+    assert sorted(edited) == sorted(FULL_MODE_EDITS), f"fixture check: every edit step ran once, ran {edited}"
+    gr2_lines = sum(1 for body in blocks for line in body.splitlines() if line.strip().startswith("gr2 "))
+    assert ran == gr2_lines, f"ran {ran} of the section's {gr2_lines} gr2 lines"
+    # Both desks end holding every change: desk B's web carries desk A's, and desk A's api carries desk B's.
+    for desk in (desk_a, desk_b):
+        api = (desk / "api" / "README").read_text()
+        web = (desk / "web" / "README").read_text()
+        assert "api: first change\n" in api and "api: a change from desk B\n" in api, (desk, api)
+        assert "web: a change\n" in web, (desk, web)

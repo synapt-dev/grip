@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from gr2.python_cli import griplink
+from gr2.python_cli import gitops, griplink
 from gr2.python_cli.griplink import GriplinkRefusal
 
 from tests.test_griplink_step1 import git, world  # noqa: F401  (api and web, pushed once)
@@ -682,3 +682,65 @@ def test_a_pin_both_sides_recorded_and_on_no_remote_refuses_naming_whoever_pushe
     assert exc.value.code == 5 and str(exc.value) == _theirs_said("api", same)
     assert _desk_state(ws) == before and _scratches(ws) == []
     assert not (ws / ".git" / "MERGE_HEAD").exists()
+
+
+def _pin_lost(w: dict) -> tuple[Path, str]:
+    """A desk moves api's pin to its own commit, then api's checkout loses it (reset to the old pin, reflog expired,
+    pruned): api is checked out but does not hold its recorded pin. Returns the desk and the pin."""
+    d = _desk(w)
+    griplink.checkout(d)
+    mine = _local_pin(d)
+    mrepo = griplink.member_dir(d, "api")
+    git(mrepo, "reset", "-q", "--hard", f"{mine}^")
+    git(mrepo, "update-ref", "-d", "ORIG_HEAD")
+    git(mrepo, "reflog", "expire", "--expire=now", "--all")
+    git(mrepo, "gc", "-q", "--prune=now")
+    assert subprocess.run(["git", "-C", str(mrepo), "cat-file", "-e", f"{mine}^{{commit}}"]).returncode != 0
+    return d, mine
+
+
+def _lost_said(sha: str, done: str, verb: str) -> str:
+    return (f"api: its checkout does not hold its recorded pin {sha[:12]}; nothing was {done}. next: fetch {sha[:12]} "
+            f"into api from where it was made, or move the pin, then gr2 {verb} again")
+
+
+def test_a_checkout_that_lost_its_recorded_pin_refuses_the_pull_and_changes_nothing(world):
+    d, mine = _pin_lost(world)
+    before = _desk_state(d)
+    with pytest.raises(GriplinkRefusal) as exc:
+        griplink.pull(d)
+    assert exc.value.code == 3 and str(exc.value) == _lost_said(mine, "pulled", "pull")
+    assert _desk_state(d) == before and _scratches(d) == []
+
+
+def test_a_checkout_that_lost_its_pin_refuses_the_pull_even_when_a_peer_moved_api_to_a_served_pin(world):
+    d, mine = _pin_lost(world)
+    _pin_served(world)
+    before = _desk_state(d)
+    with pytest.raises(GriplinkRefusal) as exc:
+        griplink.pull(d)
+    assert exc.value.code == 3 and str(exc.value) == _lost_said(mine, "pulled", "pull")
+    assert _desk_state(d) == before and _scratches(d) == []
+
+
+def test_a_checkout_that_lost_its_recorded_pin_refuses_the_commit_and_cuts_nothing(world):
+    d, mine = _pin_lost(world)
+    _write(d, "api", "src/f3.py", "staged on a lost pin\n")
+    git(griplink.member_dir(d, "api"), "add", "src/f3.py")
+    before = _state(d)
+    with pytest.raises(GriplinkRefusal) as exc:
+        griplink.commit(d, "lost", stage_all=True)
+    assert exc.value.code == 3 and str(exc.value) == _lost_said(mine, "committed", "commit")
+    assert _state(d) == before
+
+
+def test_a_member_with_no_checkout_beside_one_holding_its_pin_is_not_refused(world):
+    d = _desk(world)
+    griplink.checkout(d)
+    import shutil
+    shutil.rmtree(griplink.member_dir(d, "api"))
+    griplink.pull(d)
+    _write(d, "web", "src/f3.py", "the desk's own change\n")
+    git(griplink.member_dir(d, "web"), "add", "src/f3.py")
+    with pytest.raises(gitops.GitError, match="cannot change to"):  # commit's own diff of api, as before this check
+        griplink.commit(d, "desk web")

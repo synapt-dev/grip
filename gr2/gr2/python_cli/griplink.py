@@ -385,11 +385,23 @@ def unstaged(root: Path) -> dict[str, list[str]]:
     return out
 
 
+def _pins_held(root: Path, done: str, verb: str) -> None:
+    """Refuses, rc 3, the first checked-out member whose checkout does not hold its recorded pin (a diff against a pin
+    it lacks is git's raw error). A member with no checkout is skipped."""
+    for m, s in _links(root, _git(root, "write-tree")).items():
+        pin = _ls_tree(root, s)[PIN][2]
+        if (member_dir(root, m) / ".git").exists() and not _has(member_dir(root, m), pin + "^{commit}"):
+            raise GriplinkRefusal(f"{m}: its checkout does not hold its recorded pin {pin[:12]}; nothing was {done}. "
+                                  f"next: fetch {pin[:12]} into {m} from where it was made, or move the pin, then "
+                                  f"gr2 {shlex.quote(verb)} again", 3)
+
+
 def commit(root: Path, message: str, stage_all: bool = False) -> dict:
     """Each member's STAGED change becomes the next GripCommit on its STOOK (the member's git untouched); then the
     STOOK and the SHADOW are cut together. `all` first stages each member's tracked changes, as git commit -a does.
     Nothing new refuses with git's own words and exit 1. Never pushes."""
     _one_branch(root)
+    _pins_held(root, "committed", "commit")
     if stage_all:
         for m in _links(root, _git(root, "write-tree")):
             _git(member_dir(root, m), "add", "-u")
@@ -985,6 +997,7 @@ def pull(root: Path, remote: str = "origin") -> dict:
     _one_branch(root)
     if remote.startswith("-") or gitops.unsafe_in_identifier(remote):
         raise GriplinkRefusal(f"{remote!r}: not a remote gr2 passes to git; nothing was pulled", 3)
+    _pins_held(root, "pulled", "pull")
     left = uncommitted(root)
     if left:
         raise GriplinkRefusal(f"your changes in {', '.join(left)} are not committed and the checkout would overwrite "

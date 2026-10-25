@@ -2697,6 +2697,8 @@ def _root_commit(root, message: str, *, stage_all: bool, amend: bool) -> None:
         grip_commit_cmd(message=message, root=root.path, json_output=False, allow_rewind=False)
         return
     done = _griplink_call(root, "commit", griplink_mod().commit, message, stage_all=stage_all)
+    for m in done["skipped"]:
+        typer.echo(f"{m}: no checkout here; skipped")
     moved = ", ".join(done["moved"]) or "names only"
     typer.echo(f"committed {done['shadow']} ({moved})")
 

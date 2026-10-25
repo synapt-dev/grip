@@ -1202,13 +1202,29 @@ def _store_root(root: Path | None, positional: Path | None = None) -> Path:
     return Path.cwd() if chosen is None else chosen.resolve()
 
 
-def _store_root_upward(root: Path | None) -> Path:
+def _store_root_upward(root: Path | None, verb: str, git_word: str) -> Path:
     """The root for a verb that may run from inside a member: `--root/-C`, else the nearest workspace at or above the
     current directory, by the review verbs' own walk (`workspace_root._resolve_workspace_root`). With no workspace up there it
-    refuses at 5 naming where it started, and does not send the caller to init a store inside a member."""
+    refuses at 5 naming where it started, and does not send the caller to init a store inside a member.
+
+    Without -C it first decides as its top-level verb does (`root_verbs.resolve`): inside a member checkout it refuses
+    at 2 naming `git_word` unless the store says inside_member = "root", and a bad inside_member value refuses at 2.
+    A store root found there is the root returned. Inside a griplink member the same refusal applies, as for top-level
+    add and commit. With no root (a lane's spec workspace), or a griplink root from outside a member, the walk below
+    runs as before. store checkout inside a griplink member also takes the walk below, which refuses at 5 as before;
+    top-level checkout acts there."""
     if root is not None:
         return _store_root(root)
+    from . import root_verbs
     from .workspace_root import _is_workspace_root, _resolve_workspace_root
+
+    try:
+        decided = root_verbs.resolve(verb, git_word)
+    except root_verbs.RootVerbRefusal as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=exc.code) from exc
+    if decided is not None and decided.shape == root_verbs.STORE:
+        return decided.path  # the root that decided is the root acted on: one walk, not two
 
     found = _resolve_workspace_root(None)
     if not _is_workspace_root(found):
@@ -4053,7 +4069,7 @@ def grip_add_cmd(
     root: Optional[Path] = STORE_ROOT_OPTION,
 ) -> None:
     """Add one member to an existing store; `store commit` then records it in the root."""
-    root = _store_root_upward(root)
+    root = _store_root_upward(root, "add", "git add")
     try:
         if ref is not None:
             name_rules.git_ref(ref, "--ref")
@@ -4086,7 +4102,7 @@ def grip_commit_cmd(
     commits its upstream lacks are carried as a layer in the member's record, so `store push` and a clone
     plus `store materialize` rebuild it on another machine without pushing the member.
     """
-    root = _store_root_upward(root)
+    root = _store_root_upward(root, "commit", "git commit")
     layered: list[str] = []
     try:
         committed = _native_store_commit(root, message, layered, allow_rewind=allow_rewind)
@@ -4496,7 +4512,7 @@ def grip_checkout_cmd(
     rather than leaving a silent partial tree) and defines no second materialization path. It
     delegates to the same helper materialize uses for exactly that reason.
     """
-    root = _store_root_upward(root)
+    root = _store_root_upward(root, "checkout", "git checkout")
     try:
         resolved, members = _native_store_checkout(root, ref)
     except NativeStoreRefusal as exc:

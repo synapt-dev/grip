@@ -6,9 +6,14 @@ THE DEFECT (probe on dev bd748276): with cwd = a member's subdirectory
 followed, nested a second store inside a member. From the root both exit 0.
 
 THE CONTRACT these rows pin:
-  * from alpha/a/b each verb behaves exactly as from the root: exit 0, the same recorded
-    spec and gitlinks (the root commit's tree), the same refs;
-  * the walk is the review verbs' own (`app._resolve_workspace_root`), not a second one;
+  * from alpha/a/b, `store commit` refuses at 2 naming git commit and writes nothing, unless
+    grip.toml says inside_member = "root" (since 2026-10-25 the hidden store aliases decide as their
+    top-level verbs do). `store checkout` acts on the root either way;
+  * with inside_member = "root", from alpha/a/b each verb behaves exactly as from the root: exit 0,
+    the same recorded spec and gitlinks (the root commit's tree), the same refs;
+  * one walk decides and finds the root: the top-level verbs' `root_verbs.resolve` for a store root
+    (since 2026-10-25); the review verbs' walk (`app._resolve_workspace_root`) only where resolve
+    finds none (a lane) or a griplink root;
   * from a plain directory with no workspace above it, the refusal names where it started
     and the kinds of root it looked for, and no longer tells the caller to init there.
 """
@@ -52,9 +57,28 @@ def _commit_from(ws: Path, cwd: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[
     return _cli("store", "commit", "-m", "rec", "--json")
 
 
+def _inside_member_root(ws: Path) -> None:
+    """The store setting that lets a root verb typed inside a member act on the root."""
+    doc = ws / "grip.toml"
+    doc.write_text('inside_member = "root"\n' + doc.read_text())
+
+
+def test_store_commit_from_member_subdirectory_refuses_by_default_and_writes_nothing(tmp_path, monkeypatch):
+    ws = _ws(tmp_path / "s", monkeypatch)
+    refs = _refs(ws)
+    code, out = _commit_from(ws, _sub(ws), monkeypatch)
+    assert code == 2, out
+    assert "use git commit here" in out
+    assert "store init here" not in out
+    assert not (ws / "alpha" / "a" / "b" / "grip.toml").exists()
+    assert _refs(ws) == refs
+
+
 def test_store_commit_from_member_subdirectory_is_the_root_commit(tmp_path, monkeypatch):
     root_ws = _ws(tmp_path / "r", monkeypatch)
     sub_ws = _ws(tmp_path / "s", monkeypatch)
+    for ws in (root_ws, sub_ws):
+        _inside_member_root(ws)
     code_root, out_root = _commit_from(root_ws, root_ws, monkeypatch)
     code_sub, out_sub = _commit_from(sub_ws, _sub(sub_ws), monkeypatch)
     assert (code_sub, code_root) == (0, 0), out_sub + out_root

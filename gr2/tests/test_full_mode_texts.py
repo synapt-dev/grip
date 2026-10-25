@@ -51,6 +51,15 @@ def test_status_names_the_upstream_when_one_is_set(world):
     assert lines == ["status: on main, upstream origin/main; nothing to commit"]
 
 
+def test_status_names_a_branch_other_than_main_and_a_detached_head(world):
+    ws = world["ws"]
+    git(ws, "switch", "-q", "-c", "side")
+    assert griplink.status_lines(griplink.status(ws)) == ["status: on side, upstream none; nothing to commit"]
+    git(ws, "switch", "-q", "--detach")
+    lines = griplink.status_lines(griplink.status(ws))
+    assert lines == ["status: on a detached HEAD, upstream none; nothing to commit"]
+
+
 def test_commit_at_the_root_says_each_members_change_stays_staged_there(cli_world, monkeypatch):
     root = cli_world["root"]
     _edit_and_stage(root)

@@ -12,6 +12,8 @@ import pytest
 
 from gr2.python_cli import griplink
 from gr2.python_cli.griplink import GriplinkRefusal
+from gr2.python_cli.app import app
+from tests.conftest import make_cli_runner
 
 from tests.test_griplink_step1 import git, world  # noqa: F401  (api and web, pushed once)
 
@@ -904,3 +906,37 @@ def test_a_desk_ahead_of_a_remote_shadow_with_no_main_is_up_to_date_and_says_so(
     assert got["note"] == (f"origin has no main; its shadow {theirs[:12]} is already in this desk's history. next: gr2 "
                            "push from this desk to give it a main")
     assert _state(ws) == before
+
+
+def test_a_remote_shadow_here_but_not_in_this_desks_history_refuses_and_moves_nothing(world):
+    ws = world["ws"]
+    p = _peer(world)
+    _write(p, "api", "src/f1.py", "from the peer\n")
+    griplink.commit(p, "peer", stage_all=True)
+    griplink.push(p)
+    git(world["remote"], "update-ref", "-d", "refs/heads/main")
+    git(ws, "fetch", "-q", str(world["remote"]), griplink.SHADOW)
+    theirs, mine = git(world["remote"], "rev-parse", griplink.SHADOW), git(ws, "rev-parse", "HEAD")
+    git(ws, "cat-file", "-e", theirs)
+    before = _state(ws)
+    with pytest.raises(GriplinkRefusal) as e:
+        griplink.pull(ws)
+    assert e.value.code == 5
+    assert str(e.value) == (f"origin has no main, but its shadow {theirs[:12]} is not in this desk's history (this desk "
+                            f"is at {mine[:12]}); nothing was pulled. next: ask whoever pushed {theirs[:12]} to push "
+                            "main with it, then pull again")
+    assert _state(ws) == before
+
+
+def test_the_cli_prints_the_no_main_note_once(world, monkeypatch):
+    ws = world["ws"]
+    theirs = git(world["remote"], "rev-parse", griplink.SHADOW)
+    _write(ws, "api", "src/f1.py", "ws ahead\n")
+    griplink.commit(ws, "ws ahead", stage_all=True)
+    git(world["remote"], "update-ref", "-d", "refs/heads/main")
+    monkeypatch.chdir(ws)
+    got = make_cli_runner().invoke(app, ["pull"])
+    assert got.exit_code == 0, got.output
+    note = (f"origin has no main; its shadow {theirs[:12]} is already in this desk's history. next: gr2 push from this "
+            "desk to give it a main")
+    assert got.output.splitlines().count(note) == 1

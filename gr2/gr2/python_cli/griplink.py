@@ -997,6 +997,29 @@ def _merged_names(root: Path, their_stook: str | None) -> dict[str, str]:
     return names
 
 
+def _pull_no_main(root: Path, remote: str) -> dict:
+    """The remote root has no main. An empty remote, or a remote shadow already contained in HEAD, is up to date; a
+    remote shadow not contained in HEAD, or one whose commit is not here to compare, is refused. Nothing is fetched:
+    a pull that says nothing was pulled has moved nothing."""
+    mine = _git(root, "rev-parse", "HEAD")
+    listed = gitops.run(root, "ls-remote", remote, SHADOW)
+    if listed.returncode:
+        raise GriplinkRefusal(f"cannot read the remote shadow from {remote}: {(listed.stderr or '').strip()}; nothing "
+                              "was pulled", 5)
+    if not listed.stdout.strip():
+        return {"how": "up to date", "shadow": mine, "merged": [], "updated": []}
+    theirs = listed.stdout.split()[0]
+    held = _anc(root, theirs, mine)
+    if held is True:
+        return {"how": "up to date", "shadow": mine, "merged": [], "updated": [],
+                "note": f"{remote} has no main; its shadow {theirs[:12]} is already in this desk's history. next: gr2 "
+                        "push from this desk to give it a main"}
+    how = "is not in this desk's history" if held is False else "could not be compared: its commit is not on this desk"
+    raise GriplinkRefusal(f"{remote} has no main, but its shadow {theirs[:12]} {how} (this desk is at {mine[:12]}); "
+                          f"nothing was pulled. next: ask whoever pushed {theirs[:12]} to push main with it, then pull "
+                          "again", 5)
+
+
 def pull(root: Path, remote: str = "origin") -> dict:
     """Fetch the remote root, then fast-forward or merge, as git pull does. Refused, with nothing changed: work not in
     a commit (a checkout would overwrite it); a record moved on both sides (a record merge is not built); a member
@@ -1019,7 +1042,7 @@ def pull(root: Path, remote: str = "origin") -> dict:
         raise GriplinkRefusal(f"cannot read the remote shadow from {remote}: {(listed.stderr or '').strip()}; nothing "
                               "was pulled", 5)
     if not listed.stdout.strip():
-        return {"how": "up to date", "shadow": _git(root, "rev-parse", "HEAD"), "merged": [], "updated": []}
+        return _pull_no_main(root, remote)
     fetched = gitops.run(root, "fetch", "-q", "--no-recurse-submodules", "--no-tags", remote,
                          f"+{MAIN}:refs/remotes/{remote}/main", f"+{NS}/*:{rg}/*")
     if fetched.returncode:

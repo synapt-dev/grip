@@ -864,3 +864,43 @@ def test_a_pull_whose_head_pin_is_lost_and_whose_peer_pin_is_served_names_only_t
         griplink.pull(d)
     assert exc.value.code == 5 and str(exc.value) == _mine_said("api", mine)
     assert _desk_state(d) == before and _scratches(d) == []
+
+
+def test_a_moved_remote_shadow_with_no_main_refuses_and_moves_nothing(world):
+    ws = world["ws"]
+    p = _peer(world)
+    _write(p, "api", "src/f1.py", "from the peer\n")
+    griplink.commit(p, "peer", stage_all=True)
+    griplink.push(p)
+    git(world["remote"], "update-ref", "-d", "refs/heads/main")
+    theirs, mine = git(world["remote"], "rev-parse", griplink.SHADOW), git(ws, "rev-parse", "HEAD")
+    before = _state(ws)
+    with pytest.raises(GriplinkRefusal) as e:
+        griplink.pull(ws)
+    assert e.value.code == 5
+    assert str(e.value) == (f"origin has no main, but its shadow {theirs[:12]} could not be compared: its commit is not "
+                            f"on this desk (this desk is at {mine[:12]}); nothing was pulled. next: ask whoever pushed "
+                            f"{theirs[:12]} to push main with it, then pull again")
+    assert _state(ws) == before
+
+
+def test_an_empty_remote_is_up_to_date(world):
+    ws = world["ws"]
+    for ref in ("refs/heads/main", griplink.SHADOW):
+        git(world["remote"], "update-ref", "-d", ref)
+    got = griplink.pull(ws)
+    assert got == {"how": "up to date", "shadow": git(ws, "rev-parse", "HEAD"), "merged": [], "updated": []}
+
+
+def test_a_desk_ahead_of_a_remote_shadow_with_no_main_is_up_to_date_and_says_so(world):
+    ws = world["ws"]
+    theirs = git(world["remote"], "rev-parse", griplink.SHADOW)
+    _write(ws, "api", "src/f1.py", "ws ahead\n")
+    griplink.commit(ws, "ws ahead", stage_all=True)
+    git(world["remote"], "update-ref", "-d", "refs/heads/main")
+    before = _state(ws)
+    got = griplink.pull(ws)
+    assert got["how"] == "up to date" and got["shadow"] == git(ws, "rev-parse", "HEAD") != theirs
+    assert got["note"] == (f"origin has no main; its shadow {theirs[:12]} is already in this desk's history. next: gr2 "
+                           "push from this desk to give it a main")
+    assert _state(ws) == before

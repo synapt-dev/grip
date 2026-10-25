@@ -2517,14 +2517,15 @@ def _root_for(verb: str, git_word: str):
         raise typer.Exit(code=exc.code) from exc
 
 
-def _griplink_call(root, verb: str, fn, *args, needs_stook: bool = True, fetch_from: str | None = None, **kwargs):
+def _griplink_call(root, verb: str, fn, *args, needs_stook: bool = True, fetch_from: str | None = None,
+                  fetch_lenient: bool = False, **kwargs):
     """Run one griplink step on a griplink root; a refusal prints its text and exits with its code. `fetch_from` (the
     verbs that talk to a remote) fetches the gr2 names once from that remote when the root has none."""
     from . import griplink, root_verbs
 
     try:
         if fetch_from is not None:
-            root = root_verbs.fetch_names(root, verb, fetch_from)
+            root = root_verbs.fetch_names(root, verb, fetch_from, lenient=fetch_lenient)
         if needs_stook:
             root_verbs.require_stook(root, verb)
         return fn(root.path, *args, **kwargs)
@@ -2581,7 +2582,8 @@ def root_checkout_cmd() -> None:
 
         grip_materialize_cmd(root=root.path, json_output=False)
         return
-    applied = _griplink_call(root, "checkout", _checkout_main_then_members, fetch_from="origin")
+    applied = _griplink_call(root, "checkout", _checkout_main_then_members, needs_stook=False,
+                             fetch_from="origin", fetch_lenient=True)
     for m, n in applied.items():
         typer.echo(f"{m}: at its pin, {n} path(s) of its change applied and staged")
 
@@ -2727,7 +2729,7 @@ def _root_push(root, *, root_push: bool, remote: str | None, allow_rewind: bool)
         typer.echo(f"gr2 push at a workspace root is not available yet{hint}", err=True)
         raise typer.Exit(code=4)
     done = _griplink_call(root, "push", griplink_mod().push, remote=remote or "origin", allow_rewind=allow_rewind,
-                         fetch_from=remote or "origin")
+                         fetch_from=remote or "origin", fetch_lenient=True)
     typer.echo(json.dumps(done) if not isinstance(done, str) else done)
 
 

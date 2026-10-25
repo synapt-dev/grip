@@ -124,3 +124,46 @@ def test_r8_a_tail_matching_name_outside_the_gr2_namespace_is_not_fetched(world,
     assert r.exit_code == 0, (r.stdout, r.stderr)
     assert git(clone, "for-each-ref", "refs/a") == ""
     assert _names(clone) == _names(origin)
+
+
+def _no_names_clone(world, monkeypatch) -> tuple[Path, Path]:
+    assert gr2(world["root"], monkeypatch, "push").exit_code == 0
+    bare = world["tmp"] / "nonames.git"
+    git(world["tmp"], "clone", "-q", "--bare", str(world["origin"]), str(bare))
+    clone = world["tmp"] / "plain"
+    git(world["tmp"], "clone", "-q", str(bare), str(clone))
+    assert _names(bare) == "" and _names(clone) == ""
+    return bare, clone
+
+
+def test_r9_checkout_of_a_clone_of_a_remote_with_no_gr2_names_runs_as_before(world, monkeypatch):
+    _, clone = _no_names_clone(world, monkeypatch)
+    r = gr2(clone, monkeypatch, "checkout")
+    no_trace(r)
+    assert r.exit_code == 0, (r.stdout, r.stderr)
+    assert "api: at its pin" in r.stdout
+    assert _names(clone) == ""
+
+
+def test_r10_push_of_a_clone_of_a_remote_with_no_gr2_names_refuses_as_before(world, monkeypatch):
+    bare, clone = _no_names_clone(world, monkeypatch)
+    before = git(bare, "for-each-ref")
+    r = gr2(clone, monkeypatch, "push")
+    no_trace(r)
+    assert r.exit_code == 4, (r.stdout, r.stderr)
+    assert r.stderr.startswith("gr2 push: this workspace's names were not fetched"), r.stderr
+    assert git(bare, "for-each-ref") == before
+    assert _names(clone) == ""
+
+
+def test_r11_a_remote_name_holding_a_line_separator_does_not_split_the_listing(world, monkeypatch):
+    root, origin = world["root"], world["origin"]
+    assert gr2(root, monkeypatch, "push").exit_code == 0
+    git(root, "push", "-q", str(origin), f"HEAD:{griplink.NS}/a\u2028b")
+    clone = world["tmp"] / "plain"
+    git(world["tmp"], "clone", "-q", str(origin), str(clone))
+    r = gr2(clone, monkeypatch, "pull")
+    no_trace(r)
+    assert r.exit_code == 0, (r.stdout, r.stderr)
+    assert _names(clone) == _names(origin)
+    assert griplink.STOOK in _names(clone)

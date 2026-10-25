@@ -58,7 +58,7 @@ def test_store_commit_from_member_subdirectory_is_the_root_commit(tmp_path, monk
     code_root, out_root = _commit_from(root_ws, root_ws, monkeypatch)
     code_sub, out_sub = _commit_from(sub_ws, _sub(sub_ws), monkeypatch)
     assert (code_sub, code_root) == (0, 0), out_sub + out_root
-    assert "run store init here" not in out_sub
+    assert "store init here" not in out_sub
     assert not (sub_ws / "alpha" / "a" / "b" / "grip.toml").exists()
     assert _git_out(sub_ws, "ls-tree", "HEAD", "alpha", "beta") == _git_out(root_ws, "ls-tree", "HEAD", "alpha", "beta")
     spec_sub = _git_out(sub_ws, "show", "HEAD:grip.toml").replace(str(tmp_path / "s"), "<B>")
@@ -90,4 +90,4 @@ def test_store_commit_with_no_workspace_above_names_start_and_root_kinds(tmp_pat
     assert str(plain) in out
     assert "no workspace root at or above" in out
     assert "grip.toml" in out and "workspace_spec.toml" in out
-    assert "run store init here" not in out
+    assert "store init here" not in out

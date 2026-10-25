@@ -57,7 +57,7 @@ def test_promote_writes_one_member_commit_moves_the_pin_and_drops_the_chain(worl
         griplink.REFP + griplink.member_ref("api")
     assert git(ws, "for-each-ref", griplink.member_ref("api")) == ""
     assert git(mrepo, "status", "--porcelain") == ""
-    assert griplink.status(ws) == {"moved": [], "unstaged": {}}
+    assert griplink.status(ws) == {"moved": [], "unstaged": {}, "branch": "main", "upstream": "none"}
 
 
 def test_promote_leaves_a_record_untouched(world):

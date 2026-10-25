@@ -47,7 +47,7 @@ FT_SCHEMA, FT_KIND, FT_REF, FT_OVERLAY, FT_DELETED = (
     "001.2_schema", "002.0_kind", "005.2_ref", "014.2_overlay", "015.2_deleted")
 FIELD_SCHEMA = "dev.synapt.grip.field.v1alpha1"
 EMPTY_BLOB = "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
-ONE_BRANCH = "full mode carries one root branch for now; more than one comes later"
+ONE_BRANCH = "full mode works on the root branch main only for now"
 REC_KIND, REC_ID, REC_TEXT, REC_COMMIT = "001.2_kind", "002.2_id", "003.2_record", "005.2_commit"
 
 
@@ -244,11 +244,16 @@ def _set_field(root: Path, path: str, value: str) -> None:
     _pending_file(root).write_text(json.dumps(p, indent=1, sort_keys=True))
 
 
-def _one_branch(root: Path) -> None:
-    """Full mode carries one root branch for now: any root branch but main is refused by name."""
+def _one_branch(root: Path, verb: str) -> None:
+    """Full mode carries one root branch for now: any root branch but main is refused by name, with the next step."""
     branch = _try(root, "symbolic-ref", "--short", "-q", "HEAD")
     if branch != "main":
-        raise GriplinkRefusal(f"{branch or 'a detached HEAD'}: {ONE_BRANCH}", 3)
+        if branch:
+            step = f"git switch main (or git branch -m {shlex.quote(branch)} main)"
+        else:
+            step = "git switch main"
+        raise GriplinkRefusal(f"{branch or 'a detached HEAD'}: {ONE_BRANCH}; next: {step}, then gr2 "
+                              f"{shlex.quote(verb)} again", 3)
 
 
 def _cut(root: Path, msg: str, parents: list[str], names: dict[str, str] | None = None,
@@ -299,7 +304,7 @@ def init(root: Path) -> str:
 def add(root: Path, m: str, url: str) -> str:
     """Add a member at its remote's HEAD: the gitlink pin, the symlink, .gitmodules (ignore = dirty), and a head that
     follows the member's own STOOK. Returns the new shadow."""
-    _one_branch(root)
+    _one_branch(root, "add")
     _check_name(m)
     _check_url(m, url)
     mrepo = member_dir(root, m)
@@ -400,7 +405,7 @@ def commit(root: Path, message: str, stage_all: bool = False) -> dict:
     """Each member's STAGED change becomes the next GripCommit on its STOOK (the member's git untouched); then the
     STOOK and the SHADOW are cut together. `all` first stages each member's tracked changes, as git commit -a does.
     Nothing new refuses with git's own words and exit 1. Never pushes."""
-    _one_branch(root)
+    _one_branch(root, "commit")
     _pins_held(root, "committed", "commit")
     if stage_all:
         for m in _links(root, _git(root, "write-tree")):
@@ -437,18 +442,22 @@ def commit(root: Path, message: str, stage_all: bool = False) -> dict:
 
 def status(root: Path) -> dict:
     """What a commit would cut, and what it would not take. {"moved": entries whose name now resolves to another sha
-    than the shadow holds ("api", or "api/r1" for a record), "unstaged": {member: tracked paths not staged}}."""
+    than the shadow holds ("api", or "api/r1" for a record), "unstaged": {member: tracked paths not staged},
+    "branch": the root branch, "upstream": its upstream ("origin/main"), or "none" when it has none}."""
     now = {p: _follow(root, v) for p, v in _stook_fields(root).items()}
     then = _fields(root, _tree_of(root, "HEAD"))
     moved = sorted(_show(p) for p in set(now) | set(then) if now.get(p) != then.get(p))
-    return {"moved": moved, "unstaged": unstaged(root)}
+    branch = _try(root, "symbolic-ref", "--short", "-q", "HEAD") or "a detached HEAD"
+    up = _try(root, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+    upstream = up if up else "none"
+    return {"moved": moved, "unstaged": unstaged(root), "branch": branch, "upstream": upstream}
 
 
 def status_lines(found: dict) -> list[str]:
-    """status as a reader sees it: "shadow = stook" or "shadow BEHIND the stook: <entries>", then each member's
-    unstaged tracked changes, as git status names them."""
-    lines = ["status: " + ("shadow BEHIND the stook: " + ", ".join(found["moved"]) if found["moved"] else
-                           "shadow = stook")]
+    """status as a reader sees it: "on <branch>, upstream <name or none>; nothing to commit" or "...; changes to
+    commit: <entries>", then each member's unstaged tracked changes, as git status names them."""
+    lines = [f"status: on {found['branch']}, upstream {found['upstream']}; " + (
+        "changes to commit: " + ", ".join(found["moved"]) if found["moved"] else "nothing to commit")]
     lines += [f'{m}: changes not staged for commit: {" ".join(ps)} (use "git add" inside {m}, or "gr2 commit -a")'
               for m, ps in found["unstaged"].items()]
     return lines
@@ -671,7 +680,7 @@ def push(root: Path, remote: str = "origin", allow_rewind: bool = False) -> dict
     that would move back from what the remote's shadow recorded, by entry (--allow-rewind is the recorded
     exception). A remote whose shadow cannot be read (ls-remote or the fetch fails) refuses at exit 5. When git
     refuses the push, its own words are printed, after the size sentence for a size refusal."""
-    _one_branch(root)
+    _one_branch(root, "push")
     _require_remote(root, remote, "pushed", "push")
     theirs = None
     listed = gitops.run(root, "ls-remote", remote, MAIN)
@@ -1030,7 +1039,7 @@ def pull(root: Path, remote: str = "origin") -> dict:
     words; a remote shadow whose checkout would be refused (a name, url, path or mode gr2 will not write, a pin the
     member cannot hold, an untracked file in the way), by member. Every ref is decided and the remote's content
     checked before any moves. Then each member is checked out at the new shadow."""
-    _one_branch(root)
+    _one_branch(root, "pull")
     if remote.startswith("-") or gitops.unsafe_in_identifier(remote):
         raise GriplinkRefusal(f"{remote!r}: not a remote gr2 passes to git; nothing was pulled", 3)
     _pins_held(root, "pulled", "pull")
@@ -1151,7 +1160,7 @@ def promote(root: Path, m: str) -> dict:
     member's remote with the member's own push (13.6 item 2), and push and pull do not yet carry the deleted STOOK
     (open beside it). Returns {"member", "commit", "paths", "shadow"}; with nothing to
     promote, commit is None and nothing moves."""
-    _one_branch(root)
+    _one_branch(root, "promote")
     _check_name(m)
     links = _links(root, _git(root, "rev-parse", "HEAD^{tree}"))
     if m not in links:

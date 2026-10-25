@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from gr2.python_cli import gitops, griplink
+from gr2.python_cli import griplink
 from gr2.python_cli.griplink import GriplinkRefusal
 
 from tests.test_griplink_step1 import git, world  # noqa: F401  (api and web, pushed once)
@@ -781,11 +781,49 @@ def test_a_member_with_no_checkout_beside_one_holding_its_pin_is_not_refused_by_
     griplink.pull(d)
 
 
-@pytest.mark.xfail(strict=True, raises=gitops.GitError, reason="commit diffs a member that has no checkout")
 def test_a_commit_beside_a_member_with_no_checkout_cuts_the_staged_change(world):
+    d = _no_api_checkout(world)
+    before = _local_ref(d, griplink.member_ref("api"))
+    _write(d, "web", "src/f3.py", "the desk's own change\n")
+    git(griplink.member_dir(d, "web"), "add", "src/f3.py")
+    done = griplink.commit(d, "desk web")
+    names = git(d, "ls-tree", "-r", "--name-only", griplink.member_ref("web")).splitlines()
+    assert any(n.endswith("overlay/src/f3.py") for n in names)
+    assert done["skipped"] == ["api"] and done["moved"] == ["web"]
+    assert _local_ref(d, griplink.member_ref("api")) == before
+
+
+def _local_ref(d: Path, ref: str) -> str | None:
+    done = subprocess.run(["git", "-C", str(d), "rev-parse", "-q", "--verify", ref], capture_output=True, text=True)
+    return done.stdout.strip() or None
+
+
+def test_a_commit_all_beside_a_member_with_no_checkout_stages_and_cuts_the_tracked_edit(world):
+    d = _no_api_checkout(world)
+    web = griplink.member_dir(d, "web")
+    tracked = git(web, "ls-files").splitlines()[0]
+    (web / tracked).write_text("an unstaged edit\n")
+    done = griplink.commit(d, "desk web all", stage_all=True)
+    names = git(d, "ls-tree", "-r", "--name-only", griplink.member_ref("web")).splitlines()
+    assert any(n.endswith(f"overlay/{tracked}") for n in names)
+    assert done["skipped"] == ["api"]
+
+
+def test_a_commit_beside_a_member_with_no_checkout_and_nothing_staged_refuses_with_nothing_to_commit(world):
+    d = _no_api_checkout(world)
+    with pytest.raises(GriplinkRefusal) as exc:
+        griplink.commit(d, "nothing")
+    assert exc.value.code == 1 and str(exc.value) == "nothing to commit, working tree clean"
+
+
+def test_the_cli_commit_beside_a_member_with_no_checkout_says_it_skipped_the_member(world, monkeypatch):
+    from gr2.python_cli.app import app
+    from tests.conftest import make_cli_runner
+
     d = _no_api_checkout(world)
     _write(d, "web", "src/f3.py", "the desk's own change\n")
     git(griplink.member_dir(d, "web"), "add", "src/f3.py")
-    griplink.commit(d, "desk web")
-    names = git(d, "ls-tree", "-r", "--name-only", griplink.member_ref("web")).splitlines()
-    assert any(n.endswith("overlay/src/f3.py") for n in names)
+    monkeypatch.chdir(d)
+    r = make_cli_runner().invoke(app, ["commit", "-m", "desk web"])
+    assert r.exit_code == 0, r.output
+    assert r.output.count("api: no checkout here; skipped") == 1

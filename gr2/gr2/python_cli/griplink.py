@@ -404,9 +404,13 @@ def commit(root: Path, message: str, stage_all: bool = False) -> dict:
     _pins_held(root, "committed", "commit")
     if stage_all:
         for m in _links(root, _git(root, "write-tree")):
-            _git(member_dir(root, m), "add", "-u")
-    moved = []
+            if (member_dir(root, m) / ".git").exists():
+                _git(member_dir(root, m), "add", "-u")
+    moved, skipped = [], []
     for m, s in _links(root, _git(root, "write-tree")).items():
+        if not (member_dir(root, m) / ".git").exists():
+            skipped.append(m)
+            continue
         pin = _ls_tree(root, s)[PIN][2]
         overlay, deleted = _staged_change(root, m, pin)
         if not overlay and not deleted:
@@ -428,7 +432,7 @@ def commit(root: Path, message: str, stage_all: bool = False) -> dict:
                          else "nothing to commit, working tree clean")
             raise GriplinkRefusal("\n".join(lines), 1)
     stook, shadow = _cut(root, message, [_git(root, "rev-parse", "HEAD")])
-    return {"moved": moved, "stook": stook, "shadow": shadow}
+    return {"moved": moved, "skipped": skipped, "stook": stook, "shadow": shadow}
 
 
 def status(root: Path) -> dict:

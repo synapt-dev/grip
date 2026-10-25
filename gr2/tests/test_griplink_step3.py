@@ -940,3 +940,32 @@ def test_the_cli_prints_the_no_main_note_once(world, monkeypatch):
     note = (f"origin has no main; its shadow {theirs[:12]} is already in this desk's history. next: gr2 push from this "
             "desk to give it a main")
     assert got.output.splitlines().count(note) == 1
+
+
+def test_a_lookalike_shadow_listed_first_does_not_hide_a_moved_remote_shadow(world):
+    ws = world["ws"]
+    p = _peer(world)
+    _write(p, "api", "src/f1.py", "from the peer\n")
+    griplink.commit(p, "peer", stage_all=True)
+    griplink.push(p)
+    git(world["remote"], "update-ref", "-d", "refs/heads/main")
+    theirs, mine = git(world["remote"], "rev-parse", griplink.SHADOW), git(ws, "rev-parse", "HEAD")
+    git(world["remote"], "update-ref", f"refs/a/{griplink.SHADOW}", mine)
+    before = _state(ws)
+    with pytest.raises(GriplinkRefusal) as e:
+        griplink.pull(ws)
+    assert e.value.code == 5
+    assert str(e.value) == (f"origin has no main, but its shadow {theirs[:12]} could not be compared: its commit is not "
+                            f"on this desk (this desk is at {mine[:12]}); nothing was pulled. next: ask whoever pushed "
+                            f"{theirs[:12]} to push main with it, then pull again")
+    assert _state(ws) == before
+
+
+def test_a_remote_with_no_main_and_only_a_lookalike_shadow_is_up_to_date(world):
+    ws = world["ws"]
+    mine = git(ws, "rev-parse", "HEAD")
+    for ref in ("refs/heads/main", griplink.SHADOW):
+        git(world["remote"], "update-ref", "-d", ref)
+    git(world["remote"], "update-ref", f"refs/a/{griplink.SHADOW}", mine)
+    got = griplink.pull(ws)
+    assert got == {"how": "up to date", "shadow": mine, "merged": [], "updated": []}

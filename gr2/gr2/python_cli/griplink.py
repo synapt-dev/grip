@@ -1006,9 +1006,12 @@ def _pull_no_main(root: Path, remote: str) -> dict:
     if listed.returncode:
         raise GriplinkRefusal(f"cannot read the remote shadow from {remote}: {(listed.stderr or '').strip()}; nothing "
                               "was pulled", 5)
-    if not listed.stdout.strip():
+    try:
+        theirs = gitops.ls_remote_oid(listed.stdout, SHADOW)
+    except ValueError:
+        raise GriplinkRefusal(f"{remote} lists more than one row named {SHADOW}; nothing was pulled", 5) from None
+    if theirs is None:
         return {"how": "up to date", "shadow": mine, "merged": [], "updated": []}
-    theirs = listed.stdout.split()[0]
     held = _anc(root, theirs, mine)
     if held is True:
         return {"how": "up to date", "shadow": mine, "merged": [], "updated": [],

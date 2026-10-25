@@ -632,12 +632,13 @@ def test_checkout_refuses_a_member_checkout_that_lacks_the_pin(world):
     assert git(api, "rev-parse", "HEAD") == head
 
 
-def _malformed_ls_remote(monkeypatch):
-    """ls-remote answers a line that is not a row; every other git call runs as it is."""
+def _malformed_ls_remote(monkeypatch, ref: str | None = None):
+    """ls-remote (of `ref` only, when one is named) answers a line that is not a row; every other git call runs as
+    it is."""
     real = griplink.gitops.run
 
     def fake(cwd, *args, **kw):
-        if args[:1] == ("ls-remote",):
+        if args[:1] == ("ls-remote",) and (ref is None or args[-1] == ref):
             return subprocess.CompletedProcess(["git", *args], 0, "not a row\n", "")
         return real(cwd, *args, **kw)
 

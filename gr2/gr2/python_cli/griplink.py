@@ -1024,6 +1024,9 @@ def _pull_no_main(root: Path, remote: str) -> dict:
                               "was pulled", 5)
     try:
         theirs = gitops.ls_remote_oid(listed.stdout, SHADOW)
+    except gitops.LsRemoteMalformed:
+        raise GriplinkRefusal(f"cannot read the remote shadow from {remote}: a row of its listing is malformed; "
+                              "nothing was pulled", 5) from None
     except ValueError:
         raise GriplinkRefusal(f"{remote} lists more than one row named {SHADOW}; nothing was pulled", 5) from None
     if theirs is None:

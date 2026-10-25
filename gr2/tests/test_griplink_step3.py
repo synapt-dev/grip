@@ -969,3 +969,32 @@ def test_a_remote_with_no_main_and_only_a_lookalike_shadow_is_up_to_date(world):
     git(world["remote"], "update-ref", f"refs/a/{griplink.SHADOW}", mine)
     got = griplink.pull(ws)
     assert got == {"how": "up to date", "shadow": mine, "merged": [], "updated": []}
+
+
+def test_a_remote_with_no_main_and_only_a_lookalike_main_takes_the_no_main_path(world):
+    ws = world["ws"]
+    mine = git(ws, "rev-parse", "HEAD")
+    for ref in ("refs/heads/main", griplink.SHADOW):
+        git(world["remote"], "update-ref", "-d", ref)
+    git(world["remote"], "update-ref", "refs/a/refs/heads/main", mine)
+    before = _state(ws)
+    got = griplink.pull(ws)
+    assert got == {"how": "up to date", "shadow": mine, "merged": [], "updated": []}
+    assert _state(ws) == before
+
+
+def test_a_lookalike_main_listed_first_does_not_hide_a_moved_real_main(world):
+    ws = world["ws"]
+    old = git(ws, "rev-parse", "HEAD")
+    p = _peer(world)
+    _write(p, "api", "src/f1.py", "from the peer\n")
+    griplink.commit(p, "peer", stage_all=True)
+    griplink.push(p)
+    theirs = git(world["remote"], "rev-parse", "refs/heads/main")
+    git(world["remote"], "update-ref", "refs/a/refs/heads/main", old)
+    rows = git(ws, "ls-remote", str(world["remote"]), "refs/heads/main")
+    print(rows)
+    assert rows.splitlines() == [f"{old}\trefs/a/refs/heads/main", f"{theirs}\trefs/heads/main"]
+    griplink.pull(ws)
+    assert git(ws, "rev-parse", "HEAD") == theirs != old
+    assert (ws / "api" / "src" / "f1.py").read_text() == "from the peer\n"

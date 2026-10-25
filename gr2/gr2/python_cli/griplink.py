@@ -678,7 +678,11 @@ def push(root: Path, remote: str = "origin", allow_rewind: bool = False) -> dict
     if listed.returncode:
         raise GriplinkRefusal(f"cannot read the remote shadow from {remote}: {(listed.stderr or '').strip()}; nothing "
                               "was pushed", 5)
-    if listed.stdout.strip():  # absent: the first push
+    try:
+        listed_main = gitops.ls_remote_oid(listed.stdout, MAIN)
+    except ValueError:
+        raise GriplinkRefusal(f"{remote} lists more than one row named {MAIN}; nothing was pushed", 5) from None
+    if listed_main is not None:  # absent: the first push
         fetched = gitops.run(root, "fetch", "-q", "--no-recurse-submodules", remote,
                              f"+{MAIN}:refs/remotes/{remote}/main")
         if fetched.returncode:
@@ -1044,7 +1048,11 @@ def pull(root: Path, remote: str = "origin") -> dict:
     if listed.returncode:
         raise GriplinkRefusal(f"cannot read the remote shadow from {remote}: {(listed.stderr or '').strip()}; nothing "
                               "was pulled", 5)
-    if not listed.stdout.strip():
+    try:
+        listed_main = gitops.ls_remote_oid(listed.stdout, MAIN)
+    except ValueError:
+        raise GriplinkRefusal(f"{remote} lists more than one row named {MAIN}; nothing was pulled", 5) from None
+    if listed_main is None:
         return _pull_no_main(root, remote)
     fetched = gitops.run(root, "fetch", "-q", "--no-recurse-submodules", "--no-tags", remote,
                          f"+{MAIN}:refs/remotes/{remote}/main", f"+{NS}/*:{rg}/*")

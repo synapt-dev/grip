@@ -406,6 +406,30 @@ def test_push_refuses_at_exit_5_when_the_remote_cannot_be_read(world):
     assert exc.value.code == 5 and str(exc.value).startswith("cannot read the remote shadow from origin"), str(exc.value)
 
 
+def test_push_to_a_remote_with_only_a_lookalike_main_is_a_first_push_and_leaves_the_lookalike(world):
+    ws, remote = world["ws"], world["remote"]
+    old = git(remote, "rev-parse", "refs/heads/main")
+    git(remote, "update-ref", "refs/a/refs/heads/main", old)
+    for ref in ("refs/heads/main", griplink.SHADOW):
+        git(remote, "update-ref", "-d", ref)
+    _edits(ws)
+    griplink.commit(ws, "change", stage_all=True)
+    griplink.push(ws)
+    assert git(remote, "rev-parse", "refs/heads/main") == git(ws, "rev-parse", "HEAD") != old
+    assert git(remote, "rev-parse", "refs/a/refs/heads/main") == old
+
+
+def test_push_beside_a_lookalike_main_pushes_as_with_the_real_main_alone(world):
+    ws, remote = world["ws"], world["remote"]
+    old = git(remote, "rev-parse", "refs/heads/main")
+    git(remote, "update-ref", "refs/a/refs/heads/main", old)
+    _edits(ws)
+    griplink.commit(ws, "change", stage_all=True)
+    griplink.push(ws)
+    assert git(remote, "rev-parse", "refs/heads/main") == git(ws, "rev-parse", "HEAD") != old
+    assert git(remote, "rev-parse", "refs/a/refs/heads/main") == old
+
+
 def test_push_at_a_root_with_no_remote_names_the_remote_to_add(world):
     ws = world["ws"]
     git(ws, "remote", "remove", "origin")

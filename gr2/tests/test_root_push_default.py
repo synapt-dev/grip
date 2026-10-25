@@ -21,9 +21,6 @@ from gr2.python_cli.app import app
 
 from tests.conftest import make_cli_runner
 
-FETCH = "git fetch origin '+refs/dev.synapt.grip/*:refs/dev.synapt.grip/*'"
-
-
 def git(repo: Path, *args: str) -> str:
     return subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True,
                           stdin=subprocess.DEVNULL).stdout.strip()
@@ -91,7 +88,7 @@ def test_bare_push_at_a_root_pushes_the_root(world, monkeypatch):
     assert r.exit_code == 0, r.stderr
 
 
-def test_a_plain_clone_with_no_names_fetched_refuses_and_names_the_fetch(world, monkeypatch):
+def test_a_plain_clone_with_no_names_fetched_fetches_them_once_and_pushes_nothing_new(world, monkeypatch):
     root, origin = world["root"], world["origin"]
     assert gr2(root, monkeypatch, "push").exit_code == 0
     clone = world["tmp"] / "plain"
@@ -101,10 +98,9 @@ def test_a_plain_clone_with_no_names_fetched_refuses_and_names_the_fetch(world, 
     before = refs(origin)
     r = gr2(clone, monkeypatch, "push")
     no_trace(r)
-    assert r.exit_code == 4, (r.stdout, r.stderr)
-    assert r.stderr.strip() == (f"gr2 push: this workspace's names were not fetched (a plain git clone has main only);"
-                                f" run {FETCH}, then gr2 push again")
+    assert r.exit_code == 0, (r.stdout, r.stderr)
     assert refs(origin) == before
+    assert git(clone, "rev-parse", griplink.STOOK) == git(origin, "rev-parse", griplink.STOOK)
 
 
 def test_git_refusing_the_push_prints_git_words_and_moves_nothing(world, monkeypatch):

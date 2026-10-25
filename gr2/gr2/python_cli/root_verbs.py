@@ -10,6 +10,7 @@ A command typed inside a member checkout is refused by default, naming git; a st
 """
 from __future__ import annotations
 
+import shlex
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,7 +19,6 @@ from . import gitops, griplink
 
 GRIPLINK, STORE = "griplink", "store"
 INSIDE_MEMBER_VALUES = ("refuse", "root")
-STOOK_FETCH = "git fetch origin '+refs/dev.synapt.grip/*:refs/dev.synapt.grip/*'"
 
 
 class RootVerbRefusal(RuntimeError):
@@ -43,16 +43,27 @@ def _has_stook(d: Path) -> bool:
     return gitops.run(d, "rev-parse", "-q", "--verify", griplink.STOOK).returncode == 0
 
 
+def _shape_rev(d: Path) -> str:
+    """HEAD, or origin's main when HEAD is unborn (a plain clone of a remote whose HEAD names a missing branch)."""
+    if gitops.run(d, "rev-parse", "-q", "--verify", "HEAD").returncode == 0:
+        return "HEAD"
+    return ORIGIN_MAIN
+
+
+ORIGIN_MAIN = "refs/remotes/origin/main"
+
+
 def _has_griplink_gitlink(d: Path) -> bool:
-    """HEAD holds a top-level <m>.griplink tree whose 001.2_pin is a gitlink. Reads the top level only, so an
-    ordinary repo of any size costs one short listing."""
-    listed = gitops.run(d, "ls-tree", "-z", "HEAD")
+    """HEAD (or origin's main, HEAD unborn) holds a top-level <m>.griplink tree whose 001.2_pin is a gitlink. Reads
+    the top level only, so an ordinary repo of any size costs one short listing."""
+    rev = _shape_rev(d)
+    listed = gitops.run(d, "ls-tree", "-z", rev)
     if listed.returncode:
         return False
     for entry in listed.stdout.split("\0"):
         meta, _, name = entry.partition("\t")
         if meta.split(" ")[1:2] == ["tree"] and name.endswith(".griplink"):
-            pin = gitops.run(d, "ls-tree", "HEAD", "--", f"{name}/{griplink.PIN}")
+            pin = gitops.run(d, "ls-tree", rev, "--", f"{name}/{griplink.PIN}")
             if pin.returncode == 0 and pin.stdout.startswith("160000 "):
                 return True
     return False
@@ -144,8 +155,41 @@ def resolve(verb: str, git_word: str, start: Path | None = None) -> Root | None:
 
 
 def require_stook(root: Root, verb: str) -> None:
-    """A verb that reads or cuts the STOOK refuses on a root found by its gitlink alone, naming the fetch."""
+    """A verb that reads or cuts the STOOK refuses on a root found by its gitlink alone, naming gr2 checkout (which
+    fetches the names); a local verb never fetches."""
     if root.shape == GRIPLINK and not root.has_stook:
         raise RootVerbRefusal(
             f"gr2 {verb}: this workspace's names were not fetched (a plain git clone has main only); run "
-            f"{STOOK_FETCH}, then gr2 {verb} again", 4)
+            f"gr2 checkout (or gr2 pull), then gr2 {verb} again", 4)
+
+
+def fetch_names(root: Root, verb: str, remote: str) -> Root:
+    """A root found by its gitlink alone fetches its gr2 names once from `remote`, taking only the names it does not
+    hold, so a local name is never overwritten. Refused at exit 4 when the root has no such remote or the remote
+    holds no STOOK. A root that has its STOOK is returned as it is, with no network."""
+    if root.shape != GRIPLINK or root.has_stook:
+        return root
+    if remote.startswith("-") or gitops.unsafe_in_identifier(remote) or gitops.run(
+            root.path, "remote", "get-url", remote).returncode:
+        raise RootVerbRefusal(
+            f"gr2 {verb}: this workspace's names were not fetched and {shlex.quote(remote)} is not a remote of this root; "
+            "run "
+            f"git remote add {shlex.quote(remote)} <url>, then gr2 {verb} again", 4)
+    listed = gitops.run(root.path, "ls-remote", "--refs", remote, f"{griplink.NS}/*")
+    if listed.returncode:
+        raise RootVerbRefusal(f"gr2 {verb}: cannot list the gr2 names on {shlex.quote(remote)}: "
+                              f"{(listed.stderr or '').strip()}; nothing was fetched", 5)
+    names = [ln.split("\t", 1)[1] for ln in listed.stdout.splitlines() if "\t" in ln]
+    names = [n for n in names if n.startswith(griplink.NS + "/")]
+    missing = [n for n in names if gitops.run(root.path, "rev-parse", "-q", "--verify", n).returncode]
+    if griplink.STOOK in missing:
+        fetched = gitops.run(root.path, "fetch", "-q", "--no-tags", "--no-recurse-submodules", "--no-write-fetch-head",
+                             "--refmap=", remote, *[f"{n}:{n}" for n in missing])
+        if fetched.returncode:
+            raise RootVerbRefusal(f"gr2 {verb}: cannot fetch the gr2 names from {shlex.quote(remote)}: "
+                                  f"{(fetched.stderr or '').strip()}; nothing past that step was written", 5)
+    if not _has_stook(root.path):
+        raise RootVerbRefusal(
+            f"gr2 {verb}: the remote {shlex.quote(remote)} has no gr2 names yet (no {griplink.STOOK}); nothing was "
+            "fetched", 4)
+    return Root(root.path, root.shape, True, root.member)

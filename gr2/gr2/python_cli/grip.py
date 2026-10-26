@@ -1879,7 +1879,10 @@ def _set_up_native_store(workspace: Path) -> None:
     try:
         _native_store_init(workspace)
     except NativeStoreRefusal as exc:
-        raise StoreSetupRefused(f"{workspace} has no store and `store init` refused to make one: {exc}") from exc
+        raise StoreSetupRefused(
+            f"{workspace} has no store and `store init` refused to make one: {exc}. Once it can, the first pin here "
+            f"runs `store init` and makes {workspace} a native store (a .git and grip.toml at that root)"
+        ) from exc
 
 
 def _resolve_bound(workspace: Path, commit: str) -> str:
@@ -2588,6 +2591,14 @@ def exclude_grip_state(workspace: Path) -> None:
         handle.write(_REVIEW_STORE_EXCLUDE + "\n")
 
 
+def _has_member_checkout(workspace: Path) -> bool:
+    """Whether any immediate child of `workspace` is a git checkout, the least `store init` needs."""
+    try:
+        return any(child.is_dir() and (child / ".git").exists() for child in workspace.iterdir())
+    except OSError:
+        return True  # cannot tell: keep the plain advice rather than claim there is none
+
+
 def _validate_grip_repo(workspace: Path) -> None:
     """Verify .grip/ is a valid git repo. Raises GripInitError if not."""
     grip_dir = workspace / ".grip"
@@ -2597,10 +2608,12 @@ def _validate_grip_repo(workspace: Path) -> None:
             "record and its pinned reviews in the root's own .git."
         )
     if not grip_dir.exists():
-        raise GripInitError(
-            f"No .grip/ directory at {workspace}. "
-            f"{init_unless_inside_workspace(workspace, 'Run `gr2 store init .` first.')}"
-        )
+        advice = init_unless_inside_workspace(workspace, "Run `gr2 store init .` first.")
+        if advice == "Run `gr2 store init .` first." and not _has_member_checkout(workspace):
+            # store init needs a member checkout beside it; without one it refuses too, and the two
+            # refusals would send a reader back and forth.
+            advice += " `store init` needs at least one member checkout in this directory, and it has none."
+        raise GripInitError(f"No .grip/ directory at {workspace}. {advice}")
     git_dir = grip_dir / ".git"
     if not git_dir.exists():
         raise GripInitError(

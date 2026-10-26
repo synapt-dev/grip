@@ -1141,10 +1141,19 @@ def _discover_members(root: Path, declared: list[str] | None = None) -> list[dic
             )
             continue
         if not _is_member_checkout(root, normalised):
-            problems.append(
-                f"member path {normalised!r} is not a git checkout: a member is a checkout with "
-                f"its own origin, not a folder"
-            )
+            # Two different states, two different fixes: nothing at the path (a declared member never
+            # cloned here) is not "a folder", and calling it one sent a reader looking for a directory
+            # that does not exist.
+            if not (root / normalised).exists():
+                problems.append(
+                    f"declared member {normalised!r} is ABSENT: nothing at {root / normalised}; clone it "
+                    f"there, or drop it from the member list"
+                )
+            else:
+                problems.append(
+                    f"member path {normalised!r} is a folder, not a git checkout: a member is a checkout "
+                    f"with its own origin; make it a clone, or drop it from the member list"
+                )
             continue
         seen_paths.add(normalised)
         seen_names[name] = normalised

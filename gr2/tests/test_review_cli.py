@@ -270,7 +270,8 @@ def test_bind_refuses_cleanly_when_the_plumbing_store_is_absent(tmp_path):
     )
     assert result.exit_code == 2, result.output
     assert "Traceback" not in result.output  # clean error text, not a stack trace
-    assert "grip init" in result.output  # names the remediation, not just the symptom
+    assert "store init" in result.output  # names the remediation, not just the symptom
+    assert "grip init" not in result.output  # one remedy: `grip init` refuses on this directory too
     assert str(ws) in result.output  # names WHERE, not just that something's missing
 
 

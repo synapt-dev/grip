@@ -8,6 +8,7 @@ Plain close stays exactly as strict; a directory that is not that review lane is
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -311,3 +312,72 @@ def test_adopt_reads_the_merge_base_in_the_real_history_through_a_replaced_check
     assert "no merge-base" not in result.output, result.output
     assert result.exit_code == 0, result.output
     assert not lane.exists()
+
+
+def test_adopt_closes_a_lane_whose_only_extra_commit_is_held_by_a_remote_tag(world):
+    """The --adopt close: a clone carries the remote's tags as local tags, and a commit only
+    such a tag reaches is the remote's, not the lane's (the read-lane close got the same fix)."""
+    source = world["source"]
+    _git(source, "checkout", "-q", "-b", "scratch")
+    (source / "archived.txt").write_text("archived\n")
+    _git(source, "add", ".")
+    _git(source, "commit", "-q", "-m", "archived plan")
+    archived = _git(source, "rev-parse", "HEAD")
+    _git(source, "tag", "archive/old-plan")
+    _git(source, "checkout", "-q", "main")
+    _git(source, "branch", "-qD", "scratch")
+    _git(source, "push", "-q", "origin", "refs/tags/archive/old-plan")
+    lane = _clone_lane(world, world["head"])
+    assert _git(lane, "rev-parse", "refs/tags/archive/old-plan") == archived
+    result = _close(world, "--adopt")
+    assert result.exit_code == 0, result.output
+    assert not lane.exists()
+
+
+def test_adopt_still_refuses_a_tag_made_in_the_lane_on_its_own_commit(world):
+    lane = _clone_lane(world, world["head"])
+    (lane / "mine.txt").write_text("mine\n")
+    _git(lane, "add", ".")
+    _git(lane, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "mine")
+    mine = _git(lane, "rev-parse", "HEAD")
+    _git(lane, "tag", "my-mark")
+    _git(lane, "checkout", "-q", "--detach", world["head"])
+    result = _close(world, "--adopt")
+    assert result.exit_code != 0
+    assert "unpublished commits" in result.output and mine[:12] in result.output, result.output
+    assert lane.is_dir()
+
+
+def test_adopt_refuses_a_lane_tagged_commit_when_a_remote_is_the_lane_itself(world):
+    """A remote that resolves to the lane advertises the lane's own tags; they hold nothing elsewhere."""
+    lane = _clone_lane(world, world["head"])
+    (lane / "mine.txt").write_text("mine\n")
+    _git(lane, "add", ".")
+    _git(lane, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "mine")
+    mine = _git(lane, "rev-parse", "HEAD")
+    _git(lane, "tag", "my-mark")
+    _git(lane, "checkout", "-q", "--detach", world["head"])
+    _git(lane, "remote", "add", "self", str(lane))
+    result = _close(world, "--adopt")
+    assert result.exit_code != 0
+    assert "unpublished commits" in result.output and mine[:12] in result.output, result.output
+    assert lane.is_dir()
+
+
+def test_adopt_refuses_when_a_remote_is_the_lane_spelled_in_another_case(world):
+    lane = _clone_lane(world, world["head"])
+    upper = Path(str(lane).upper())
+    if not (upper.exists() and os.path.samefile(upper, lane)):
+        pytest.skip("this filesystem is case-sensitive")
+    (lane / "mine.txt").write_text("mine\n")
+    _git(lane, "add", ".")
+    _git(lane, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "mine")
+    mine = _git(lane, "rev-parse", "HEAD")
+    _git(lane, "tag", "my-mark")
+    _git(lane, "checkout", "-q", "--detach", world["head"])
+    _git(lane, "remote", "add", "self", str(upper))
+    assert mine in _git(lane, "ls-remote", "--tags", "self")
+    result = _close(world, "--adopt")
+    assert result.exit_code != 0
+    assert "unpublished commits" in result.output and mine[:12] in result.output, result.output
+    assert lane.is_dir()

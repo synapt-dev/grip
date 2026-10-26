@@ -772,8 +772,21 @@ def _adopt_local_work(lane: Path, head: str, source: Path) -> list[str]:
     if stashes:
         found.append(f"a stash ({len(stashes)} entr{'y' if len(stashes) == 1 else 'ies'})")
     published = _member_publishes(source, ask("for-each-ref", "--format=%(objectname)", "refs/remotes").split())
-    # The stashes are reported above, so their commits are left out here.
-    unpublished = ask("rev-list", "--exclude=refs/stash", "--all", "--reflog", "--not", *published, head, *stashes).split()
+    # A clone carries its remote's tags as local tags and git keeps no remote-tag refs, so what a remote holds under
+    # a tag counts as published too, by the one reader lane remove uses; a remote that
+    # cannot be asked refuses. Through stdin, as ^sha lines. The stashes are reported above, so their commits are
+    # left out here.
+    from .app import _remote_tag_shas
+    try:
+        held = _remote_tag_shas(lane, removing=lane)
+    except SystemExit as exc:
+        raise ReviewError(f"could not read {lane} (its tag probe): {exc}; refusing to adopt it.") from None
+    listed = gitops.run_argv(["git", "rev-list", "--exclude=refs/stash", "--all", "--reflog", "--not", *published, head,
+                              *stashes, "--stdin"], cwd=lane, input="".join(f"^{sha}\n" for sha in held))
+    if listed.returncode != 0:
+        raise ReviewError(f"could not read {lane} (its rev-list probe): {(listed.stderr or listed.stdout).strip()}; "
+                          "refusing to adopt it.")
+    unpublished = listed.stdout.split()
     if unpublished:
         found.append(f"unpublished commits: {', '.join(c[:12] for c in unpublished)}")
     return found

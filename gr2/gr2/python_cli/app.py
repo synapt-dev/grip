@@ -5765,6 +5765,15 @@ def _emit_review_opened(workspace_root: Path, sha: str, lane_dir: Path, results:
     )
 
 
+def _echo_sparse_note(result: dict[str, str]) -> None:
+    """A lane cloned sparse by a profile holds only the profile's paths, so a grep inside it that finds no
+    callers is not a census. Say so once, and name where the whole tree can be searched."""
+    if result["profile"] == "none":
+        return
+    typer.echo(f"sparse: profile {shlex.quote(result['profile'])}; paths outside it are not in this lane; "
+               f"grep the mirror (git grep {shlex.quote(result['reconstructed_head'])}) for callers")
+
+
 @review_app.command("open-gr", hidden=True, cls=json_refusing(RootOptionalCommand))  # hidden alias for one release, dropped at 2.0 GA
 def review_open_gr(
     workspace_root: Path,
@@ -5831,6 +5840,7 @@ def review_open_gr(
                     match = res["bound_head_tree"] == res["reconstructed_tree"]
                     typer.echo(f"{row_key}: lane={res['lane']} tree_match={match} "
                                f"source={res['source']} profile={res['profile']}")
+                    _echo_sparse_note(res)
             return
     result = _review_call(
         grip.reconstruct_review_lane, workspace_root.resolve(), sha, key, root, reader=True
@@ -5848,6 +5858,7 @@ def review_open_gr(
         typer.echo(f"reconstructed_head: {result['reconstructed_head']}")
         typer.echo(f"tree_match: {result['bound_head_tree'] == result['reconstructed_tree']}")
         typer.echo(f"source: {result['source']}  profile: {result['profile']}")
+        _echo_sparse_note(result)
 
 
 @review_app.command("close-gr", hidden=True, cls=json_refusing(typer.core.TyperCommand))  # hidden alias for one release, dropped at 2.0 GA

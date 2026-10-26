@@ -11,6 +11,8 @@ from __future__ import annotations
 from tests.native_root_helper import native_root
 
 import os
+import re
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -177,3 +179,34 @@ def test_review_open_of_two_members_reads_each_from_the_mirror(tmp_path: Path) -
         line = next((ln for ln in out.output.splitlines() if ln.startswith(f"{name}: ")), "")
         assert "tree_match=True" in line and "source=mirror" in line, out.output
         assert not (lanes / name / "bulk").exists(), out.output
+
+
+def _open(tmp_path: Path, *, profile: bool):
+    ws, commit, _ = _bound(tmp_path, profile=profile)
+    lane = tmp_path / "lane"
+    out = CliRunner().invoke(gr2_app.app, ["review", "open", str(ws), f"gr:{commit}", "--lane-dir", str(lane)])
+    assert out.exit_code == 0, out.output
+    return out.output, lane
+
+
+def test_a_profiled_open_says_once_that_the_lane_is_sparse(tmp_path: Path) -> None:
+    output, lane = _open(tmp_path, profile=True)
+    profile = next(l for l in output.splitlines() if l.startswith("source: ")).split("profile: ", 1)[1]
+    head = _git(lane, "rev-parse", "HEAD")
+    line = (f"sparse: profile {shlex.quote(profile)}; paths outside it are not in this lane; "
+            f"grep the mirror (git grep {head}) for callers")
+    assert output.splitlines().count(line) == 1, output
+    assert output.count("sparse: ") == 1
+
+
+def test_a_profile_less_open_says_nothing_about_sparse(tmp_path: Path) -> None:
+    output, _ = _open(tmp_path, profile=False)
+    assert "profile: none" in output
+    assert "sparse: " not in output
+
+
+def test_the_printed_sha_is_the_head_the_lane_holds(tmp_path: Path) -> None:
+    output, lane = _open(tmp_path, profile=True)
+    shown = re.search(r"\(git grep (\S+)\) for callers", output).group(1)
+    assert shown == _git(lane, "rev-parse", "HEAD")
+    assert f"reconstructed_head: {shown}" in output

@@ -1141,10 +1141,26 @@ def _discover_members(root: Path, declared: list[str] | None = None) -> list[dic
             )
             continue
         if not _is_member_checkout(root, normalised):
-            problems.append(
-                f"member path {normalised!r} is not a git checkout: a member is a checkout with "
-                f"its own origin, not a folder"
-            )
+            # Each state named as what is at the path, so the fix matches it: nothing at all (a declared member
+            # never cloned here) is not "a folder", and neither is a file or a link. A link is asked first, since
+            # is_dir() follows it, and lexists() so a broken link is not read as nothing.
+            at = root / normalised
+            if not os.path.lexists(at):
+                problems.append(
+                    f"declared member {normalised!r} is ABSENT: nothing at {at}; clone it "
+                    f"there, or drop it from the member list"
+                )
+            elif at.is_symlink():
+                problems.append(
+                    f"member path {normalised!r} is a symlink to {os.readlink(at)}, not a git checkout: "
+                    f"point it at a clone, or drop it from the member list"
+                )
+            else:
+                kind = "a folder" if at.is_dir() else "a file"
+                problems.append(
+                    f"member path {normalised!r} is {kind}, not a git checkout: a member is a checkout "
+                    f"with its own origin; make it a clone, or drop it from the member list"
+                )
             continue
         seen_paths.add(normalised)
         seen_names[name] = normalised

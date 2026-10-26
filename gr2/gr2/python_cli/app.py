@@ -5369,10 +5369,10 @@ def _review_refusal(exc: BaseException) -> tuple[str, str, list[str]]:
         # A native root where nothing has been bound. Not a setup error, so no remedy that
         # sends the caller back to the verb they already ran.
         return "not_bound", str(exc), []
-    # GripInitError: the engine's own message already names what's missing and where
-    # (workspace path included); add the remediation verb rather than re-deriving the
-    # diagnosis, since _validate_grip_repo already did the naming precisely.
-    return "not_initialized", f"{exc} Run `gr2 grip init` to create it.", []
+    # GripInitError: the engine's own message already names what's missing, where, and the one
+    # remedy (`store init`, or the way to the enclosing workspace). A second remedy appended here
+    # gave an empty root two that both refused.
+    return "not_initialized", str(exc), []
 
 
 def _review_call(fn, *args, **kwargs):

@@ -374,13 +374,26 @@ def _grip_document(root: Path) -> dict:
     # table has a code for this: 5, cannot measure.
     spec = _store_git(root, "show", "HEAD:grip.toml", check=False)
     if spec.returncode:
-        raise NativeStoreRefusal(
-            f"no grip.toml at {root} and no committed spec at HEAD; this root is not a "
-            f"store these verbs can measure -- run gr2 store init here (for full mode: gr2 store init "
-            f"--mode full <new dir> --clone NAME=URL for each member)",
-            5,
-        )
+        raise NativeStoreRefusal(_no_spec_message(root), 5)
     return tomllib.loads(spec.stdout)
+
+
+def _no_spec_message(root: Path) -> str:
+    """The refusal for a root with no spec. Init advice only where init belongs: a root that sits inside a workspace
+    (a member checkout, or a directory in one) is named with the root above, found by the top-level verbs' own walk
+    (`root_verbs.find`), because "store init here" would nest a second store inside a member.
+    A griplink root above takes no store verb, so it is named without one."""
+    from . import root_verbs
+
+    head = f"no grip.toml at {root} and no committed spec at HEAD; "
+    above = root_verbs.find(Path(root).resolve().parent)
+    if above is not None and above.shape == root_verbs.STORE:
+        return (head + f"{root} is inside the store at {above.path}, not a store root -- run this verb from "
+                f"{above.path}, or name it with -C {shlex.quote(str(above.path))}")
+    if above is not None:
+        return head + f"{root} is inside the griplink workspace at {above.path}, and store verbs do not act on a griplink root"
+    return (head + "this root is not a store these verbs can measure -- run gr2 store init here (for full mode: "
+            "gr2 store init --mode full <new dir> --clone NAME=URL for each member)")
 
 
 def _workspace_mode(document: dict) -> str:

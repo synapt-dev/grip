@@ -24,6 +24,7 @@ from gr2.prototypes import lane_workspace_prototype as lane_proto
 
 from . import grip, project_review, review
 from .clone_exec import IncompleteRemoval, rmtree_or_refuse
+from . import gitops
 from .gitops import git
 from .review_run import _OUTPUT_LOG_NAME as _RUN_LOG_NAME
 from .review_run import _MARKER_KIND, _MARKER_NAME, _RECEIPT_NAME as _RUN_RECEIPT_NAME
@@ -235,9 +236,23 @@ def _refuse_local_work(target: Path, allocation: dict) -> None:
         if stashes:
             found.append(f"uncommitted work in {path}: a stash")
         # Every ref and every reflog entry (a commit left only in the reflog is still work), less
-        # what a remote has, the reviewed HEAD, and the stashes reported above.
-        unpublished = ask(path, "rev-list", "--exclude=refs/stash", "--all", "--reflog",
-                          "--not", "--remotes", "HEAD", *stashes).split()
+        # what a remote has, the reviewed HEAD, and the stashes reported above. A remote's tags count as
+        # what it has: git keeps no remote-tag refs, so a read lane cloned from
+        # the review mirror carries the mirror's tags as local ones, and every commit only a tag reaches read
+        # as lane work. The one reader lane remove uses asks each remote outside the lane (one that resolves into
+        # the lane holds only the lane's own tags), and a remote that cannot be asked
+        # refuses the close; its shas go in on stdin, as ^sha lines, since a remote can hold hundreds of tags.
+        from .app import _remote_tag_shas
+        try:
+            held = _remote_tag_shas(path, removing=target)
+        except SystemExit as exc:
+            raise OpenGrReviewError(f"lane {target}: {exc}; close refused") from None
+        proc = gitops.run_argv(["git", "rev-list", "--exclude=refs/stash", "--all", "--reflog", "--not", "--remotes",
+                                "HEAD", *stashes, "--stdin"], cwd=path, input="".join(f"^{sha}\n" for sha in held))
+        if proc.returncode != 0:
+            raise OpenGrReviewError(f"lane {target}: could not read {path} (git rev-list): "
+                                    f"{(proc.stderr or proc.stdout).strip()}; close refused")
+        unpublished = proc.stdout.split()
         if unpublished:
             found.append(f"unpublished commits in {path}: {', '.join(c[:12] for c in unpublished)}")
     if found:

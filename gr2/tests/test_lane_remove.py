@@ -696,3 +696,23 @@ def test_a_stray_file_in_a_native_lane_root_is_still_named(tmp_path: Path, monke
     assert f"lane_has_unlisted_content: {root / '.grip' / 'mine'}" in result.output, result.output
     assert f"lane_has_unlisted_content: {root / '.git'}" not in result.output, result.output
     assert (root / "notes.txt").is_file()
+
+
+def test_a_remote_inside_the_checkout_root_does_not_hold_a_tagged_commit(tmp_path: Path) -> None:
+    """A remote resolving into the directory remove deletes advertises the lane's own tags; the commit stays listed."""
+    ws, repo, tagged = _lane_with_a_local_tag_commit(tmp_path)
+    _git(repo, "remote", "add", "self", str(repo))
+    assert tagged in _git(repo, "ls-remote", "--tags", "self")
+    _refused_untouched(ws, repo, _remove(ws), "lane_has_unpushed_commit", tagged[:12])
+
+
+def test_a_sibling_remote_inside_the_checkout_root_does_not_hold_a_tagged_commit(tmp_path: Path) -> None:
+    """A bare clone beside the lane repo, inside the checkout root, holds the lane's tag; remove deletes it too,
+    so it holds nothing elsewhere. Measures removing= at lane remove: the repo itself is not the remote here."""
+    ws, repo, tagged = _lane_with_a_local_tag_commit(tmp_path)
+    sibling = lane_proto.lane_checkout_root(ws, "atlas", "x") / "mirror.git"
+    _git(tmp_path, "clone", "-q", "--bare", str(repo), str(sibling))
+    _git(repo, "push", "-q", str(sibling), "refs/tags/0.5.0")
+    _git(repo, "remote", "add", "sibling", str(sibling))
+    assert tagged in _git(repo, "ls-remote", "--tags", "sibling")
+    _refused_untouched(ws, repo, _remove(ws), f"lane_has_unpushed_commit: app {tagged}")

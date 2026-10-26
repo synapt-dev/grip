@@ -4131,7 +4131,7 @@ def lane_exit(
     )
 
 
-def _unpushed_commits(repo: Path, *, fetch: bool = True) -> list[tuple[str, str]]:
+def _unpushed_commits(repo: Path, *, fetch: bool = True, removing: Path | None = None) -> list[tuple[str, str]]:
     """Commits on HEAD, any local branch or any tag that no remote-tracking ref holds, after a fetch, each as
     (sha, the ref it was found on): a branch if one reaches it, else HEAD, else a tag, so a stray local tag reads
     apart from a desk's own work.
@@ -4147,7 +4147,7 @@ def _unpushed_commits(repo: Path, *, fetch: bool = True) -> list[tuple[str, str]
         fetched = gitops.run_argv(["git", "fetch", "--quiet", "--all"], cwd=repo)
         if fetched.returncode != 0:
             raise SystemExit(f"cannot fetch in {repo}, so cannot show its commits are pushed: {fetched.stderr.strip()}")
-        held = _remote_tag_shas(repo)
+        held = _remote_tag_shas(repo, removing=removing)
     # `--remotes` is refs/remotes/* only, and git keeps no remote-tag refs, so a commit reachable only from a tag is held
     # by a remote exactly when the remote advertises that tag: its shas join the --not side (a release tag off every
     # branch kept every lane). Through stdin, as ^sha lines: a remote can hold hundreds of tags.
@@ -4174,13 +4174,38 @@ def _unpushed_commits(repo: Path, *, fetch: bool = True) -> list[tuple[str, str]
     return list(found.items())
 
 
-def _remote_tag_shas(repo: Path) -> list[str]:
+def _remote_is_inside(repo: Path, remote: str, roots: list[Path]) -> bool:
+    """Whether the remote's URL is a local path (or a file:// URL) that resolves to one of `roots` or under one.
+    A remote there is the directory about to be removed: what it holds is not held anywhere else."""
+    got = gitops.run_argv(["git", "remote", "get-url", "--", remote], cwd=repo)
+    if got.returncode != 0:
+        raise SystemExit(f"cannot read {remote}'s URL in {repo}: {got.stderr.strip()}")
+    url = got.stdout.strip()
+    if url.startswith("file://"):
+        url = url[len("file://"):]
+    elif "://" in url or (":" in url and "/" not in url.split(":", 1)[0]):
+        return False  # a network URL, or the scp-like host:path form
+    # By file identity, not spelling: on a case-insensitive or normalizing filesystem two spellings reach one directory.
+    target = (repo / url).resolve()
+    held = [r for r in roots if r.exists()]
+    for place in (target, *target.parents):
+        if place.exists() and any(os.path.samefile(place, r) for r in held):
+            return True
+    return False
+
+
+def _remote_tag_shas(repo: Path, *, removing: Path | None = None) -> list[str]:
     """Every sha a remote advertises under refs/tags (tag objects and their peeled commits) that this repo has.
 
     A remote that cannot be asked is a refusal, as a failed fetch is: an empty answer would make a tag-only commit
-    look unpushed or, worse, a failed ask look like 'nothing held'. A sha this repo lacks cannot hide a local commit."""
+    look unpushed or, worse, a failed ask look like 'nothing held'. A sha this repo lacks cannot hide a local commit.
+    A remote that resolves to this repo, or into `removing` (the directory the caller is about to delete), is
+    skipped: its tags are this lane's own, so they hold nothing elsewhere and a lane-made tagged commit stays listed."""
     shas: list[str] = []
+    roots = [repo] + ([removing] if removing is not None else [])
     for remote in git(repo, "remote").stdout.split():
+        if _remote_is_inside(repo, remote, roots):
+            continue
         listed = gitops.run_argv(["git", "ls-remote", "--tags", "--", remote], cwd=repo)
         if listed.returncode != 0:
             raise SystemExit(f"cannot list {remote}'s tags in {repo}, so cannot show a tagged commit is pushed: "
@@ -4286,7 +4311,7 @@ def _lane_removal_refusals(workspace_root: Path, owner_unit: str, lane_name: str
         for sha in git(store_root, "stash", "list", "--format=%H").stdout.split():
             refusals.append(f"lane_has_stash: lane-root {sha}")
         try:
-            refusals.extend(f"lane_has_unpushed_commit: lane-root {sha} (on {ref})" for sha, ref in _unpushed_commits(store_root, fetch=fetch))
+            refusals.extend(f"lane_has_unpushed_commit: lane-root {sha} (on {ref})" for sha, ref in _unpushed_commits(store_root, fetch=fetch, removing=checkout_root))
         except SystemExit as exc:
             refusals.append(f"lane_unpushed_unknown: lane-root: {exc}")
     for name in lane_doc.get("repos", []):
@@ -4298,7 +4323,7 @@ def _lane_removal_refusals(workspace_root: Path, owner_unit: str, lane_name: str
         for sha in git(path, "stash", "list", "--format=%H").stdout.split():
             refusals.append(f"lane_has_stash: {name} {sha}")
         try:
-            refusals.extend(f"lane_has_unpushed_commit: {name} {sha} (on {ref})" for sha, ref in _unpushed_commits(path, fetch=fetch))
+            refusals.extend(f"lane_has_unpushed_commit: {name} {sha} (on {ref})" for sha, ref in _unpushed_commits(path, fetch=fetch, removing=checkout_root))
         except SystemExit as exc:
             refusals.append(f"lane_unpushed_unknown: {name}: {exc}")
     return refusals

@@ -4,10 +4,12 @@ A bind on a workspace root with no store runs `store init` first (see test_revie
 When `store init` cannot, the reader gets its reason, and these rows pin that the reason is the right
 one and carries one fix:
   * a declared member with nothing at its path is ABSENT, not "a folder";
-  * a declared member that is a plain directory is a folder, not a git checkout;
+  * a declared member that is a plain directory is a folder, a regular file is a file, and a link (broken
+    or not) is a symlink, each "not a git checkout"; a broken link is not read as ABSENT;
   * the refusal says, before it happens, that the first bind there makes the root a native store;
   * an empty directory gets ONE remedy, and is told that `store init` needs a member checkout there;
-  * a directory that does hold a member checkout keeps the plain remedy.
+  * a directory that does hold a member checkout keeps the plain remedy;
+  * a root whose .grip/ is empty names a gr2 verb (`gr2 store init .`), never the function grip_init.
 """
 
 from __future__ import annotations
@@ -86,3 +88,34 @@ def test_a_dir_holding_a_member_checkout_keeps_the_plain_remedy(tmp_path: Path, 
     assert code == 2 and "not_initialized" in out, out
     assert "Run `gr2 store init .` first." in out, out
     assert "needs at least one member checkout" not in out, out
+
+
+def test_a_file_at_a_member_path_is_named_a_file(tmp_path: Path, two_member_ws: Path) -> None:
+    root = _spec_root(tmp_path, "notes.txt")
+    (root / "notes.txt").write_text("not a repo\n")
+    code, out = _bind(root, two_member_ws)
+    assert code == 2 and "store_init_refused" in out, out
+    assert "member path 'notes.txt' is a file, not a git checkout" in out, out
+    assert "is a folder" not in out and "ABSENT" not in out, out
+
+
+def test_a_broken_symlink_at_a_member_path_is_named_a_symlink_not_absent(tmp_path: Path,
+                                                                        two_member_ws: Path) -> None:
+    root = _spec_root(tmp_path, "linked")
+    (root / "linked").symlink_to(root / "nowhere")
+    assert not (root / "linked").exists() and (root / "linked").is_symlink()  # the fixture is a BROKEN link
+    code, out = _bind(root, two_member_ws)
+    assert code == 2 and "store_init_refused" in out, out
+    assert f"member path 'linked' is a symlink to {root / 'nowhere'}, not a git checkout" in out, out
+    assert "point it at a clone, or drop it from the member list" in out, out
+    assert "ABSENT" not in out and "is a folder" not in out and "nothing at" not in out, out
+
+
+def test_an_empty_grip_dir_names_a_gr2_verb_not_a_function(tmp_path: Path, two_member_ws: Path) -> None:
+    root = tmp_path / "half"
+    (root / ".grip").mkdir(parents=True)
+    code, out = _bind(root, two_member_ws)
+    assert code == 2, out
+    assert ".grip/ exists but has no .git/" in out, out
+    assert "Run `gr2 store init .` first." in out, out
+    assert "grip_init" not in out and "grip init" not in out, out

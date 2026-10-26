@@ -2608,22 +2608,25 @@ def _validate_grip_repo(workspace: Path) -> None:
             "record and its pinned reviews in the root's own .git."
         )
     if not grip_dir.exists():
-        advice = init_unless_inside_workspace(workspace, "Run `gr2 store init .` first.")
-        if advice == "Run `gr2 store init .` first." and not _has_member_checkout(workspace):
-            # store init needs a member checkout beside it; without one it refuses too, and the two
-            # refusals would send a reader back and forth.
-            advice += " `store init` needs at least one member checkout in this directory, and it has none."
-        raise GripInitError(f"No .grip/ directory at {workspace}. {advice}")
+        raise GripInitError(f"No .grip/ directory at {workspace}. {_store_init_advice(workspace)}")
     git_dir = grip_dir / ".git"
     if not git_dir.exists():
-        raise GripInitError(
-            f".grip/ exists but has no .git/ at {workspace}. Run grip_init to repair."
-        )
+        raise GripInitError(f".grip/ exists but has no .git/ at {workspace}. {_store_init_advice(workspace)}")
     if git_dir.is_file():
         raise GripInitError(
-            f".grip/.git is a file, not a directory (corrupt). "
-            f"Remove {git_dir} and run grip_init to repair."
+            f".grip/.git is a file, not a directory (corrupt). {_store_init_advice(workspace)}"
         )
+
+
+def _store_init_advice(workspace: Path) -> str:
+    """The one remedy for a root with no usable alpha store: `gr2 store init .`, which makes the root a native
+    store from any of the three states above (measured: no .grip/, an empty .grip/, a .grip/.git file)."""
+    advice = init_unless_inside_workspace(workspace, "Run `gr2 store init .` first.")
+    if advice == "Run `gr2 store init .` first." and not _has_member_checkout(workspace):
+        # store init needs a member checkout beside it; without one it refuses too, and the two
+        # refusals would send a reader back and forth.
+        advice += " `store init` needs at least one member checkout in this directory, and it has none."
+    return advice
 
 
 def _hash_blob(workspace: Path, content: str) -> str:

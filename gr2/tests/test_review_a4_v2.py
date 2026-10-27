@@ -84,7 +84,7 @@ def test_explicit_row_consumes_typed_flag(two_member_ws: Path, flag: str, value:
         before = _refs(ws)
         args[args.index("--ref") + 1] = "refs/heads/missing"
         refused = _invoke(*args)
-        assert refused.exit_code != 0 and "base_not_live_head" in refused.stderr
+        assert refused.exit_code != 0 and "target_ref_missing" in refused.stderr
         assert _refs(ws) == before
     else:
         assert row[flag].rstrip("\n") == value

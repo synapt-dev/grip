@@ -5474,7 +5474,7 @@ _ROW_ALLOWED = set(_ROW_STRING_FIELDS)
 
 def _normalize_review_row(raw: object, index: int) -> dict:
     """Fill a rows-json entry to the shape create_review_bind_commit expects:
-    key/remote/base/head required; path defaults to key, ref to refs/heads/dev,
+    key/remote/base/head required; path defaults to key, ref to "" (the remote's HEAD branch, resolved at pin time),
     title/body to empty, source resolved to an absolute path when present."""
     if not isinstance(raw, dict):
         raise typer.BadParameter(f"each rows-json entry must be a JSON object, got {type(raw).__name__}")
@@ -5499,7 +5499,7 @@ def _normalize_review_row(raw: object, index: int) -> dict:
         raise typer.Exit(2)
     row = {
         "key": raw["key"], "remote": raw["remote"], "base": raw["base"], "head": raw["head"],
-        "path": raw.get("path") or raw["key"], "ref": raw.get("ref", "refs/heads/dev"),
+        "path": raw.get("path") or raw["key"], "ref": raw.get("ref", ""),
         "title": raw.get("title", ""), "body": raw.get("body", ""),
         # A missing key or "" stays "" (undeclared, which publish reads as public); a given value must be one of the two.
         "visibility": raw.get("visibility") or "",
@@ -5605,7 +5605,7 @@ def review_bind(
     remote: Optional[str] = typer.Option(None, "--remote", help="Remote URL or absolute path of the row (relative paths and remote names are not resolved from your shell's directory)"),
     base: Optional[str] = typer.Option(None, "--base", help="Base SHA (must be the live remote head of --ref)"),
     head: Optional[str] = typer.Option(None, "--head", help="Reviewed head SHA (the pre-push head under review)"),
-    ref: str = typer.Option("refs/heads/dev", "--ref", help="Target ref whose live head must equal --base"),
+    ref: str = typer.Option("", "--ref", show_default=False, help="Target ref whose live head must equal --base (default: the remote's HEAD branch, as ls-remote --symref reports it)"),
     path: Optional[str] = typer.Option(None, "--path", help="Workspace path for the row (defaults to --repo)"),
     source: Optional[Path] = typer.Option(None, "--source", help="Author clone holding the pre-push head; required to carry the range so `review open` can reconstruct"),
     from_range: Optional[Path] = typer.Option(None, "--from-range", help="A frozen range.patch (freeze-public-range.sh output). Carries the range so `review open` reconstructs, deriving the head-tree by applying it over --base in a throwaway clone — NO author clone that holds the head is needed. Exclusive with --source."),
@@ -6771,7 +6771,7 @@ def review_rebind_cmd(
     frozen_dir: Path = typer.Argument(..., help="A frozen gate directory (freeze-public-range.sh output) to rebase onto the moved base"),
     repo: Path = typer.Option(..., "--repo", help="A clone whose origin remote hosts the target branch (used to read the live base head)"),
     out_dir: Path = typer.Option(..., "--out-dir", help="The NEW frozen directory to write when a refreeze is needed (must not already exist)"),
-    target_ref: str = typer.Option("refs/heads/dev", "--ref", help="Target ref whose live head the frozen range is rebound onto"),
+    target_ref: str = typer.Option("", "--ref", show_default=False, help="Target ref whose live head the frozen range is rebound onto (default: the HEAD branch of --repo's origin)"),
     allow_public_ref: bool = typer.Option(False, "--allow-public-ref", help="Proceed even though the intended ref is already on the remote — the sanctioned fix-forward on a branch already ratified and pushed"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:

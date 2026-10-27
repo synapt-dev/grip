@@ -552,6 +552,27 @@ def ls_remote_rows(listing: str, symref: bool = False) -> list[tuple[str, str]]:
     return rows
 
 
+def remote_head_branch(cwd: Path, url: str, timeout: float | None = 5.0) -> str | None:
+    """The branch a remote's HEAD names, as ``ls-remote --symref <url> HEAD`` reports it, or None when the remote
+    cannot be read, names no HEAD, or names something that is not a plain branch. Only the row named exactly HEAD
+    counts (ls-remote matches "HEAD" by tail, so refs/heads/a/HEAD is listed too), and only the refs/heads/ PREFIX is
+    stripped, so a branch such as release/1.x survives whole."""
+    proc = git(cwd, "ls-remote", "--symref", "--", url, "HEAD", timeout=timeout)
+    if proc.returncode != 0:
+        return None
+    try:
+        rows = ls_remote_rows(proc.stdout, symref=True)
+    except LsRemoteMalformed:
+        return None
+    heads = [left for left, name in rows if name == "HEAD" and left.startswith("ref:")]
+    if len(heads) != 1:
+        return None
+    ref = heads[0].removeprefix("ref: ")
+    if ref == heads[0] or " " in ref or not ref.startswith("refs/heads/") or ref == "refs/heads/":
+        return None
+    return ref.removeprefix("refs/heads/")
+
+
 def ls_tree_rows(listing: str) -> list[tuple[str, str, str, str]]:
     """(mode, type, oid, name) per entry of ``git ls-tree -z`` output, split on NUL. Without -z git C-quotes a name
     that holds a tab, newline, quote or backslash (and, under core.quotePath, any non-ASCII byte), so the quoted text

@@ -926,6 +926,17 @@ def _bind_review_rows_body(
             row.get("remote", ""), row.get("path", ""), row.get("head", ""),
             row.get("base", ""), row.get("ref", ""),
         )
+        if not ref and remote:
+            # No --ref given: the remote's own HEAD branch, never an assumed name the remote may not hold.
+            # The pin's own ls-remote bound: a slow remote must not read as one that names no branch.
+            branch = gitops.remote_head_branch(_bind_dir(workspace), remote, timeout=gitops.DEFAULT_TIMEOUT)
+            if branch is None:
+                # None is also "cannot read the remote": ask once more, so that case refuses remote_unreadable with
+                # git's own words instead of advising a --ref that would meet the same unreadable remote.
+                _remote_ref_matches(workspace, remote, "HEAD")
+                raise GripReviewRefused("target_ref_missing", f"{key}: a HEAD branch on {gitops._shown_arg(remote)}",
+                                        "none named; pass --ref <branch>")
+            ref = "refs/heads/" + branch
         for name, value, sha in (("remote", remote, False), ("path", path, False),
                                  ("commit", head, True), ("base", base, True), ("ref", ref, False)):
             if not value:
@@ -938,13 +949,14 @@ def _bind_review_rows_body(
         _refuse_option_shaped_remote(key, remote)
         # Refusal 1: base must be the live remote head of the target ref.
         observed, target = _pin_target(workspace, remote, ref, f"{key}/ref")
+        if not observed:  # no such ref on the remote: that is a missing branch, not a stale base
+            raise GripReviewRefused("target_ref_missing", f"{key}: {ref} on {gitops._shown_arg(remote)}",
+                                    "absent; pass --ref <branch>")
         # --at-base (a frozen range only): pin at the base the range was cut on, read-only, when the ref has moved
         # past it; the base is recorded as at-base in the bind's message, so nothing is rebased to make it pass.
         if row.get("at_base"):
             if not row.get("range_patch"):
                 raise GripReviewRefused("at_base_needs_range", key, "--at-base pins a frozen range only")
-            if not observed:  # no such ref on the remote: nothing to be at the base of
-                raise GripReviewRefused("base_not_live_head", base, observed)
             if base != observed:  # at the live tip the pin is an ordinary one; no trailer
                 at_base[key] = base
         elif base != observed:

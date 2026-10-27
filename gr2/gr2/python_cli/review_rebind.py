@@ -192,8 +192,20 @@ def rebind(frozen_dir: Path, repo: Path, target_ref: str, out_dir: Path,
         raise RebindRefused("out_dir_exists", f"a new version is a new dir: {out_dir}")
     _require_frozen_dir(frozen_dir)
     frozen_base = _frozen_base(frozen_dir)
-    branch = _branch_of(target_ref)
     url = _git(repo, "remote", "get-url", "origin").stdout.strip()
+    # No --ref: the origin's HEAD branch, resolved only once the frozen dir is known good.
+    if not target_ref:
+        head_branch = gitops.remote_head_branch(repo, url, timeout=gitops.DEFAULT_TIMEOUT) if url else None
+        if head_branch is None:
+            # None is also "cannot read the origin": that case refuses by its own name, with git's words.
+            args = ("ls-remote", "--", url, "HEAD")
+            probe = _git(repo, *args, check=False) if url else None
+            if probe is not None and probe.returncode != 0:
+                raise RebindRefused("remote_unreadable", f"{gitops._shown_arg(url)}: "
+                                    f"{gitops.shown_git_text(args, probe.stderr.strip(), repo)[:120]}")
+            raise RebindRefused("target_ref_missing", "the origin of --repo names no HEAD branch; pass --ref <branch>")
+        target_ref = "refs/heads/" + head_branch
+    branch = _branch_of(target_ref)
 
     # intended-ref-public: a rebind mints a new head, so if the ref is already on the
     # remote this is a force-push, not the pre-push rebase rebind is for. Mirrors the

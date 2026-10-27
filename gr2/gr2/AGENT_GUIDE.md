@@ -245,7 +245,7 @@ Pin a review gr commit for one or more repository rows; print ``gr:<commit>``.
 - `--remote`: Remote URL or absolute path of the row (relative paths and remote names are not resolved from your shell's directory)
 - `--base`: Base SHA (must be the live remote head of --ref)
 - `--head`: Reviewed head SHA (the pre-push head under review)
-- `--ref` [default: refs/heads/dev]: Target ref whose live head must equal --base
+- `--ref`: Target ref whose live head must equal --base (default: the remote's HEAD branch, as ls-remote --symref reports it)
 - `--path`: Workspace path for the row (defaults to --repo)
 - `--source`: Author clone holding the pre-push head; required to carry the range so `review open` can reconstruct
 - `--from-range`: A frozen range.patch (freeze-public-range.sh output). Carries the range so `review open` reconstructs, deriving the head-tree by applying it over --base in a throwaway clone — NO author clone that holds the head is needed. Exclusive with --source.

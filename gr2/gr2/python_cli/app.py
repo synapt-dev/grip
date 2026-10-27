@@ -5768,14 +5768,17 @@ def _emit_review_opened(workspace_root: Path, sha: str, lane_dir: Path, results:
 def _echo_sparse_note(result: dict[str, str]) -> None:
     """A lane cloned sparse by a profile holds only the profile's paths, so a grep inside it that finds no
     callers is not a census. Say so once, and name the search that covers the whole tree: the lane holds
-    the head, and its blobless clone fetches the paths left out when a grep needs them. Keyed on the lane
-    actually being sparse, since an empty profile leaves it whole."""
+    the head, and its blobless clone fetches the paths left out when a grep needs them. Keyed on files
+    actually left out (skip-worktree entries), since a profile of `/*` turns sparse mode on and excludes
+    nothing."""
     lane = str(result["lane"])
-    sparse = subprocess.run(["git", "-C", lane, "config", "--bool", "core.sparseCheckout"],
-                            capture_output=True, text=True)
-    if sparse.stdout.strip() != "true":
+    listed = subprocess.run(["git", "-C", lane, "ls-files", "-t"], capture_output=True, text=True)
+    entries = listed.stdout.splitlines()
+    skipped = sum(1 for entry in entries if entry.startswith("S "))
+    if not skipped:
         return
-    typer.echo(f"sparse: profile {shlex.quote(result['profile'])}; paths outside it are not checked out here; "
+    typer.echo(f"sparse: {skipped} of {len(entries)} files not checked out "
+               f"(profile {shlex.quote(result['profile'])}); "
                f"search the whole tree with git -C {shlex.quote(lane)} grep <pattern> "
                f"{shlex.quote(result['reconstructed_head'])}")
 

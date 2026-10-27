@@ -189,8 +189,14 @@ def _open(tmp_path: Path, *, profile: bool):
     return out.output, lane
 
 
+def _left_out(lane: Path) -> tuple[int, int]:
+    entries = _git(lane, "ls-files", "-t").splitlines()
+    return sum(1 for e in entries if e.startswith("S ")), len(entries)
+
+
 def _note(profile: str, lane: Path, head: str) -> str:
-    return (f"sparse: profile {shlex.quote(profile)}; paths outside it are not checked out here; "
+    skipped, total = _left_out(lane)
+    return (f"sparse: {skipped} of {total} files not checked out (profile {shlex.quote(profile)}); "
             f"search the whole tree with git -C {shlex.quote(str(lane))} grep <pattern> {shlex.quote(head)}")
 
 
@@ -221,18 +227,45 @@ def test_the_printed_search_finds_a_path_the_profile_left_out(tmp_path: Path) ->
     assert f"{argv[-1]}:bulk/big.txt:bulk" in ran.stdout.splitlines(), ran.stdout
 
 
-def test_an_empty_fallback_profile_leaves_the_lane_whole_and_says_nothing(tmp_path: Path, monkeypatch) -> None:
+def _open_fallback(tmp_path: Path, monkeypatch, content: str | None):
     pdir = tmp_path / "profiles"
     pdir.mkdir()
-    (pdir / "alpha.exclude").write_text("")
+    if content is not None:
+        (pdir / "alpha.exclude").write_text(content)
     monkeypatch.setenv("SYNAPT_REVIEW_PROFILE_DIR", str(pdir))
     ws, commit, _ = _bound(tmp_path, profile=False)
     lane = tmp_path / "lane"
     out = CliRunner().invoke(gr2_app.app, ["review", "open", str(ws), f"gr:{commit}", "--lane-dir", str(lane)])
     assert out.exit_code == 0, out.output
-    assert "profile: fallback " in out.output
+    return out.output, lane
+
+
+def test_a_profile_of_everything_turns_sparse_on_leaves_nothing_out_and_says_nothing(tmp_path: Path, monkeypatch) -> None:
+    output, lane = _open_fallback(tmp_path, monkeypatch, "/*\n")
+    assert "profile: fallback " in output
+    assert _git(lane, "config", "--bool", "core.sparseCheckout") == "true"
+    assert _left_out(lane)[0] == 0
     assert (lane / "bulk" / "big.txt").exists()
-    assert "sparse: " not in out.output
+    assert "sparse: " not in output
+
+
+def test_a_profile_that_leaves_a_directory_out_prints_the_left_out_count(tmp_path: Path, monkeypatch) -> None:
+    output, lane = _open_fallback(tmp_path, monkeypatch, "/*\n!/bulk/\n")
+    skipped, total = _left_out(lane)
+    assert 0 < skipped < total
+    assert not (lane / "bulk" / "big.txt").exists()
+    profile = next(l for l in output.splitlines() if l.startswith("source: ")).split("profile: ", 1)[1]
+    line = _note(profile, lane, _git(lane, "rev-parse", "HEAD"))
+    assert line.startswith(f"sparse: {skipped} of {total} files not checked out (profile ")
+    assert output.splitlines().count(line) == 1, output
+    assert output.count("sparse: ") == 1
+
+
+def test_no_profile_file_for_the_repo_says_nothing(tmp_path: Path, monkeypatch) -> None:
+    output, lane = _open_fallback(tmp_path, monkeypatch, None)
+    assert "profile: none" in output
+    assert _left_out(lane)[0] == 0
+    assert "sparse: " not in output
 
 
 def test_a_profiled_open_of_two_members_says_it_for_the_sparse_member(tmp_path: Path) -> None:

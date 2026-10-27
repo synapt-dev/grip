@@ -714,6 +714,14 @@ def test_a_remote_spelled_file_localhost_inside_the_checkout_root_does_not_hold_
     _refused_untouched(ws, repo, _remove(ws), "lane_has_unpushed_commit", tagged[:12])
 
 
+def test_a_remote_spelled_file_otherhost_inside_the_checkout_root_does_not_hold_a_tagged_commit(tmp_path: Path) -> None:
+    """Off Windows git ignores the host of file://otherhost/<path> and reads /<path>; the lane's own tag stays listed."""
+    ws, repo, tagged = _lane_with_a_local_tag_commit(tmp_path)
+    _git(repo, "remote", "add", "self", f"file://otherhost{repo}")
+    assert tagged in _git(repo, "ls-remote", "--tags", "self")
+    _refused_untouched(ws, repo, _remove(ws), "lane_has_unpushed_commit", tagged[:12])
+
+
 def test_a_remote_spelled_file_localhost_outside_the_checkout_root_holds_a_tagged_commit(tmp_path: Path) -> None:
     """file://localhost/<path> outside the lane is asked, not read as a path under the repo: its tag holds the commit."""
     ws, repo, tagged = _lane_with_a_local_tag_commit(tmp_path)
@@ -744,8 +752,14 @@ def test_a_file_url_with_no_host_or_localhost_names_the_absolute_path(url: str) 
     assert gr2_app._remote_url_local_path(url) == "/abs"
 
 
-def test_a_file_url_naming_another_host_is_not_local() -> None:
+def test_a_file_url_naming_another_host_is_a_share_on_windows(monkeypatch) -> None:
+    monkeypatch.setattr(gr2_app.os, "name", "nt")
     assert gr2_app._remote_url_local_path("file://otherhost/abs") is None
+
+
+def test_a_file_url_naming_another_host_names_the_absolute_path_off_windows(monkeypatch) -> None:
+    monkeypatch.setattr(gr2_app.os, "name", "posix")
+    assert gr2_app._remote_url_local_path("file://otherhost/abs") == "/abs"
 
 
 def test_a_sibling_remote_inside_the_checkout_root_does_not_hold_a_tagged_commit(tmp_path: Path) -> None:

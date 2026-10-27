@@ -4177,11 +4177,11 @@ def _unpushed_commits(repo: Path, *, fetch: bool = True, removing: Path | None =
 def _remote_url_local_path(url: str) -> str | None:
     """The local path a remote URL names, or None when it names another machine.
     A drive path (C:/x, C:\\x) is local, not the scp-like host:path form; file:// with no host or localhost
-    names /<path>, and any other host is a share elsewhere, not this directory."""
+    names /<path>; another host is a UNC share on Windows, while git elsewhere ignores it and reads /<path> here."""
     if url.startswith("file://"):
         host, _, path = url[len("file://"):].partition("/")
-        if host not in ("", "localhost"):
-            return None
+        if host not in ("", "localhost") and os.name == "nt":
+            return None  # a UNC share on Windows; git elsewhere ignores the host and reads /<path> here
         return "/" + path
     if len(url) >= 3 and url[0].isascii() and url[0].isalpha() and url[1] == ":" and url[2] in "/\\":
         return url

@@ -17,6 +17,7 @@ import socket
 from urllib.parse import parse_qsl, urlsplit
 
 from . import gitops, next_steps
+from .clone_exec import IncompleteRemoval, rmtree_or_refuse
 from .gitops import git
 from .layout import GRIP_DIR, LANE_CONTROL_PREFIX, LANE_VENV, grip_dir as _layout_grip_dir
 from .workspace_guidance import init_unless_inside_workspace
@@ -140,6 +141,102 @@ def _apply_range_in_lane(lane: Path, range_patch: str, committers: str | None) -
                 raise _RangeApplyError("am", p.stderr.strip()[:160])
 
 
+def _shallow_base_into(lane: Path, remote: str, base: str) -> bool:
+    """Fetch only `base` (one commit, no blobs) from `remote` into a new repo at `lane`; False when the remote
+    will not serve it that way, so the caller falls back to a clone. `base` must be a full sha: a ref name would
+    land in FETCH_HEAD, not under the name the caller resolves."""
+    if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", base):
+        return False
+    lane.mkdir(parents=True)
+    for args in (("init", "--quiet"), ("remote", "add", "origin", remote),
+                 ("fetch", "--quiet", "--depth", "1", "--filter=blob:none", "origin", base)):
+        if gitops.run(lane, *args).returncode != 0:
+            return False
+    return True
+
+
+def _range_paths(lane: Path, range_patch: str) -> list[str] | None:
+    """Every path the range touches, both sides of a rename, read by git itself (`apply --numstat -z`), so a
+    quoted, renamed or binary path comes out exact. None when git cannot read the range that way."""
+    p = gitops.run(lane, "apply", "--numstat", "-z", input=range_patch)
+    if p.returncode != 0:
+        return None
+    toks, paths, i = p.stdout.split("\0"), [], 0
+    while i < len(toks):
+        rec = toks[i]
+        i += 1
+        if not rec:
+            continue
+        fields = rec.split("\t", 2)
+        if len(fields) != 3:
+            return None
+        if fields[2]:
+            paths.append(fields[2])
+        elif i + 1 < len(toks):  # a rename or copy: the two paths follow as their own records
+            paths += [toks[i], toks[i + 1]]
+            i += 2
+        else:
+            return None
+    # numstat names a rename or copy by its new path only; the source the apply reads is in the header git wrote
+    for line in range_patch.splitlines():
+        m = re.match(r"(?:rename|copy) from (.+)$", line)
+        if m:
+            src = _git_unquote(m.group(1))
+            if src is None:
+                return None
+            paths.append(src)
+    return sorted(set(paths)) or None
+
+
+def _git_unquote(text: str) -> str | None:
+    """A path as git writes it in a patch header: bare, or C-quoted ("...", with \\ \" \t \n and octal byte
+    escapes) when it holds a character git quotes. None when the quoting is not one git writes."""
+    if not text.startswith('"'):
+        return text
+    if len(text) < 2 or not text.endswith('"'):
+        return None
+    body, out, i = text[1:-1], bytearray(), 0
+    simple = {"\\": b"\\", '"': b'"', "t": b"\t", "n": b"\n", "r": b"\r", "a": b"\a", "b": b"\b", "f": b"\f", "v": b"\v"}
+    while i < len(body):
+        ch = body[i]
+        if ch != "\\":
+            out += ch.encode("utf-8")
+            i += 1
+        elif body[i + 1:i + 2] in simple:
+            out += simple[body[i + 1]]
+            i += 2
+        elif re.fullmatch(r"[0-7]{3}", body[i + 1:i + 4]):
+            out.append(int(body[i + 1:i + 4], 8))
+            i += 4
+        else:
+            return None
+    try:
+        return out.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def _sparse_pattern(path: str) -> str:
+    """A no-cone sparse pattern (gitignore syntax) matching exactly `path` from the root: each character gitignore
+    reads as glob, escape, negation or comment is escaped, and trailing spaces, which gitignore strips, are kept."""
+    out = re.sub(r"([\\*?\[\]!#])", r"\\\1", path)
+    stripped = out.rstrip(" ")
+    return "/" + stripped + "\\ " * (len(out) - len(stripped))
+
+
+def _sparse_to_range_paths(lane: Path, range_patch: str) -> bool:
+    """Limit the checkout to the paths the range touches; False (with the whole tree left in place) when it
+    cannot, so the caller's checkout is today's full one."""
+    paths = _range_paths(lane, range_patch)
+    if not paths or any("\n" in x or "\r" in x for x in paths):
+        return False
+    patterns = "".join(_sparse_pattern(x) + "\n" for x in paths)
+    if gitops.run(lane, "sparse-checkout", "set", "--no-cone", "--stdin", input=patterns).returncode != 0:
+        gitops.run(lane, "sparse-checkout", "disable")
+        return False
+    return True
+
+
 def _carry_objects_from_range(workspace: Path, remote: str, base: str, range_patch: str,
                               committers: str | None = None, expected_head: str | None = None,
                               at_base_of: str | None = None) -> dict[str, str]:
@@ -163,9 +260,21 @@ def _carry_objects_from_range(workspace: Path, remote: str, base: str, range_pat
         raise GripCorruptError("project review range is empty")
     with tempfile.TemporaryDirectory() as td:
         lane = Path(td) / "recon"
-        clone = gitops.clone("--quiet", remote, str(lane))
-        if clone.returncode != 0:
-            raise GripCorruptError(f"cannot clone {gitops._shown_arg(remote)} to derive review head-tree: {clone.stderr.strip()[:160]}")
+        # The pin keeps only the range, its metadata and the head-tree, so it needs the base commit and the blobs
+        # the checkout and `git am` touch, never the remote's whole history: a full clone of a large repo was a
+        # 1.1 GB, many-minute download on every pin. So the plain path fetches the base alone. Everything else keeps
+        # today's full clone: --at-base asks whether the base is an ancestor of another ref (history, and a partial
+        # clone would fetch a missing tip lazily around the refusal below), and a remote that will not serve the base
+        # by sha may refuse a partial clone's lazy blob fetches too.
+        shallow = not at_base_of and _shallow_base_into(lane, remote, base)
+        if not shallow:
+            try:
+                rmtree_or_refuse(lane)
+            except IncompleteRemoval as exc:
+                raise GripCorruptError(f"cannot clear the partial review reconstruction before cloning: {exc}") from exc
+            clone = gitops.clone("--quiet", remote, str(lane))
+            if clone.returncode != 0:
+                raise GripCorruptError(f"cannot clone {gitops._shown_arg(remote)} to derive review head-tree: {clone.stderr.strip()[:160]}")
 
         def _lg(*a: str, allow_fail: bool = False) -> subprocess.CompletedProcess[str]:
             p = gitops.run(lane, "-c", "user.name=grip-review", "-c", "user.email=review@grip", *a)
@@ -184,11 +293,23 @@ def _carry_objects_from_range(workspace: Path, remote: str, base: str, range_pat
         # --at-base: the frozen base must be history the ref has passed through, not any commit the remote holds.
         if at_base_of and gitops.is_ancestor(lane, base, at_base_of) is not True:
             raise GripReviewRefused("at_base_not_ancestor", base, at_base_of)
+        # A shallow base is checked out sparse, to the paths the range touches: a full checkout would fetch every
+        # blob of the base tree, which on a large repo is most of what the full clone cost.
+        sparse = shallow and _sparse_to_range_paths(lane, range_patch)
         _lg("checkout", "--detach", base)
         try:
             _apply_range_in_lane(lane, range_patch, committers)
         except _RangeApplyError as exc:
-            raise GripCorruptError(f"range reconstruction failed ({exc.op}): {exc.detail}") from exc
+            if not sparse:
+                raise GripCorruptError(f"range reconstruction failed ({exc.op}): {exc.detail}") from exc
+            # A path the sparse set missed: redo the apply on the whole base tree, which is today's apply.
+            _lg("am", "--abort", allow_fail=True)
+            _lg("sparse-checkout", "disable")
+            _lg("checkout", "--force", "--detach", base)
+            try:
+                _apply_range_in_lane(lane, range_patch, committers)
+            except _RangeApplyError as exc2:
+                raise GripCorruptError(f"range reconstruction failed ({exc2.op}): {exc2.detail}") from exc2
         head_sha = _lg("rev-parse", "HEAD").stdout.strip()
         head_tree = _lg("rev-parse", "HEAD^{tree}").stdout.strip()
         if committers is not None and expected_head is not None and head_sha != expected_head:

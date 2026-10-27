@@ -48,6 +48,7 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Changed
 
+- **`gr2`: `review pin --from-range` no longer clones the whole remote.** To derive the head-tree it fetched every object of the target repository on every pin; it now fetches the base commit alone and checks out only the paths the range touches. On a 300 MB repository a pin's temporary copy fell from about 589 MB to under 1 MB, and from about 14 s to about 1 s. The pinned result is the same bytes. `--at-base`, a base given as a ref name, and a remote that will not serve a commit by its sha keep the full clone.
 - **`gr2`: `gr2 pr merge`'s pin option is `--head [REPO=]SHA`, repeatable.** It was `--match-head-commit`
   from 2.0.0a6; the old name is removed, with no alias, and is now an unknown option (exit 2). `--review`
   given with `--head` refuses, exit 2, before anything merges. gr2 still passes gh its own

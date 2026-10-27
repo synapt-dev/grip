@@ -60,7 +60,7 @@ def test_skill_keeps_its_population():
 
 def test_the_defaults_and_next_steps_that_cost_runs_are_present():
     text = _generator().render()
-    assert "`--ref` [default: refs/heads/dev]" in text
+    assert "`--ref`: Target ref whose live head must equal --base (default: the remote's HEAD branch" in text
     after = text.split("### head_already_on_remote\n\n", 1)[1]
     assert after.startswith("next: pin a head before you push it")
 

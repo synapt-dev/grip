@@ -161,7 +161,7 @@ def test_at_base_refuses_a_ref_the_remote_does_not_have(tmp_path: Path) -> None:
     result = runner.invoke(app, ["review", "pin", str(w["ws"]), "--repo", "src", "--remote", str(w["remote"]),
                                  "--base", w["base"], "--head", w["head"], "--ref", "refs/heads/nope",
                                  "--from-range", str(w["patch"]), "--at-base"])
-    assert result.exit_code == 2 and "base_not_live_head" in result.output, result.output
+    assert result.exit_code == 2 and "target_ref_missing" in result.output, result.output
     assert _git(w["ws"], "for-each-ref", "refs/dev.synapt.grip/") == ""
 
 

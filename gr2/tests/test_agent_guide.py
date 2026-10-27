@@ -39,6 +39,16 @@ def test_help_agent_prints_the_guide_bytes_raw():
     assert result.stdout_bytes == SKILL.read_bytes()
 
 
+def test_help_agent_without_the_bundled_guide_exits_1_and_says_reinstall(monkeypatch, tmp_path):
+    # The command finds the guide beside the package from the module's __file__; moving that
+    # into an empty tmp dir makes the read fail as a missing file would, with the package untouched.
+    monkeypatch.setattr(app_module, "__file__", str(tmp_path / "python_cli" / "app.py"))
+    result = CliRunner().invoke(app, ["help", "agent"])
+    assert result.exit_code == 1, result.output
+    assert result.stdout == ""
+    assert "AGENT_GUIDE.md" in result.stderr and "reinstall gr2" in result.stderr, result.stderr
+
+
 def test_help_agent_refuses_extra_words_and_dash_a():
     for args in (["help", "agent", "extra"], ["help", "-a", "agent"]):
         result = CliRunner().invoke(app, args)

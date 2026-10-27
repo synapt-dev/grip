@@ -185,7 +185,7 @@ def resolve_actor(
         if name:
             return Resolved(f"human:{name}", "git user.name")
     raise ActorRefused(
-        "no actor: pass --actor <label>, or set GR2_ACTOR (for example agent:atlas); at a terminal gr2 "
+        "no actor: pass --actor <label>, or set GR2_ACTOR (for example <kind>:<name>); at a terminal gr2 "
         "uses human:<git user.name> when git has one"
     )
 

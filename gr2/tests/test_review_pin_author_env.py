@@ -15,6 +15,23 @@ def _pin(root, remote, base, head, monkeypatch):
     return grip.show_review_commit(root, pinned.stdout.strip().splitlines()[-1][3:])["author"]
 
 
+def _no_author_anywhere(tmp_path, monkeypatch):
+    """No GIT_AUTHOR_NAME and no global or system user.name, so only the root itself could name one."""
+    empty = tmp_path / "empty.gitconfig"
+    empty.write_text("")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("COLUMNS", "400")
+    monkeypatch.delenv("GIT_AUTHOR_NAME", raising=False)
+
+
+def _pin_refused(root, remote, base, head, monkeypatch):
+    pinned = cli(root, monkeypatch, "pin", root, "--repo", "member", "--remote", remote, "--base", base,
+                 "--head", head, "--ref", "refs/heads/main", "--source", root / "member")
+    assert pinned.exit_code != 0, pinned.output
+    return " ".join(pinned.output.split())
+
+
 def test_env_author_wins_over_config_like_git(handoff, monkeypatch):
     root, _, remote, _, base, head = handoff
     git(root, "config", "user.name", "Config Name")
@@ -30,3 +47,29 @@ def test_no_env_author_uses_config_name(handoff, monkeypatch):
     git(root, "config", "user.name", "Config Name")
     monkeypatch.delenv("GIT_AUTHOR_NAME", raising=False)
     assert _pin(root, remote, base, head, monkeypatch) == "Config Name"
+
+
+def test_non_repo_root_author_hint_names_env_or_global(handoff, tmp_path, monkeypatch):
+    """A workspace root with no `.git` of its own has no local config, so `git config user.name` there
+    cannot help; the hint leads with the variable scoped to the call, then the global setting."""
+    author, _, remote, _, base, head = handoff
+    root = tmp_path / "fresh"
+    (root / ".grip").mkdir(parents=True)
+    (root / ".grip" / "workspace_spec.toml").write_text("")
+    git(root, "clone", "--no-local", author / "member", "member")
+    _no_author_anywhere(tmp_path, monkeypatch)
+    output = _pin_refused(root, remote, base, head, monkeypatch)
+    assert not (root / ".git").exists(), output
+    assert "bind_author_unavailable" in output, output
+    assert "export GIT_AUTHOR_NAME" in output and "git config --global user.name" in output, output
+    assert output.index("export GIT_AUTHOR_NAME") < output.index("git config --global user.name"), output
+
+
+def test_repo_root_author_refusal_keeps_its_own_git(handoff, tmp_path, monkeypatch):
+    """Control: a root that already has its own `.git` refuses the same way and keeps that `.git`."""
+    root, _, remote, _, base, head = handoff
+    _no_author_anywhere(tmp_path, monkeypatch)
+    git(root, "config", "user.name", "")
+    output = _pin_refused(root, remote, base, head, monkeypatch)
+    assert (root / ".git").is_dir(), output
+    assert "bind_author_unavailable" in output, output

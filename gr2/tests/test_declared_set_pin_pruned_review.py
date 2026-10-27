@@ -83,23 +83,52 @@ def _review_fetches(monkeypatch, oids):
     return calls
 
 
-def test_a_warning_before_git_s_error_prints_the_error_line(world):
+NOT_SERVED = "git fetch --no-tags: fatal: remote error: upload-pack: not our ref {oid}"
+WARNED = ("git fetch --no-tags: warning: unable to access './objects/info/alternates': Permission denied\n"
+          "error: unable to open object pack directory: ./objects/pack: Permission denied")
+CORRUPT = ("git fetch --no-tags: fatal: loose object {oid} (stored in ./objects/xx/yy) is corrupt\n"
+           "fatal: the remote end hung up unexpectedly")
+
+
+def _failing_review_fetches(monkeypatch, oids, batch, each):
+    """Every fetch that asks for a review oid fails in git's words (the same "<command>: <stderr>" shape _git raises):
+    the first (the batch) with `batch`, each later one (one per review) with `each`. Other git calls run for real."""
+    calls, real = [], merge_gate._git
+
+    def spy(repo, *args, **kw):
+        asked = sorted(set(args) & oids)
+        if args[:1] == ("fetch",) and asked:
+            calls.append(args)
+            raise RuntimeError((batch if len(calls) == 1 else each).format(oid=asked[0]))
+        return real(repo, *args, **kw)
+    monkeypatch.setattr(merge_gate, "_git", spy)
+    return calls
+
+
+def test_a_warning_before_git_s_error_prints_the_error_line(world, monkeypatch):
     moved = _move_beta(world, push=True)
-    remote = world["members"]["beta"]["remote"]
-    stores = sorted(p for p in (remote / "objects").iterdir() if p.is_dir())
-    for store in stores:  # the remote's objects unreadable: every fetch warns first, then errors
-        os.chmod(store, 0)
-    try:
-        code, why, receipt = _refusal(world)
-    finally:
-        for store in stores:
-            os.chmod(store, 0o755)
+    oids = {oid for oid, _ in _reviews(world["members"]["beta"]["remote"])}
+    _failing_review_fetches(monkeypatch, oids, NOT_SERVED, WARNED)  # every per-review fetch warns first, then errors
+
+    code, why, receipt = _refusal(world)
 
     assert code == merge_gate.EXIT_REFUSED, receipt
     assert why.startswith(f"declared_set_pin_unmeasured: beta's pin {moved[:12]} is named by no review"), why
     assert why.endswith(": git fetch --no-tags: error: unable to open object pack directory: ./objects/pack: "
                         "Permission denied"), why
     assert "warning:" not in why, why
+
+
+def test_a_batch_failure_without_an_unserved_oid_refuses_with_it_and_reads_no_review_alone(world, monkeypatch):
+    moved = _move_beta(world, push=True)
+    oids = {oid for oid, _ in _reviews(world["members"]["beta"]["remote"])}
+    calls = _failing_review_fetches(monkeypatch, oids, CORRUPT, WARNED)
+
+    code, why, receipt = _refusal(world)
+
+    assert code == merge_gate.EXIT_REFUSED, receipt
+    assert why.startswith(f"declared_set_pin_unmeasured: beta's pin {moved[:12]} could not be read from its remote: "), why
+    assert len(calls) == 1, calls  # the batch alone: no per-review fetch
 
 
 def test_a_pruned_review_reads_the_others_one_by_one(world, monkeypatch):

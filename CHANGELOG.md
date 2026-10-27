@@ -75,6 +75,12 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Fixed
 
+- **`gr2`: `store commit` refuses a staged change the store does not record.** In a root with no `.gitinclude`, a
+  file staged by hand rode into the record commit beside the pins. The commit now judges the staged diff against
+  `HEAD` and refuses, at exit 4 with the first such path and how many there are, any path it does not write itself
+  (`grip.toml`, the member gitlinks, `.gitmodules`, the field sidecar); the index is left as it was. A file the root
+  already tracks and has not changed is not judged, so an adopted root's own files still commit. The `.gitinclude`
+  refusal is unchanged.
 - **`gr2`: a git timeout kills what git started, not git alone.** On POSIX, when the caller has turned git's prompts off (`GIT_TERMINAL_PROMPT=0`) or stdin is not a terminal, a timed call runs git in its own process group, and an expiry or an interrupt kills the whole group, so an upload-pack, ssh or credential helper no longer survives, reparented. ssh then cannot reach the terminal either, so a host-key or passphrase prompt fails at once instead of waiting for the timeout. A call that may prompt, and every call on Windows, keeps today's single-process kill.
 - **`gr2` test suite: a passed test leaves no temp dirs behind.** The isolation fixture's three dirs now live under the test's own `tmp_path`, and `tmp_path_retention_policy = "failed"` removes a passed test's `tmp_path` at its teardown, so a run no longer holds one dir tree per test until the session ends.
 - **gr2: `review open-project` on an unpublished head prints its refusal.** Run before the lane head was pushed, it

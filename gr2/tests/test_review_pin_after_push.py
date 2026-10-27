@@ -358,6 +358,48 @@ def test_p12c_detached_source_with_two_branches_at_the_head_refuses(tmp_path):
     assert _review_refs(w["ws"]) == ""
 
 
+def test_p12f_detached_source_with_one_branch_at_the_head_records_that_branch(tmp_path):
+    w = _world(tmp_path)
+    _git(w["src"], "checkout", "-q", "--detach", w["head"])
+    member = _show(w["ws"], _gr_id(_pin(w)))["members"][0]
+    assert member["pushed_before_pin"] == "refs/heads/feat"
+    assert member["head"] == w["head"]
+
+
+def _flat(output: str) -> str:
+    """The output as words: box characters dropped and wraps collapsed, so a wrapped line still matches."""
+    return " ".join(re.sub(r"[│╭╮╰╯─┃┏┓┗┛━]", " ", output).split())
+
+
+def test_p12g_detached_source_with_two_branches_at_the_head_refuses_the_same_way_twice(tmp_path):
+    w = _world(tmp_path)
+    _hold_head_on_aaa(w)
+    _git(w["src"], "checkout", "-q", "--detach", w["head"])
+    outputs = []
+    for _ in range(2):
+        result = _pin(w)
+        assert result.exit_code != 0, result.output
+        flat = _flat(result.output)
+        assert "pushed_branch_ambiguous" in flat, result.output
+        assert "refs/heads/aaa, refs/heads/feat" in flat, result.output
+        _assert_no_guessed_next(result)
+        assert _review_refs(w["ws"]) == ""
+        outputs.append(flat)
+    assert outputs[0] == outputs[1]
+
+
+def test_p12h_source_upstream_is_one_of_two_branches_at_the_head_records_it(tmp_path):
+    w = _world(tmp_path)
+    _hold_head_on_aaa(w)
+    result = _pin(w)
+    assert result.exit_code == 0, result.output
+    assert "pushed_branch_ambiguous" not in result.output
+    member = _show(w["ws"], _gr_id(result))["members"][0]
+    assert member["pushed_before_pin"] == "refs/heads/feat"
+    assert member["head"] == w["head"]
+    assert _review_refs(w["ws"]) != ""
+
+
 def test_p12d_source_upstream_on_a_third_branch_with_two_at_the_head_refuses(tmp_path):
     w = _world(tmp_path)
     _hold_head_on_aaa(w)

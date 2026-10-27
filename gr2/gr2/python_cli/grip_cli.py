@@ -4408,6 +4408,9 @@ def grip_migrate_reviews_cmd(
     except grip_mod.GripCorruptError as exc:
         typer.echo(f"refused: {exc}", err=True)
         raise typer.Exit(code=4)
+    except grip_mod.GripStoreMissing as exc:  # the wrong place, as `store add -C <member>`
+        typer.echo(f"refused: {exc}", err=True)
+        raise typer.Exit(code=4)
     except grip_mod.GripInitError as exc:
         typer.echo(f"refused: {exc}", err=True)
         raise typer.Exit(code=5)

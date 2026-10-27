@@ -130,7 +130,7 @@ def test_store_migrate_reviews_inside_a_member_refuses_without_a_traceback(tmp_p
     ws = _ws(tmp_path, monkeypatch)
     before = _tree(ws)
     result = gr2(ws / "alpha", "migrate-reviews", "-C", ".", check=False)
-    assert result.returncode == 5, result.stdout + result.stderr
+    assert result.returncode == 4, result.stdout + result.stderr
     assert "Traceback" not in result.stderr, result.stderr
     assert result.stderr.startswith("refused: "), result.stderr
     assert _tree(ws) == before

@@ -34,7 +34,20 @@ def _generator():
 
 def test_skill_dump_is_current():
     assert SKILL.read_text(encoding="utf-8") == _generator().render(), (
-        "api/skill.md is stale: run `python scripts/dump_skill.py > api/skill.md` from gr2/")
+        "api/skill.md is stale: run `python scripts/dump_skill.py --write` from gr2/")
+
+
+def test_the_bundled_agent_guide_is_current():
+    # `gr2 help agent` prints this copy; it must be the same render as api/skill.md.
+    assert (GR2 / "gr2" / "AGENT_GUIDE.md").read_text(encoding="utf-8") == _generator().render(), (
+        "gr2/AGENT_GUIDE.md is stale: run `python scripts/dump_skill.py --write` from gr2/")
+
+
+def test_write_writes_both_files_from_one_render(tmp_path):
+    skill, guide = tmp_path / "skill.md", tmp_path / "AGENT_GUIDE.md"
+    generator = _generator()
+    generator.write(skill, guide)
+    assert skill.read_bytes() == guide.read_bytes() == generator.render().encode("utf-8")
 
 
 def test_skill_keeps_its_population():

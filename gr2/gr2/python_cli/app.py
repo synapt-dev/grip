@@ -130,6 +130,24 @@ def _root(
     """gr2 workspace CLI."""
 
 
+# `gr2 help <topic>` prints a page bundled with the package. A topic is never a command name
+# (tests/test_agent_guide.py), so `gr2 help <command>` keeps its meaning.
+HELP_TOPICS = {"agent": "AGENT_GUIDE.md"}
+
+
+def _print_help_topic(topic: str) -> None:
+    # Beside the package's __init__, where package-data puts it in a wheel.
+    try:
+        text = (Path(__file__).resolve().parents[1] / HELP_TOPICS[topic]).read_text(encoding="utf-8")
+    except OSError as exc:
+        typer.echo(f"gr2 help {next_steps._shown(topic)}: the bundled {HELP_TOPICS[topic]} is missing ({exc}); reinstall gr2", err=True)
+        _exit(1)
+        return
+    # Raw, never through the Rich console: Rich eats square brackets and the guide has them.
+    sys.stdout.write(text)
+    sys.stdout.flush()
+
+
 @app.command("help", hidden=True)
 def help_command(
     ctx: typer.Context,
@@ -143,6 +161,9 @@ def help_command(
     """Show gr2's help; with a path, that command's own --help (git's `git help <command>`);
     with -a, also every plumbing command, each of which runs by its full path."""
     root = ctx.find_root()
+    if path and len(path) == 1 and path[0] in HELP_TOPICS and not all_commands:
+        _print_help_topic(path[0])
+        return
     if path:
         if all_commands:
             raise UsageError(

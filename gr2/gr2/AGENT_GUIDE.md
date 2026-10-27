@@ -1,0 +1,482 @@
+---
+name: gr2-review
+description: "For the gr2 command (not the gr command of gitgrip). Move a workspace of several Git repositories to another machine from one address, and review and merge one change across them with gr2: pin the exact heads, publish the review, collect approvals and checks at those heads, and merge all members or none."
+---
+
+# gr2: the workspace and the multi-repo change
+
+Use gr2 when one piece of work spans several repositories. Inside a single repository, plain `git` is the right tool; gr2 is for the workspace and the multi-repo change.
+
+## This page is the help
+
+Everything an operator needs for the jobs below is on this page, and the reference at the end of this file is generated from this version's own code. An installed gr2 prints this page with `gr2 help agent`. Read `gr2 <verb> --help` only for a verb this page does not cover. If a verb refuses, read its refusal: it names the condition and usually prints the next command.
+
+## Verb map (one line each)
+
+| Job | Command (run where) |
+|---|---|
+| move a member to its remote's main | `git fetch -q origin && gr2 branch main --base origin/main` (member checkout) |
+| stage and commit in one member | `gr2 add <paths>`, `gr2 commit -m "<msg>"` (member checkout) |
+| record the whole workspace | `gr2 store commit -m "<msg>"` (workspace root) |
+| confirm the record carries every pin | `gr2 store check` (workspace root) |
+| show members, pins and record state | `gr2 store status` (workspace root) |
+| push the record to one address | `gr2 store push --to <bare repo>` (workspace root) |
+| rebuild every member from a record | `git clone <bare repo> <dest>`, then `gr2 store materialize` (in `<dest>`) |
+| pin a review over one or more members | `gr2 review pin <workspace>` (rows inferred from each member checkout ahead of the workspace pin, or with no pin recorded ahead of the live head of its ref); `--rows-json rows.json` only to pin a subset or a hand-picked base |
+| publish, stamp, check, merge a review | `gr2 review publish`, `gr2 review stamp`, `gr2 check run`, `gr2 review merge` (see the review flow below) |
+
+## Recipes: whole jobs, one script each
+
+Each recipe is ONE script: write it once, run it once, and read its output at the end instead of probing between steps. Change only the lines marked EDIT. Every command in it is gr2 or plain shell.
+
+### Recipe 1: bring every member to its remote main, then commit the same change in each
+
+```bash
+#!/bin/bash
+set -euo pipefail
+WS=/path/to/workspace                              # EDIT: the workspace root (it holds the member checkouts)
+cd "$WS"
+MEMBERS="alpha beta"                               # EDIT: the member directories
+for m in $MEMBERS; do
+  ( cd "$WS/$m"
+    git fetch -q origin                            # gr2 has no fetch verb; this is the one Git step
+    gr2 branch main --base origin/main             # main, at the remote's merged main
+    mkdir -p pkg                                   # EDIT: the change, the same in every member
+    printf 'def wip():\n    return "not pushed"\n' > pkg/wip.py
+    gr2 add pkg/wip.py
+    gr2 commit -m "$m: work in progress (not pushed)" )
+done
+for m in $MEMBERS; do echo "$m $(git -C "$WS/$m" rev-parse HEAD)"; done
+```
+
+### Recipe 2: record the whole workspace, unpushed member commits included, to ONE address
+
+The record carries every member at its current commit, including commits no member remote has; nothing is pushed to any member remote. Run it from the workspace root after Recipe 1.
+
+It needs a FULL-mode workspace: `mode = "full"` as a top-level key of the root's `grip.toml`, above its first `[table]`. Make a new workspace with `gr2 store init --mode full`, which writes that line. A plain `gr2 store init` writes no top-level mode, which means compat, and in compat `store commit` refuses a member commit that is on no remote ("push it first"); `--mode` does not switch an existing store, so for one made without it, add the line by hand before the next `store commit`. The script stops and says so when it is missing.
+
+```bash
+#!/bin/bash
+set -euo pipefail
+WS=/path/to/workspace                              # EDIT
+ROOT=/path/to/root.git                             # EDIT: the one address (an empty bare repository)
+cd "$WS"
+awk '/^\[/{exit} {print}' grip.toml | grep -q '^mode *= *"full"' \
+  || { echo 'grip.toml has no top-level mode = "full"; init a new workspace with --mode full, or add it as the first line (see above), then run again' >&2; exit 1; }
+gr2 store commit -m "workspace at its current commits"
+gr2 store check                                    # every member's pin is carried by the record
+gr2 store push --to "$ROOT"                        # pushes the record, and nothing to any member remote
+gr2 store status
+```
+
+### Recipe 3: rebuild a workspace on a fresh machine from that one address
+
+```bash
+#!/bin/bash
+set -euo pipefail
+ROOT=/path/to/root.git                             # EDIT: the address the record was pushed to
+DEST=/path/to/rebuilt                              # EDIT: where to rebuild
+git clone -q "$ROOT" "$DEST"
+cd "$DEST"
+gr2 store materialize                              # checks out every member at its recorded commit
+gr2 store status
+for m in $(ls -d */ | tr -d /); do [ -d "$m/.git" ] && echo "$m $(git -C "$m" rev-parse HEAD)"; done
+```
+
+### Recipe 4: run the test that counts over a whole review, at its pinned heads
+
+`gr2 check set` checks out every member of the review side by side at its pinned head, runs ONE command once at that lane's root, and records the result on every member's remote as the check named `set`. Every member's clone must hold its pinned head: an author's clones do, and `gr2 review receive` fetches them into a reviewer's. When one is missing, `check set` refuses with `head_not_in_member_clone` and prints the `git fetch` that brings it. Write the command as a small script; it runs with `GR2_SET_ROOT` (the lane root, holding one directory per member) and `GR2_SET_MEMBERS` (JSON, member key to path) set.
+
+```bash
+#!/bin/bash
+set -euo pipefail
+WS=/path/to/workspace                              # EDIT: your workspace root
+REVIEW=gr:0000000000000000000000000000000000000000 # EDIT: the full review ID that `gr2 review pin` printed
+T=$(mktemp -d)                                     # outside the workspace, so the record stays clean
+cat > "$T/set-test.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+cd "$GR2_SET_ROOT"
+for m in alpha beta; do                            # EDIT: the member directories
+  ( cd "$m" && python3 -m pytest -q -p no:cacheprovider )   # EDIT: each member's test command
+done
+EOF
+chmod +x "$T/set-test.sh"
+gr2 check set "$WS" "$REVIEW" -- "$T/set-test.sh"  # exit 0 pass, 1 fail (it prints the output tail), 2 could not run
+```
+
+### Recipe 5: approve a teammate's review
+
+Run it in YOUR workspace: the approval is made as `GIT_AUTHOR_NAME`, else that workspace's `git user.name`, and the author cannot approve their own review. Run it once to see the ranges and read the change; run it again with `APPROVE=1` to test and stamp. It runs the set test itself (as in Recipe 4) and stops before stamping when that test fails.
+
+```bash
+#!/bin/bash
+set -euo pipefail
+WS=/path/to/your/workspace                         # EDIT: your workspace root
+REVIEW=gr:0000000000000000000000000000000000000000 # EDIT: the full review ID the author sent you
+REMOTE=/path/to/alpha.git                          # EDIT: any one member's remote (the author published the review to each)
+gr2 review receive "$WS" "$REVIEW" --remote "$REMOTE" --all   # also fetches every member's pinned head from its own remote; exit 4 names any it could not
+gr2 review show "$WS" "$REVIEW"                    # each member's commit range, visibility and the files it changes
+[ "${APPROVE:-}" = 1 ] || { echo "Read each member's range above (git diff <start>..<end> in that member), then run this again with APPROVE=1 to test and stamp."; exit 0; }
+T=$(mktemp -d)
+cat > "$T/set-test.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+cd "$GR2_SET_ROOT"
+for m in alpha beta; do                            # EDIT: the member directories
+  ( cd "$m" && python3 -m pytest -q -p no:cacheprovider )   # EDIT: each member's test command
+done
+EOF
+chmod +x "$T/set-test.sh"
+gr2 check set "$WS" "$REVIEW" -- "$T/set-test.sh"  # a failing set test exits 1 here, so nothing below runs
+gr2 review stamp "$WS" "$REVIEW"                   # the approval, at exactly the pinned heads, on every member remote
+```
+
+What these recipes do not need: `--help` on any of the verbs above, `git log` or `git ls-remote` to check progress (`store status` and `store check` answer it), or editing anything inside a member's remote.
+
+## The review flow
+
+The order matters, because each step refuses until the one before it is done:
+
+1. `gr2 store init` once per workspace.
+2. Commit the change in each member, then `gr2 review pin` it BEFORE you push: a head that is already on the remote is refused.
+3. `gr2 push` each member's branch.
+4. `gr2 review publish` the review to each member remote.
+5. Each reviewer runs `gr2 review receive` in their own workspace, then `gr2 review stamp`. The author cannot approve their own review.
+6. `gr2 check run` at the exact reviewed head (and `gr2 check set` when the review covers several members), then `gr2 check show` to read what is recorded.
+7. `gr2 review merge --approvals N`: every member passes its preflight or nothing is pushed. Say how many approvals the merge needs: `--approvals N`, or `[approvals] required = N` in the root's `grip.toml`. With neither it refuses `approvals_unset`; `0` merges without approvals and prints that it skipped them.
+
+To inspect members, run `gr2 store status` (`--json` for a program), not plain git in each one: it answers, per member and in one line, the branch, head, pin, commits ahead of and behind its upstream, and the number of uncommitted entries.
+
+When a step refuses, gr2 prints `refused: <code>` and the next step. Both are listed at the end of this file, with every verb above and its options as this version defines them.
+
+<!-- Generated by gr2/scripts/dump_skill.py from gr2's own code; edit the code or skill.intro.md, not this file. -->
+
+## The verbs
+
+### gr2 branch
+
+Create or switch to a branch, natively -- no gr1 dependency.
+
+- `<name>`
+- `--base/--from/--start-point`: Create (or reset) the branch off this ref instead of current HEAD
+- `--repo-path`: Repo to operate on (defaults to cwd; gr2 verbs are single-repo, not gripspace-wide)
+
+### gr2 add
+
+Stage paths in one repository, including tracked deletions.
+
+- `<paths>`
+- `--repo-path`: Repo to operate on (defaults to cwd; gr2 verbs are single-repo)
+- `--lane`: Stage in EVERY repo of the entered lane (the workspace, unit and lane are read from where you are)
+- `--include-bytecode`: Also stage untracked Python bytecode (__pycache__/, *.pyc, *.pyo), which add skips by default
+
+### gr2 commit
+
+Create or amend a commit from the staged index.
+
+- `--message/-m`: Commit message
+- `--amend`: Amend the current commit
+- `--repo-path`: Repo to operate on (defaults to cwd; single-repo)
+- `--workspace-root`: Lane-aware: commit each repo of a lane in this workspace (requires --owner-unit)
+- `--owner-unit`: Lane-aware: the unit whose lane to commit across
+- `--lane`: Lane-aware: lane name (defaults to the unit's current lane)
+- `-a/--all`: At a full-mode workspace root: stage each member's tracked changes first, as git commit -a does
+
+### gr2 store init
+
+Initialize a native store at cwd or the supplied root.
+
+- `<workspace_root>` (optional)
+- `--member`: Declare a member checkout by its path relative to the root (repeatable). Named paths win over the root's own spec and over sibling discovery; a named path that is not a checkout refuses the verb.
+- `--clone`: Declare a member from a url: NAME=URL clones it at <root>/NAME and records it (repeatable). The root is created when it does not exist.
+- `--mode`: The workspace mode of a new store: "compat" (the default) or "full". Full makes the root a git repository on branch main with no grip.toml. Inside it, each member is checked out under <member>.griplink, holding the member's own commit as the gitlink, and <member> links to that checkout. A pin need not be on a remote. A grip.toml that declares another mode, or an existing store in another mode (no mode line is compat), is refused.
+- `--root/-C`: The workspace root to act on (default: the current directory).
+- `--json`: Emit machine-readable JSON
+
+### gr2 store status
+
+Show each member's branch, head, pin, ahead/behind its upstream, and uncommitted entries.
+
+- `--root/-C`: The workspace root to act on (default: the current directory).
+- `--json`: Emit machine-readable JSON
+
+### gr2 store commit
+
+Record member pins in the root git tree.
+
+- `--message/-m`: Message for the root commit that records the member pins
+- `--root/-C`: The workspace root to act on (default: the current directory).
+- `--json`: Emit machine-readable JSON
+- `--allow-rewind`: Record a member pin that is behind the one already recorded
+
+### gr2 store check
+
+Verify root gitlinks and member coverage against live upstreams.
+
+- `--root/-C`: The workspace root to act on (default: the current directory).
+- `--json`: Emit machine-readable JSON
+
+### gr2 store push
+
+Check, then push the root branch and its shadow in one atomic push; --atomic adds same-repo member refs.
+
+- `--to`: Record this URL or path as the root's origin when it has none, then push
+- `--atomic`: Also push the same-repo members' refs (members whose origin is the root's) in the same atomic push as the branch and its shadow: all move, or none
+- `--recurse` [default: check]: A member pin its upstream does not cover: check (refuse, exit 3), on-demand (push the member from its clone first) or none (skip coverage; the fence still runs)
+- `--snapshot`: Make the store commit first, then push it
+- `--allow-rewind`: A member whose pin may move backwards (repeatable); must name a member
+- `--root/-C`: The workspace root to act on (default: the current directory).
+- `--json`: Emit machine-readable JSON
+
+### gr2 store materialize
+
+Materialize each canonical pin from its declared origin.
+
+- `--root/-C`: The workspace root to act on (default: the current directory).
+- `--json`: Emit machine-readable JSON
+
+### gr2 review pin
+
+Pin a review gr commit for one or more repository rows; print ``gr:<commit>``.
+
+- `<workspace_root>` (optional)
+- `--repo`: Repository key for a single pinned row
+- `--remote`: Remote URL or absolute path of the row (relative paths and remote names are not resolved from your shell's directory)
+- `--base`: Base SHA (must be the live remote head of --ref)
+- `--head`: Reviewed head SHA (the pre-push head under review)
+- `--ref` [default: refs/heads/dev]: Target ref whose live head must equal --base
+- `--path`: Workspace path for the row (defaults to --repo)
+- `--source`: Author clone holding the pre-push head; required to carry the range so `review open` can reconstruct
+- `--from-range`: A frozen range.patch (freeze-public-range.sh output). Carries the range so `review open` reconstructs, deriving the head-tree by applying it over --base in a throwaway clone — NO author clone that holds the head is needed. Exclusive with --source.
+- `--at-base`: With --from-range: pin at --base, the dev the range was cut on, even when --ref has moved past it; read-only (nothing is rebased) and recorded in the pin as at-base
+- `--title`: Platform title text (NORM-hashed into the object)
+- `--body`: Platform body text (NORM-hashed into the object)
+- `--rows-json`: A JSON file with a list of row objects (key/remote/base/head, optional path/ref/title/body; source or range is optional on a single row but required on every row when the file holds more than one); pins ALL rows into ONE gr commit. Exclusive with the single-row flags.
+- `--ratified`: gr:<id> of an earlier pin of this same head that was stamped: the one way to pin a --head already on the remote; recorded in the review
+- `--members`: With no rows given: pin only these members (comma-separated names)
+- `--visibility`: NAME=public|private, repeatable: declare a pinned member's visibility (publish refuses a review of several members unless each one declares it); a --rows-json row that carries its own "visibility" refuses this flag for that member
+
+### gr2 push
+
+Push one branch and verify its immutable remote commit.
+
+- `--remote`: Configured remote to push
+- `--set-upstream/-u`: (no help text in the code)
+- `--force-with-lease`: Replace the remote ref only if its observed value still matches
+- `--repo-path`: Repo to operate on (defaults to cwd; gr2 verbs are single-repo)
+- `--root`: Push the full-mode workspace root (the default)
+- `--allow-rewind`: At a full-mode workspace root: let a member move back from what the remote recorded, recorded
+
+### gr2 review publish
+
+Publish the existing native review ref and verify its remote ID.
+
+- `<workspace_root>` (optional)
+- `<commit>`
+- `--remote`: HTTPS URL or absolute local remote path: publish the review ref there only; without it, every member's pinned head and the review go to that member's own recorded remote
+- `--ref`: Exact native review ref, otherwise derived from ID
+- `--root/-C`: The workspace root. Same as the leading WORKSPACE_ROOT argument; give one or the other.
+
+### gr2 review receive
+
+Receive and validate an exact native review before pinning it locally.
+
+- `<workspace_root>` (optional)
+- `<commit>`
+- `--remote`: HTTPS URL or absolute local remote path
+- `--ref`: Exact native review ref, otherwise derived from ID
+- `--all`: Also fetch every member's pinned head from that member's own recorded remote: one call for the whole review
+- `--root/-C`: The workspace root. Same as the leading WORKSPACE_ROOT argument; give one or the other.
+
+### gr2 review stamp
+
+Stamp the review: append an unsigned exact-head approval as GIT_AUTHOR_NAME, else the workspace git user.name, on every member remote.
+
+- `<workspace_root>` (optional)
+- `<review_id>` (optional)
+- `--root/-C`: The workspace root. Same as the leading WORKSPACE_ROOT argument; give one or the other.
+
+### gr2 check run
+
+Execute at the exact commit and publish its observation.
+
+- `<repo>`
+- `<command>`
+- `--remote`: Remote URL, path or name; default: the branch's upstream, else origin
+- `--head`: Commit to check; default: HEAD
+- `--name` [default: test]: (no help text in the code)
+
+### gr2 check set
+
+Run ONE command over every member of a pinned review, side by side at the pinned heads, and publish it.
+
+- `<workspace_root>` (optional)
+- `<review_id>`
+- `<command>` (optional)
+- `--name` [default: set]: Name the set record is stored under
+- `--root-commit`: Check a DECLARED set (a [[sets]] table in grip.toml) at this root commit instead of a review
+- `--set`: With --root-commit: the declared set to check
+- `--at-remote-heads`: Check the review's members at the head this branch names on each member's remote NOW (after a move); recorded as remote_set, which no merge reads
+- `--root/-C`: The workspace root. Same as the leading WORKSPACE_ROOT argument; give one or the other.
+
+### gr2 check show
+
+Read fresh remote observations for this exact commit.
+
+- `<repo>`
+- `--remote`: Remote URL, path or name; default: the branch's upstream, else origin
+- `--head`: Commit to read; default: HEAD
+- `--member` [default: repo]: (no help text in the code)
+- `--require` [default: test]: (no help text in the code)
+- `--review`: With --require set: count a `set` record only if it belongs to this review
+- `--json`: (no help text in the code)
+
+### gr2 review merge
+
+Merge a pinned review into its members' remotes: preflight every member, merge nothing if any member fails it.
+
+- `<workspace_root>` (optional)
+- `<review_id>` (optional)
+- `--into`: Target branch; default: the target the review was pinned against, else (a review pinned before that was recorded) the remote's default branch when it is the one branch at the reviewed base
+- `--from`: Feature branch; default: the members' current branch
+- `--check`: Required exact-head check name (repeatable); default `test`, and `test` plus `set` for a review over several members, where only `test` and `set` are accepted and `set` is always required; a default `test` with no record at a member's head is decided by a passing `set` for this review, a red one refuses
+- `--no-set`: Single-member reviews only: a review over several members always requires `set` and refuses this flag
+- `--approvals`: Required distinct approvers; may raise the grip.toml [approvals] required floor. With neither set the merge refuses approvals_unset; 0 merges without approvals and says so
+- `--root/-C`: The workspace root. Same as the leading WORKSPACE_ROOT argument; give one or the other.
+
+## When gr2 prints `refused: <code>`
+
+gr2 names the next step beside the refusal; the same text is here, keyed by the code. A code ending in `*` covers every code that starts with it and has no row of its own.
+
+### ancestry_unmeasurable
+
+next: git -C '<path>' fetch --unshallow, then run gr2 review merge '<workspace>' '<review>' again; nothing was pushed for this member
+
+### approvals_incomplete
+
+next: an approval stamp is still writing the chain to the members it names; retry the merge once it finishes. If a member stays without it, any approver's gr2 review stamp '<workspace>' '<review>' republishes the chain to the members that lack it
+
+### approvals_insufficient
+
+next: more approvers are required; each one stamps from their own checkout: gr2 review stamp '<workspace>' '<review>'
+
+### approvals_unset
+
+next: say how many approvals this merge needs: rerun with --approvals N (--approvals 0 merges without approvals), or set [approvals] required = N in '<workspace>'/grip.toml
+
+### at_base_not_ancestor
+
+check: the range's base is not in the history of the ref's tip '<observed>'; re-freeze the range on '<observed>', or pin without --at-base
+
+### at_base_tip_unfetchable
+
+check: the ref's tip could not be fetched from the remote, so its history was not read; the ref moved after it was read, or the fetch failed in transport or auth; pin again on the live tip, or pin without --at-base
+
+### at_base_unreachable
+
+check: the range's base is not on the remote; push the base the range was cut on, re-freeze the range on the live tip, or pin without --at-base
+
+### base_moved
+
+next: the target moved after the pin; bring every member up to it and pin again: gr2 review update '<workspace>' '<review>' --into '<branch>'
+
+### check_absent
+
+next: gr2 check run '<path>' --remote '<remote>' --head '<head>' -- <your test command>
+
+### check_fail
+
+next: the check failed at this head; fix it, commit a new head, then pin, stamp, check and publish that head
+
+### check_set*
+
+next: gr2 check set '<workspace>' '<review>' -- <your combined test command>
+
+### check_set_fail
+
+next: the set check failed at these heads; the newest result at these heads wins, so fix the member and rerun gr2 check set '<workspace>' '<review>' -- <your combined test command> at these heads (or commit a new head)
+
+### declared_set_pin_unreviewed
+
+next: gr2 review merge '<workspace>' '<review>'
+
+### feature_moved
+
+next: the feature branch moved after the pin; to check the set as it is now: gr2 check set '<workspace>' '<review>' --at-remote-heads '<branch>' -- <your combined test command>. To merge it, commit a new head and pin it before you push, or pin this head with --ratified gr:<id>, naming an earlier pin of this same head that was stamped
+
+### head_already_on_remote
+
+next: pin a head before you push it. For this head, either commit a new head and pin it before pushing, or pin this one with --ratified gr:<id>, naming an earlier pin of this same head that was stamped
+
+### head_already_on_target
+
+next: nothing to merge; the reviewed head is already in the target, so the reviewed work is there and no gr2 command lands it again. Confirm the target's tip is what you meant to ship; for new work, commit a new head and pin it
+
+### head_behind_remote_branch
+
+next: the remote branch already holds commits past this head; pin what it holds: gr2 review pin <workspace> --head '<remote_tip>' with your other flags unchanged
+
+### head_not_fetched
+
+next: the member remote '<remote>' does not serve the reviewed head '<head>'; once the author has pushed it there, stamp again: gr2 review stamp '<workspace>' '<review>'
+
+### not_received
+
+next: receive the published review into this workspace, then stamp it: gr2 review receive '<workspace>' '<review>' --remote <member-remote>, then gr2 review stamp '<workspace>' '<review>'
+
+### platform_head_moved_after_merge
+
+next: this member landed at the pinned head, and the later commit <sha> is on the PR's branch only: review it as a new change (pin it on top of the merged target), or remove it from the branch; members after this one were not landed, so run gr2 review merge '<workspace>' '<review>' again once it is resolved
+
+### platform_head_unmeasured_after_merge
+
+next: this member landed at the pinned head; read the PR's commits on the platform to see whether one was pushed during the land (review any such commit as a new change); members after this one were not landed, so run gr2 review merge '<workspace>' '<review>' again once that is known
+
+### platform_pr_ambiguous
+
+next: close the extra PRs so one open PR has this head, then run the merge again; nothing was merged
+
+### platform_pr_not_ready
+
+next: mark the PR ready (or reopen it) on the platform, then run the merge again; nothing was merged
+
+### platform_unmeasurable
+
+next: install the GitHub CLI (gh) and authenticate it (gh auth login), then run the merge again; nothing was merged
+
+### push_failed
+
+next: the push did not reach the remote (git's message says why: auth, network, a local hook) and the target is still at the base the gate read, so nothing was pushed for this member or any after it; fix that, then run the same gr2 review merge again
+
+### push_rejected
+
+next: the remote refused the push (the reason is git's message in the refusal: a hook or a protected branch) and the target is still at the base the gate read, so nothing was pushed for this member or any after it; clear the rejection on the remote, then run the same gr2 review merge again
+
+### push_unconfirmed
+
+next: the push did not finish (a timeout or a failed start), so whether this member landed is unknown and no member after it was pushed; when the remote answers, read it with gr2 review merged '<workspace>' '<review>', then run the same gr2 review merge again (a landed member reads merged and is not pushed twice)
+
+### remote_branch_diverged
+
+next: fetch the remote branch, integrate it into your branch locally (merge or rebase) as a new head, then pin that head before you push it
+
+### review_not_on_member_remote
+
+next: gr2 review publish '<workspace>' '<review>' --remote '<remote>'
+
+### self_approval
+
+next: a different approver stamps it from their own workspace, after receiving it there: gr2 review receive <their-workspace> '<review>' --remote <member-remote>, then gr2 review stamp <their-workspace> '<review>'; with no other approver: gr2 review merge '<workspace>' '<review>' --approvals 0
+
+### target_deleted_at_push
+
+next: the target '<branch>' was deleted on the remote after the gate read it, so nothing was pushed for this member or any after it; restore it at the base the review was pinned on, then run the same gr2 review merge again
+
+### target_moved_at_push
+
+next: the target moved after the gate read it, so nothing was pushed; bring every member up to it and pin again: gr2 review update '<workspace>' '<review>' --into '<branch>'
+
+### target_unread_at_push
+
+next: the push failed and the target could not be read after it, so whether this member landed is unknown and no member after it was pushed; when the remote answers, read it with gr2 review merged '<workspace>' '<review>', then run the same gr2 review merge again (a landed member reads merged and is not pushed twice)

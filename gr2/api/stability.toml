@@ -42,6 +42,9 @@
 # check, push, materialize -- are STABLE for 2.x, with the store exit table and store init's
 # workspace_root argument. Their flags stay may-change below, as do store commit (to be renamed), the hidden
 # store verbs, and review publish/receive. tests/test_cli_help_surface.py pins this set.
+#
+# `help agent` is a help TOPIC, not an item in the dump: it prints the bundled agent guide
+# (gr2/AGENT_GUIDE.md, a byte copy of api/skill.md) and takes the tier of `help`, stable.
 
 may-change = [
   # Native review transport is public but still under focused validation.

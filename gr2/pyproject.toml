@@ -70,7 +70,8 @@ gr2 = "gr2"
 # at load and fails closed on any mismatch.
 # PLATFORM_ADAPTER_CHANGELOG.md ships too, so an out-of-tree adapter author can read the protocol's changes
 # from the installed package (tests/test_platform_adapter_changelog.py keeps it in step with the protocol).
-gr2 = ["schemas/*.json", "schemas/*/*.proto", "schemas/*/*.pb", "PLATFORM_ADAPTER_CHANGELOG.md"]
+# AGENT_GUIDE.md is the byte copy of api/skill.md that `gr2 help agent` prints (tests/test_agent_guide.py).
+gr2 = ["schemas/*.json", "schemas/*/*.proto", "schemas/*/*.pb", "PLATFORM_ADAPTER_CHANGELOG.md", "AGENT_GUIDE.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "gr2/overlay/tests"]

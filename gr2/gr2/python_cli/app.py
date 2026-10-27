@@ -1965,7 +1965,20 @@ def status_cmd() -> None:
     # This is intentionally a route, not a second status implementation: the
     # operational status table already belongs to `repo status`.  `workspace
     # status` answers the different question of which workspace layout exists.
-    repo_status(_resolve_workspace_root(), spec=None, policy=None, json_output=False)
+    workspace_root = _resolve_workspace_root()
+    try:
+        repo_status(workspace_root, spec=None, policy=None, json_output=False)
+    except typer.BadParameter as exc:
+        # The same refusal and exit code; a directory with no spec that is not a griplink root and not itself a
+        # repo (a member checkout) is also told today's step to make it a store.
+        is_repo = root_verbs._is_git_root(workspace_root)
+        # A griplink root is always itself a repo, so is_repo already withholds the advice there; kept for the wording.
+        griplink_root = is_repo and (
+            root_verbs._has_stook(workspace_root) or root_verbs._has_griplink_gitlink(workspace_root)
+        )
+        if griplink_root or is_repo:
+            raise
+        raise typer.BadParameter(f"{exc.message}. {grip._store_init_advice(workspace_root)}") from exc
 
 
 @workspace_app.command("convert-clone")

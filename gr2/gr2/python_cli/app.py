@@ -12,6 +12,7 @@ import signal
 import subprocess
 import sys
 import tomllib
+import urllib.parse
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Annotated, List, Mapping, NoReturn, Optional
@@ -4174,19 +4175,37 @@ def _unpushed_commits(repo: Path, *, fetch: bool = True, removing: Path | None =
     return list(found.items())
 
 
+def _remote_url_local_path(url: str) -> str | None:
+    """The local path a remote URL names, or None when it names another machine.
+    A drive path (C:/x, C:\\x) is local, not the scp-like host:path form; file:// with no host or localhost
+    names /<path>, or <path> itself on Windows when it starts with a drive; git decodes its percent escapes;
+    another host is a UNC share on Windows, while git elsewhere ignores it and reads /<path> here."""
+    if url.startswith("file://"):
+        host, _, path = url[len("file://"):].partition("/")
+        if host not in ("", "localhost") and os.name == "nt":
+            return None  # a UNC share on Windows; git elsewhere ignores the host and reads /<path> here
+        path = urllib.parse.unquote(path)
+        if os.name == "nt" and re.match(r"[A-Za-z]:[/\\]", path):
+            return path  # git on Windows reads file:///C:/x as C:/x
+        return "/" + path
+    if len(url) >= 3 and url[0].isascii() and url[0].isalpha() and url[1] == ":" and url[2] in "/\\":
+        return url
+    if "://" in url or (":" in url and "/" not in url.split(":", 1)[0]):
+        return None  # a network URL, or the scp-like host:path form
+    return url
+
+
 def _remote_is_inside(repo: Path, remote: str, roots: list[Path]) -> bool:
     """Whether the remote's URL is a local path (or a file:// URL) that resolves to one of `roots` or under one.
     A remote there is the directory about to be removed: what it holds is not held anywhere else."""
     got = gitops.run_argv(["git", "remote", "get-url", "--", remote], cwd=repo)
     if got.returncode != 0:
         raise SystemExit(f"cannot read {remote}'s URL in {repo}: {got.stderr.strip()}")
-    url = got.stdout.strip()
-    if url.startswith("file://"):
-        url = url[len("file://"):]
-    elif "://" in url or (":" in url and "/" not in url.split(":", 1)[0]):
-        return False  # a network URL, or the scp-like host:path form
+    path = _remote_url_local_path(got.stdout.strip())
+    if path is None:
+        return False
     # By file identity, not spelling: on a case-insensitive or normalizing filesystem two spellings reach one directory.
-    target = (repo / url).resolve()
+    target = (repo / path).resolve()
     held = [r for r in roots if r.exists()]
     for place in (target, *target.parents):
         if place.exists() and any(os.path.samefile(place, r) for r in held):

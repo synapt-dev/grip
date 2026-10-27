@@ -1916,6 +1916,14 @@ def _member_coverage(
     remote, separator, branch = upstream.partition("/")
     if not separator or not remote or not branch:
         raise NativeStoreRefusal(f"{member['name']} has invalid upstream {upstream!r}", 4)
+    # A member that is not checked out (a plain clone before materialize) leaves its dir empty or absent, and git
+    # walks up from an empty dir to the SUPERPROJECT: the fetch and the coverage read below would answer about the
+    # root's origin and tell the author to push a pin its own upstream may already hold. Not here means not asked: 5.
+    top = _store_git(path, "rev-parse", "--show-toplevel", check=False)
+    if top.returncode or Path(top.stdout.strip()).resolve() != path.resolve():
+        raise NativeStoreRefusal(
+            f"{member['name']} is not checked out in this workspace ({path} is missing or empty), so its pin {sha} "
+            f"cannot be checked; run gr2 store materialize, then check again", 5)
     if _store_git(path, "fetch", "--", remote, check=False).returncode:
         raise NativeStoreRefusal(f"{member['name']} cannot fetch {remote}", 5)
     answer = _coverage_of(path, sha, upstream)

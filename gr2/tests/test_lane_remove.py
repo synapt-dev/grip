@@ -706,6 +706,48 @@ def test_a_remote_inside_the_checkout_root_does_not_hold_a_tagged_commit(tmp_pat
     _refused_untouched(ws, repo, _remove(ws), "lane_has_unpushed_commit", tagged[:12])
 
 
+def test_a_remote_spelled_file_localhost_inside_the_checkout_root_does_not_hold_a_tagged_commit(tmp_path: Path) -> None:
+    """file://localhost/<path> names /<path>, not a path relative to the repo; the lane's own tag stays listed."""
+    ws, repo, tagged = _lane_with_a_local_tag_commit(tmp_path)
+    _git(repo, "remote", "add", "self", f"file://localhost{repo}")
+    assert tagged in _git(repo, "ls-remote", "--tags", "self")
+    _refused_untouched(ws, repo, _remove(ws), "lane_has_unpushed_commit", tagged[:12])
+
+
+def test_a_remote_spelled_file_localhost_outside_the_checkout_root_holds_a_tagged_commit(tmp_path: Path) -> None:
+    """file://localhost/<path> outside the lane is asked, not read as a path under the repo: its tag holds the commit."""
+    ws, repo, tagged = _lane_with_a_local_tag_commit(tmp_path)
+    keep = tmp_path / "keep.git"
+    _git(tmp_path, "clone", "-q", "--bare", str(repo), str(keep))
+    _git(repo, "push", "-q", str(keep), "refs/tags/0.5.0")
+    _git(repo, "remote", "add", "keep", f"file://localhost{keep}")
+    assert tagged in _git(repo, "ls-remote", "--tags", "keep")
+
+    result = _remove(ws)
+
+    assert result.exit_code == 0, result.output
+    assert not repo.exists(), "the lane's clone is gone"
+
+
+@pytest.mark.parametrize("url", ["C:/x", "C:\\x"])
+def test_a_drive_path_remote_url_is_local(url: str) -> None:
+    assert gr2_app._remote_url_local_path(url) == url
+
+
+@pytest.mark.parametrize("url", ["host:path", "git@host:o/r", "https://host/o/r"])
+def test_a_scp_like_or_network_remote_url_is_not_local(url: str) -> None:
+    assert gr2_app._remote_url_local_path(url) is None
+
+
+@pytest.mark.parametrize("url", ["file://localhost/abs", "file:///abs"])
+def test_a_file_url_with_no_host_or_localhost_names_the_absolute_path(url: str) -> None:
+    assert gr2_app._remote_url_local_path(url) == "/abs"
+
+
+def test_a_file_url_naming_another_host_is_not_local() -> None:
+    assert gr2_app._remote_url_local_path("file://otherhost/abs") is None
+
+
 def test_a_sibling_remote_inside_the_checkout_root_does_not_hold_a_tagged_commit(tmp_path: Path) -> None:
     """A bare clone beside the lane repo, inside the checkout root, holds the lane's tag; remove deletes it too,
     so it holds nothing elsewhere. Measures removing= at lane remove: the repo itself is not the remote here."""

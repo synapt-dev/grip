@@ -2624,6 +2624,20 @@ def _native_store_commit(
                 raise NativeStoreRefusal(f"{path} is ignored by Git; resolve its ignore rule before store commit", 4)
             if ignored.returncode not in (0, 1):
                 raise NativeStoreRefusal(f"cannot measure .gitinclude coverage for {path}: {_git_detail(ignored)}", 5)
+    else:
+        # With no declaration nothing judged the index, so a path the author staged by hand rode into the record.
+        # Judge the staged diff against HEAD: a file the root already tracks unchanged is not in it, so an adopted
+        # root's own files need no special case. The set is what the steps below write. --no-renames: a rename is
+        # otherwise named by its destination alone, so a root file moved under an allowed path hid its deletion.
+        written = {"grip.toml", ".gitinclude", *ENGINE_WRITTEN_FILES, *(m["path"] for m in changed)}
+        staged_paths = _store_git(root, "diff", "--cached", "--no-renames", "--name-only", "-z").stdout.split("\0")
+        stray = [p for p in staged_paths if p and p not in written and not p.startswith(f"{FIELDS_DIR}/")]
+        if stray:
+            raise NativeStoreRefusal(
+                f"{stray[0]} is staged but store commit does not record it ({len(stray)} such path(s)); "
+                "unstage it before store commit",
+                4,
+            )
     _write_native_members(root, changed)
     _store_git(root, "add", "grip.toml")
     if not full and not has_foreign_gitmodules(root):   # full mode never projects a .gitmodules

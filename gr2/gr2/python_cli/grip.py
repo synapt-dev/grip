@@ -1105,8 +1105,8 @@ def _review_bind_author(workspace: Path) -> str:
     if not name or any(ord(c) < 32 or ord(c) == 127 for c in name):
         raise GripReviewRefused(
             "bind_author_unavailable", "a Git user.name in the workspace root, or GIT_AUTHOR_NAME",
-            f"none set in {workspace}; run git config user.name 'Your Name' there (or set GIT_AUTHOR_NAME), "
-            "then retry")
+            f"none set in {workspace}; run export GIT_AUTHOR_NAME='Your Name' (this shell only), "
+            "or git config --global user.name 'Your Name', then retry")
     return name
 
 

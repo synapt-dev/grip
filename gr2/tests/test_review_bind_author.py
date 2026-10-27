@@ -56,7 +56,7 @@ def test_missing_binder_name_refuses_before_any_publication(handoff, monkeypatch
     before = git(root, "for-each-ref")
     row = dict(key="member", path="member", remote=str(remote), base=base, head=head,
                ref="refs/heads/main", source=str(root / "member"))
-    with pytest.raises(grip.GripReviewRefused, match="bind_author_unavailable.*git config user.name"):
+    with pytest.raises(grip.GripReviewRefused, match="bind_author_unavailable.*export GIT_AUTHOR_NAME"):
         grip.create_review_bind_commit(root, [row])
     assert git(root, "for-each-ref") == before
 
@@ -85,6 +85,6 @@ def test_the_author_refusal_puts_the_requirement_in_expected_and_the_state_in_ob
         grip._review_bind_author(root)
     assert exc.value.refusal == "bind_author_unavailable"
     assert "user.name" in exc.value.expected and str(root) not in exc.value.expected
-    assert str(root) in exc.value.observed and "git config user.name" in exc.value.observed
-    assert "or set GIT_AUTHOR_NAME" in exc.value.observed
+    assert str(root) in exc.value.observed and "git config --global user.name" in exc.value.observed
+    assert "export GIT_AUTHOR_NAME" in exc.value.observed
     assert "review pin" not in str(exc.value) and "review bind" not in str(exc.value)

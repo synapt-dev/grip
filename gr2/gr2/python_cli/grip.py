@@ -32,6 +32,11 @@ class GripInitError(Exception):
     """Raised when .grip/ repo is missing or not properly initialized."""
 
 
+class GripStoreMissing(GripInitError):
+    """No `.grip/` at the root a verb was given: the verb ran in the wrong place (a member checkout,
+    or a directory outside any workspace), not on a store it could not read."""
+
+
 class AlphaRootRefused(GripInitError):
     """A review verb on an alpha root (its record is the `.grip/.git` snapshot store). Review binds
     live in a native root's own `.git`, so the one thing the caller can do is convert the root."""
@@ -2729,7 +2734,7 @@ def _validate_grip_repo(workspace: Path) -> None:
             "record and its pinned reviews in the root's own .git."
         )
     if not grip_dir.exists():
-        raise GripInitError(f"No .grip/ directory at {workspace}. {_store_init_advice(workspace)}")
+        raise GripStoreMissing(f"No .grip/ directory at {workspace}. {_store_init_advice(workspace)}")
     git_dir = grip_dir / ".git"
     if not git_dir.exists():
         raise GripInitError(f".grip/ exists but has no .git/ at {workspace}. {_store_init_advice(workspace)}")

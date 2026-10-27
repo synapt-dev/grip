@@ -5765,6 +5765,28 @@ def _emit_review_opened(workspace_root: Path, sha: str, lane_dir: Path, results:
     )
 
 
+def _echo_sparse_note(result: dict[str, str]) -> None:
+    """A lane cloned sparse by a profile holds only the profile's paths, so a grep inside it that finds no
+    callers is not a census. Say so once, and name the search that covers the whole tree: the lane holds
+    the head, and its blobless clone fetches the paths left out when a grep needs them. Keyed on files
+    actually left out (skip-worktree entries), since a profile of `/*` turns sparse mode on and excludes
+    nothing."""
+    lane = str(result["lane"])
+    listed = gitops.run(Path(lane), "ls-files", "-t")
+    if listed.returncode != 0:
+        typer.echo(f"sparse: cannot list the lane's files ({listed.stderr.strip()[:120]}); "
+                   f"a grep inside it may not cover the tree")
+        return
+    entries = listed.stdout.splitlines()
+    skipped = sum(1 for entry in entries if entry.startswith("S "))
+    if not skipped:
+        return
+    typer.echo(f"sparse: {skipped} of {len(entries)} files not checked out "
+               f"(profile {shlex.quote(result['profile'])}); "
+               f"search the whole tree with git -C {shlex.quote(lane)} grep <pattern> "
+               f"{shlex.quote(result['reconstructed_head'])}")
+
+
 @review_app.command("open-gr", hidden=True, cls=json_refusing(RootOptionalCommand))  # hidden alias for one release, dropped at 2.0 GA
 def review_open_gr(
     workspace_root: Path,
@@ -5831,6 +5853,7 @@ def review_open_gr(
                     match = res["bound_head_tree"] == res["reconstructed_tree"]
                     typer.echo(f"{row_key}: lane={res['lane']} tree_match={match} "
                                f"source={res['source']} profile={res['profile']}")
+                    _echo_sparse_note(res)
             return
     result = _review_call(
         grip.reconstruct_review_lane, workspace_root.resolve(), sha, key, root, reader=True
@@ -5848,6 +5871,7 @@ def review_open_gr(
         typer.echo(f"reconstructed_head: {result['reconstructed_head']}")
         typer.echo(f"tree_match: {result['bound_head_tree'] == result['reconstructed_tree']}")
         typer.echo(f"source: {result['source']}  profile: {result['profile']}")
+        _echo_sparse_note(result)
 
 
 @review_app.command("close-gr", hidden=True, cls=json_refusing(typer.core.TyperCommand))  # hidden alias for one release, dropped at 2.0 GA

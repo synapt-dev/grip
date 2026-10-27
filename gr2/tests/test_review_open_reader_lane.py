@@ -11,6 +11,8 @@ from __future__ import annotations
 from tests.native_root_helper import native_root
 
 import os
+import re
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -177,3 +179,121 @@ def test_review_open_of_two_members_reads_each_from_the_mirror(tmp_path: Path) -
         line = next((ln for ln in out.output.splitlines() if ln.startswith(f"{name}: ")), "")
         assert "tree_match=True" in line and "source=mirror" in line, out.output
         assert not (lanes / name / "bulk").exists(), out.output
+
+
+def _open(tmp_path: Path, *, profile: bool):
+    ws, commit, _ = _bound(tmp_path, profile=profile)
+    lane = tmp_path / "lane"
+    out = CliRunner().invoke(gr2_app.app, ["review", "open", str(ws), f"gr:{commit}", "--lane-dir", str(lane)])
+    assert out.exit_code == 0, out.output
+    return out.output, lane
+
+
+def _left_out(lane: Path) -> tuple[int, int]:
+    entries = _git(lane, "ls-files", "-t").splitlines()
+    return sum(1 for e in entries if e.startswith("S ")), len(entries)
+
+
+def _note(profile: str, lane: Path, head: str) -> str:
+    skipped, total = _left_out(lane)
+    return (f"sparse: {skipped} of {total} files not checked out (profile {shlex.quote(profile)}); "
+            f"search the whole tree with git -C {shlex.quote(str(lane))} grep <pattern> {shlex.quote(head)}")
+
+
+def test_a_profiled_open_says_once_that_the_lane_is_sparse(tmp_path: Path) -> None:
+    output, lane = _open(tmp_path, profile=True)
+    profile = next(l for l in output.splitlines() if l.startswith("source: ")).split("profile: ", 1)[1]
+    line = _note(profile, lane, _git(lane, "rev-parse", "HEAD"))
+    assert output.splitlines().count(line) == 1, output
+    assert output.count("sparse: ") == 1
+
+
+def test_a_profile_less_open_says_nothing_about_sparse(tmp_path: Path) -> None:
+    output, _ = _open(tmp_path, profile=False)
+    assert "profile: none" in output
+    assert "sparse: " not in output
+
+
+def test_the_printed_search_finds_a_path_the_profile_left_out(tmp_path: Path) -> None:
+    output, lane = _open(tmp_path, profile=True)
+    assert not (lane / "bulk").exists()
+    line = next(l for l in output.splitlines() if l.startswith("sparse: "))
+    cmd = line.split("search the whole tree with ", 1)[1].replace("<pattern>", "bulk")
+    argv = shlex.split(cmd)
+    assert argv[-1] == _git(lane, "rev-parse", "HEAD")
+    assert f"reconstructed_head: {argv[-1]}" in output
+    ran = subprocess.run(argv, text=True, capture_output=True)
+    assert ran.returncode == 0, ran.stderr
+    assert f"{argv[-1]}:bulk/big.txt:bulk" in ran.stdout.splitlines(), ran.stdout
+
+
+def _open_fallback(tmp_path: Path, monkeypatch, content: str | None):
+    pdir = tmp_path / "profiles"
+    pdir.mkdir()
+    if content is not None:
+        (pdir / "alpha.exclude").write_text(content)
+    monkeypatch.setenv("SYNAPT_REVIEW_PROFILE_DIR", str(pdir))
+    ws, commit, _ = _bound(tmp_path, profile=False)
+    lane = tmp_path / "lane"
+    out = CliRunner().invoke(gr2_app.app, ["review", "open", str(ws), f"gr:{commit}", "--lane-dir", str(lane)])
+    assert out.exit_code == 0, out.output
+    return out.output, lane
+
+
+def test_a_profile_of_everything_turns_sparse_on_leaves_nothing_out_and_says_nothing(tmp_path: Path, monkeypatch) -> None:
+    output, lane = _open_fallback(tmp_path, monkeypatch, "/*\n")
+    assert "profile: fallback " in output
+    assert _git(lane, "config", "--bool", "core.sparseCheckout") == "true"
+    assert _left_out(lane)[0] == 0
+    assert (lane / "bulk" / "big.txt").exists()
+    assert "sparse: " not in output
+
+
+def test_a_profile_that_leaves_a_directory_out_prints_the_left_out_count(tmp_path: Path, monkeypatch) -> None:
+    output, lane = _open_fallback(tmp_path, monkeypatch, "/*\n!/bulk/\n")
+    skipped, total = _left_out(lane)
+    assert 0 < skipped < total
+    assert not (lane / "bulk" / "big.txt").exists()
+    profile = next(l for l in output.splitlines() if l.startswith("source: ")).split("profile: ", 1)[1]
+    line = _note(profile, lane, _git(lane, "rev-parse", "HEAD"))
+    assert line.startswith(f"sparse: {skipped} of {total} files not checked out (profile ")
+    assert output.splitlines().count(line) == 1, output
+    assert output.count("sparse: ") == 1
+
+
+def test_no_profile_file_for_the_repo_says_nothing(tmp_path: Path, monkeypatch) -> None:
+    output, lane = _open_fallback(tmp_path, monkeypatch, None)
+    assert "profile: none" in output
+    assert _left_out(lane)[0] == 0
+    assert "sparse: " not in output
+
+
+def test_a_profiled_open_of_two_members_says_it_for_the_sparse_member(tmp_path: Path) -> None:
+    ws = tmp_path / "ws"
+    (ws / ".grip").mkdir(parents=True)
+    native_root(ws)
+    rows = []
+    for name, profile in (("alpha", True), ("beta", False)):
+        remote, base, head, patch = _remote_with_bulk(tmp_path, profile=profile, name=name)
+        rows.append({"key": name, "remote": remote, "path": f"repos/{name}", "base": base, "head": head,
+                     "ref": "refs/heads/main", "range_patch": patch})
+    commit = grip.create_review_bind_commit(ws, rows)
+    lanes = tmp_path / "lanes"
+    out = CliRunner().invoke(gr2_app.app, ["review", "open", str(ws), f"gr:{commit}", "--lane-dir", str(lanes)])
+    assert out.exit_code == 0, out.output
+    alpha = next(l for l in out.output.splitlines() if l.startswith("alpha: "))
+    profile = alpha.split(" profile=", 1)[1]
+    line = _note(profile, lanes / "alpha", _git(lanes / "alpha", "rev-parse", "HEAD"))
+    assert out.output.splitlines().count(line) == 1, out.output
+    assert out.output.count("sparse: ") == 1, out.output
+
+
+def test_a_lane_git_cannot_list_says_so_and_prints_no_count(tmp_path: Path, monkeypatch, capsys) -> None:
+    lane = tmp_path / "not-a-repo"
+    lane.mkdir()
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    gr2_app._echo_sparse_note({"lane": str(lane), "profile": "p", "reconstructed_head": "0" * 40})
+    out = capsys.readouterr().out
+    assert out.startswith("sparse: cannot list the lane's files ("), out
+    assert out.count("sparse: ") == 1, out
+    assert " files not checked out" not in out

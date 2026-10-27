@@ -17,7 +17,8 @@ from pathlib import Path
 
 import pytest
 
-from tests.test_store_break_attempts import _cli, _clone_member, _git, _git_out
+from tests.test_store_break_attempts import _bare_remote, _cli, _clone_member, _git, _git_out
+from tests.test_store_git_native_smoke import gr2
 
 FIXED = "2026-10-19T12:00:00Z"
 
@@ -93,6 +94,46 @@ def test_a_directory_nested_in_a_member_names_the_store_root_above(tmp_path, mon
     assert f"inside the store at {ws.resolve()}" in out, out
     assert "store init here" not in out, out
     assert _state(ws) == before
+
+
+def _tree(path: Path) -> dict[str, bytes]:
+    """Every file under `path`, `.git` included, as bytes: what a refused verb must leave byte-identical."""
+    return {str(p.relative_to(path)): p.read_bytes() for p in sorted(path.rglob("*")) if p.is_file()}
+
+
+def test_store_add_naming_a_member_names_the_store_root_above(tmp_path, monkeypatch):
+    ws = _ws(tmp_path, monkeypatch)
+    gamma = _bare_remote(tmp_path, "gamma")
+    before = _tree(ws)
+    monkeypatch.chdir(ws)
+    code, out = _cli("store", "add", "-C", str(ws / "alpha"), f"gamma={gamma}")
+    assert code == 4, out
+    assert f"inside the store at {ws.resolve()}" in out, out
+    assert f"-C {ws.resolve()}" in out, out
+    assert "store init" not in out, out
+    assert _tree(ws) == before
+
+
+def test_store_add_naming_a_bare_directory_keeps_the_init_advice(tmp_path, monkeypatch):
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    gamma = _bare_remote(tmp_path, "gamma")
+    monkeypatch.chdir(tmp_path)
+    code, out = _cli("store", "add", "-C", str(bare), f"gamma={gamma}")
+    assert code == 4, out
+    assert "is not a store; run store init first" in out, out
+    assert "is inside the" not in out, out
+    assert list(bare.iterdir()) == []
+
+
+def test_store_migrate_reviews_inside_a_member_refuses_without_a_traceback(tmp_path, monkeypatch):
+    ws = _ws(tmp_path, monkeypatch)
+    before = _tree(ws)
+    result = gr2(ws / "alpha", "migrate-reviews", "-C", ".", check=False)
+    assert result.returncode == 5, result.stdout + result.stderr
+    assert "Traceback" not in result.stderr, result.stderr
+    assert result.stderr.startswith("refused: "), result.stderr
+    assert _tree(ws) == before
 
 
 def _griplink_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:

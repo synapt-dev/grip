@@ -44,6 +44,14 @@ def _merge(adopted, monkeypatch, *flags):
     return gr2(adopted["author"], monkeypatch, "pr", "merge", "--json", *flags)
 
 
+def _unreadable(merged, replaced):
+    assert merged.exit_code == 5, merged.output
+    payload = json.loads(merged.output[merged.output.index("{"):])
+    assert payload["status"] == "refused_unreadable", payload
+    assert replaced["adapter"].merged == []
+    assert _record(replaced).read_bytes() == replaced["before"]
+
+
 @pytest.fixture
 def replaced(adopted):
     """Case 3(b): alpha's #40 is closed and #90 is open at alpha's reviewed head, on the same base."""
@@ -179,3 +187,39 @@ def test_a10_a_partial_merge_records_the_replacement_that_landed(replaced, monke
     assert {(p["repo"], p["pr_number"]) for p in record["prs"]} == {(alpha, 90), (beta, 41)}, record["prs"]
     assert record["group_state"] == "partially_merged"
     assert [c["pr_number"] for c in record["completed"] if c["repo"] == alpha] == [90], record["completed"]
+
+
+def test_a11_a_replacement_with_no_base_is_unreadable_never_a_match(replaced, monkeypatch):
+    "A11: #90 sits at the reviewed head with no base reported: exit 5 refused_unreadable, 0 merges, record byte-identical"
+    _at_head(replaced, replaced["repos"]["alpha"], (90, None))
+    _unreadable(_merge(replaced, monkeypatch, "--accept-replacement"), replaced)
+
+
+def test_a12_a_closed_pr_base_that_cannot_be_read_is_unreadable_never_empty(replaced, monkeypatch):
+    "A12: reading #40's base fails: exit 5 refused_unreadable naming the failed read, 0 merges, record byte-identical"
+    real = replaced["adapter"].pr_status
+    calls = []
+
+    def status(repo, number, **kw):
+        if number == 40:
+            calls.append(1)
+            if len(calls) == 2:
+                raise AdapterError("gh: HTTP 503 reading base")
+        return real(repo, number, **kw)
+
+    replaced["adapter"].pr_status = status
+    merged = _merge(replaced, monkeypatch, "--accept-replacement")
+    assert len(calls) == 2, ("base read not reached", calls, merged.output)
+    _unreadable(merged, replaced)
+    assert "HTTP 503 reading base" in merged.output, merged.output
+
+
+def test_a13_the_flag_is_refused_beside_head(replaced, monkeypatch):
+    "A13: --head pins no review to match a replacement by: refused naming the flag, 0 merges, record byte-identical"
+    sha = replaced["heads"]["alpha"]
+    merged = _merge(replaced, monkeypatch, "--head", sha, "--accept-replacement")
+    text = str(merged.exception) + merged.output
+    assert merged.exit_code != 0, merged.output
+    assert "--accept-replacement" in text, text
+    assert replaced["adapter"].merged == []
+    assert _record(replaced).read_bytes() == replaced["before"]

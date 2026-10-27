@@ -451,6 +451,7 @@ verb  pr create                                                       stable
 arg   pr merge lane_name <str>                                        stable
 arg   pr merge owner_unit <str>                                       stable
 arg   pr merge workspace_root <str>                                   stable
+flag  pr merge --accept-replacement                                   stable
 flag  pr merge --head <str>                                           stable
 flag  pr merge --json                                                 stable
 flag  pr merge --method/-m <str>                                      stable

@@ -7108,6 +7108,14 @@ def pr_merge(
             "that moved after the reads lands nothing instead of landing unread bytes."
         ),
     ),
+    accept_replacement: bool = typer.Option(
+        False,
+        "--accept-replacement",
+        help=(
+            "A recorded PR is closed and exactly one other PR is open at its reviewed head, on the same "
+            "base: merge that PR in its place and record it. Review merges only; every other case refuses."
+        ),
+    ),
     root: Optional[Path] = ROOT_OPTION,
 ) -> None:
     """Merge grouped PRs for a lane, or for the current review. A review's PRs are
@@ -7118,6 +7126,9 @@ def pr_merge(
     _refuse_review_beside_unit(owner_unit, review)
     if review is not None and head:
         _refuse("--review and --head are exclusive; give one or the other")
+    if accept_replacement and (owner_unit is not None or head):
+        _refuse("--accept-replacement needs a review merge pinned to its reviewed heads (no OWNER_UNIT, no --head): "
+                "a replacement PR is matched by the review's reviewed head commit")
     subject_targets = None
     if owner_unit is None:
         target, members = resolve_review_subject(workspace_root, review)
@@ -7201,6 +7212,7 @@ def pr_merge(
             verification_targets=merge_targets,
             report=lambda message: typer.echo(message, err=True),
             expected_heads=expected_heads,
+            accept_replacement=accept_replacement,
         )
         completed = list(result.get("completed", []))
         merged = [str(item["repo"]) for item in completed]
@@ -7214,15 +7226,20 @@ def pr_merge(
         }
     except pr_ops.ClosedMembersError as exc:
         reviewed_heads = {slug: m["commit"] for slug, (m, _) in on_host.items()} if subject_targets is not None else {}
-        named = []
+        named, one_each = [], bool(reviewed_heads)
         for repo, number in exc.closed:
             sha = reviewed_heads.get(repo)
             others = [p for p in (adapter.pr_for_head(repo, sha) if sha else [])
                       if str(p.get("state", "")).lower() == "open" and p.get("number") != number]
             alt = f", and #{others[0]['number']} is open at its reviewed head" if others else ""
             named.append(f"{repo}#{number} is closed{alt}")
+            one_each = one_each and len(others) == 1
+        # Case 3(b): exactly one other open PR at each closed member's reviewed head. Name the one command
+        # that lands it; the re-run still checks the base and reads each replacement's host head first.
+        rerun = (f" To merge the open PR in its place: gr2 pr merge {shlex.quote(str(workspace_root))} "
+                 f"--review {shlex.quote(target)} --accept-replacement" if one_each else "")
         raise SystemExit(f"refusing to merge PR group {group['pr_group_id']}: " + "; ".join(named)
-                         + ". next: reopen the recorded PR, or open a new group with `gr2 pr create`")
+                         + ". next: reopen the recorded PR, or open a new group with `gr2 pr create`." + rerun)
     except pr_ops.PRPrePassRefusal as exc:
         # Refused before the first merge: nothing happened, so nothing is written.
         payload = {
@@ -7253,6 +7270,9 @@ def pr_merge(
                 )
         raise typer.Exit(code=exc.exit_code)
     except pr_ops.PRMergeError as exc:
+        # Read the record back first: a merge that went ahead with --accept-replacement rewrote it with the
+        # replacement's number, and this dict was loaded before that, so writing it would name the closed PR again.
+        group = json.loads(group_path.read_text())
         completed = [item.as_dict() for item in exc.completed]
         merged = [str(item["repo"]) for item in completed]
         if exc.outcome_unknown:

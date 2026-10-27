@@ -168,6 +168,21 @@ class ClosedMembersError(PRPrePassRefusal):
         super().__init__(repo, number, ", ".join(f"{r}#{n} is closed" for r, n in self.closed))
 
 
+class ReplacementRefusedError(PRPrePassRefusal):
+    """`accept_replacement` found no ONE open PR it may take in a closed member's place, so NOTHING merged:
+    none at the reviewed head, several, or one on another base."""
+
+    status = "refused_closed"
+
+
+class ReplacementUnreadableError(PRPrePassRefusal):
+    """The open PRs at a closed member's reviewed head, or a base to compare, could not be read.
+    Unknown is never read as none or as a match: refuse, as an unreadable head does."""
+
+    status = "refused_unreadable"
+    exit_code = 5
+
+
 class PRHeadUnreadableError(PRPrePassRefusal):
     """The host's current PR head could not be read, so the answer is unknown.
 
@@ -459,6 +474,15 @@ def _save_group(workspace_root: Path, group: dict) -> Path:
     return path
 
 
+def _replace_group_record(workspace_root: Path, group: dict) -> Path:
+    """Rewrite an existing record in one step (write beside it, then rename), so a reader never sees half of it."""
+    path = _pr_groups_dir(workspace_root) / f"{group['pr_group_id']}.json"
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(group, indent=2))
+    os.replace(tmp, path)
+    return path
+
+
 class SiblingLinkError(RuntimeError):
     """One or more PRs in a set could not be linked to their siblings.
 
@@ -517,6 +541,83 @@ def closed_members(adapter: PlatformAdapter, group: Mapping[str, object]) -> lis
         if str(status.state).upper() == "CLOSED":
             closed.append((repo, number))
     return closed
+
+
+def find_replacements(
+    adapter: PlatformAdapter,
+    group: Mapping[str, object],
+    closed: list[tuple[str, int]],
+    reviewed_heads: Mapping[str, str],
+) -> dict[str, dict[str, Any]]:
+    """For each closed member, the ONE other open PR at its reviewed head and on its base (case 3(b) of the
+    closed-PR design note). Reads only; returns {repo: {"old", "number", "url"}} or refuses naming the case.
+
+    The base compared is the group's `base_branch`, or, for an adopted group that records none, the closed
+    PR's own base as the host reports it. A host ask that fails is UNREADABLE, never "none open".
+    """
+    found: dict[str, dict[str, Any]] = {}
+    recorded = {(str(m["repo"]), int(m["pr_number"])): m for m in group.get("prs", [])}  # type: ignore[union-attr]
+    for repo, number in closed:
+        sha = reviewed_heads.get(repo)
+        if not sha:
+            raise ReplacementRefusedError(repo, number, f"{repo}#{number} is closed and has no reviewed head to match a replacement by")
+        try:
+            listed = adapter.pr_for_head(repo, sha)  # type: ignore[attr-defined]
+        except AdapterError as exc:
+            raise ReplacementUnreadableError(
+                repo, number, f"the open PRs at {repo}'s reviewed head {sha[:12]} could not be read ({exc}); nothing merged"
+            ) from exc
+        others = [p for p in listed if str(p.get("state", "")).lower() == "open" and p.get("number") != number]
+        if not others:
+            raise ReplacementRefusedError(
+                repo, number,
+                f"{repo}#{number} is closed, and no other PR is open at its reviewed head {sha[:12]}; "
+                "--accept-replacement has nothing to take",
+            )
+        if len(others) > 1:
+            names = ", ".join(f"#{p.get('number')}" for p in others)
+            raise ReplacementRefusedError(
+                repo, number,
+                f"{repo}#{number} is closed, and {len(others)} PRs are open at its reviewed head ({names}); "
+                "--accept-replacement takes exactly one",
+            )
+        new = others[0].get("number")
+        if not isinstance(new, int) or isinstance(new, bool):
+            raise ReplacementUnreadableError(repo, number, f"the host named no usable number for the open PR at {repo}'s reviewed head (got {new!r}); nothing merged")
+        want = group.get("base_branch")
+        if not want:
+            try:
+                member = recorded[(repo, number)]
+                want = adapter.pr_status(repo, number, **member_routing(adapter, repo, member)).ref.base_branch
+            except AdapterError as exc:
+                raise ReplacementUnreadableError(repo, number, f"the base of {repo}#{number} could not be read ({exc}); nothing merged") from exc
+        base = others[0].get("base")
+        if not want or not base:
+            missing = f"{repo}#{number}" if not want else f"#{new}"
+            raise ReplacementUnreadableError(repo, number, f"the base of {missing} could not be read; nothing merged")
+        if base != want:
+            raise ReplacementRefusedError(
+                repo, number,
+                f"{repo}#{number} is closed, and #{new} is open at its reviewed head, but #{new} targets {base} "
+                f"where {repo}#{number} targets {want}; nothing merged",
+            )
+        old_url = str(recorded[(repo, number)].get("url") or "")
+        url = others[0].get("url") or (old_url[: -len(str(number))] + str(new) if old_url.endswith(f"/{number}") else None)
+        found[repo] = {"old": number, "number": new, "url": url}
+    return found
+
+
+def _with_replacements(group: Mapping[str, object], replacements: Mapping[str, Mapping[str, Any]]) -> dict:
+    """A copy of the group with each replaced member's number (and url, where the record keeps one) swapped.
+    The record's shape is unchanged: no field is added."""
+    copy = json.loads(json.dumps(group))
+    for member in copy["prs"]:
+        swap = replacements.get(str(member["repo"]))
+        if swap and int(member["pr_number"]) == swap["old"]:
+            member["pr_number"] = swap["number"]
+            if "url" in member:
+                member["url"] = swap["url"]
+    return copy
 
 
 def group_routing(adapter: PlatformAdapter, group: Mapping[str, object]) -> dict[str, dict[str, RemoteTarget]]:
@@ -733,8 +834,13 @@ def merge_pr_group(
     verification_targets: Mapping[str, MergeVerificationTarget],
     report: Callable[[str], Any],
     expected_heads: Mapping[str, str] | None = None,
+    accept_replacement: bool = False,
 ) -> dict:
     """Merge all PRs, consuming host evidence before recording completion.
+
+    `accept_replacement`: a closed member is replaced by the ONE other open PR at its pinned head and on its
+    base (`find_replacements`). The swap is made in memory, the pin pass reads the replacement's host head,
+    and the record is rewritten only when the merge goes ahead, so every refusal leaves it as it was.
 
     `expected_heads` pins a member's reviewed head COMMIT by repo. Every pinned
     member is checked before the first merge, so a group whose bytes moved under
@@ -803,8 +909,12 @@ def merge_pr_group(
     routing = group_routing(adapter, group)
     # A closed member is refused after the refusals above and before the pin reads.
     closed = closed_members(adapter, group)
+    replacements: dict[str, dict[str, Any]] = {}
     if closed:
-        raise ClosedMembersError(closed)
+        if not accept_replacement:
+            raise ClosedMembersError(closed)
+        replacements = find_replacements(adapter, group, closed, pins)
+        group = _with_replacements(group, replacements)
     # Read EVERY pinned member before refusing, so the refusal names the whole
     # group, not just the first member that differs.
     members: list[dict[str, Any]] = []
@@ -853,6 +963,12 @@ def merge_pr_group(
             completed=[],
             members=members,
         )
+
+    if replacements:
+        # Every refusal is behind us: the merge goes ahead, so the record now names what it lands.
+        _replace_group_record(workspace_root, group)
+        for repo, swap in replacements.items():
+            report(f"replaced #{swap['old']} with #{swap['number']} ({repo})")
 
     for pr_info in group["prs"]:
         repo = str(pr_info["repo"])

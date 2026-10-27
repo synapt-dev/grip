@@ -599,7 +599,7 @@ class GitHubAdapter:
         state = "merged" if item.get("merged_at") else str(item.get("state") or "")
         return {"number": item.get("number"), "state": state, "draft": bool(item.get("draft")),
                 "head": (item.get("head") or {}).get("sha"), "head_branch": (item.get("head") or {}).get("ref"),
-                "base": (item.get("base") or {}).get("ref")}
+                "base": (item.get("base") or {}).get("ref"), "url": item.get("html_url")}
 
     def pr_for_head(self, repo: str, sha: str) -> list[dict]:
         """Open PRs whose head commit is exactly ``sha``."""

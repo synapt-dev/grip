@@ -12,6 +12,7 @@ import signal
 import subprocess
 import sys
 import tomllib
+import urllib.parse
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Annotated, List, Mapping, NoReturn, Optional
@@ -4177,11 +4178,15 @@ def _unpushed_commits(repo: Path, *, fetch: bool = True, removing: Path | None =
 def _remote_url_local_path(url: str) -> str | None:
     """The local path a remote URL names, or None when it names another machine.
     A drive path (C:/x, C:\\x) is local, not the scp-like host:path form; file:// with no host or localhost
-    names /<path>; another host is a UNC share on Windows, while git elsewhere ignores it and reads /<path> here."""
+    names /<path>, or <path> itself on Windows when it starts with a drive; git decodes its percent escapes;
+    another host is a UNC share on Windows, while git elsewhere ignores it and reads /<path> here."""
     if url.startswith("file://"):
         host, _, path = url[len("file://"):].partition("/")
         if host not in ("", "localhost") and os.name == "nt":
             return None  # a UNC share on Windows; git elsewhere ignores the host and reads /<path> here
+        path = urllib.parse.unquote(path)
+        if os.name == "nt" and re.match(r"[A-Za-z]:[/\\]", path):
+            return path  # git on Windows reads file:///C:/x as C:/x
         return "/" + path
     if len(url) >= 3 and url[0].isascii() and url[0].isalpha() and url[1] == ":" and url[2] in "/\\":
         return url

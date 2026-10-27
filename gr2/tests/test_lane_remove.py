@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import urllib.parse
 from pathlib import Path
 
 import pytest
@@ -760,6 +761,26 @@ def test_a_file_url_naming_another_host_is_a_share_on_windows(monkeypatch) -> No
 def test_a_file_url_naming_another_host_names_the_absolute_path_off_windows(monkeypatch) -> None:
     monkeypatch.setattr(gr2_app.os, "name", "posix")
     assert gr2_app._remote_url_local_path("file://otherhost/abs") == "/abs"
+
+
+@pytest.mark.parametrize("url", ["file:///C:/x", "file://localhost/C:/x"])
+def test_a_file_url_naming_a_drive_path_is_that_drive_path_on_windows(url: str, monkeypatch) -> None:
+    monkeypatch.setattr(gr2_app.os, "name", "nt")
+    assert gr2_app._remote_url_local_path(url) == "C:/x"
+
+
+def test_a_file_url_names_its_percent_decoded_path() -> None:
+    assert gr2_app._remote_url_local_path("file:///tmp/a%20b") == "/tmp/a b"
+
+
+def test_a_percent_encoded_file_url_inside_the_checkout_root_does_not_hold_a_tagged_commit(tmp_path: Path) -> None:
+    """git decodes a file URL's percent escapes, so file://<lane path with %20> is the lane; its own tag stays listed."""
+    ws, repo, tagged = _lane_with_a_local_tag_commit(tmp_path / "a b")
+    assert " " in str(repo)
+    _git(repo, "remote", "add", "self", "file://" + urllib.parse.quote(str(repo)))
+    assert "%20" in _git(repo, "remote", "get-url", "self")
+    assert tagged in _git(repo, "ls-remote", "--tags", "self")
+    _refused_untouched(ws, repo, _remove(ws), "lane_has_unpushed_commit", tagged[:12])
 
 
 def test_a_sibling_remote_inside_the_checkout_root_does_not_hold_a_tagged_commit(tmp_path: Path) -> None:

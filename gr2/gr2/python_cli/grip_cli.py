@@ -383,17 +383,26 @@ def _no_spec_message(root: Path) -> str:
     (a member checkout, or a directory in one) is named with the root above, found by the top-level verbs' own walk
     (`root_verbs.find`), because "store init here" would nest a second store inside a member.
     A griplink root above takes no store verb, so it is named without one."""
-    from . import root_verbs
-
     head = f"no grip.toml at {root} and no committed spec at HEAD; "
-    above = root_verbs.find(Path(root).resolve().parent)
-    if above is not None and above.shape == root_verbs.STORE:
-        return (head + f"{root} is inside the store at {above.path}, not a store root -- run this verb from "
-                f"{above.path}, or name it with -C {shlex.quote(str(above.path))}")
-    if above is not None:
-        return head + f"{root} is inside the griplink workspace at {above.path}, and store verbs do not act on a griplink root"
+    inside = _inside_workspace_message(root)
+    if inside is not None:
+        return head + inside
     return (head + "this root is not a store these verbs can measure -- run gr2 store init here (for full mode: "
             "gr2 store init --mode full <new dir> --clone NAME=URL for each member)")
+
+
+def _inside_workspace_message(root: Path) -> str | None:
+    """The workspace root above a root that is not one (a member checkout, or a directory in one), named for a
+    refusal; None when nothing above is a workspace, where init advice belongs."""
+    from . import root_verbs
+
+    above = root_verbs.find(Path(root).resolve().parent)
+    if above is not None and above.shape == root_verbs.STORE:
+        return (f"{root} is inside the store at {above.path}, not a store root -- run this verb from "
+                f"{above.path}, or name it with -C {shlex.quote(str(above.path))}")
+    if above is not None:
+        return f"{root} is inside the griplink workspace at {above.path}, and store verbs do not act on a griplink root"
+    return None
 
 
 def _workspace_mode(document: dict) -> str:
@@ -1630,7 +1639,7 @@ def _native_store_add(root: Path, name: str, url: str, ref: str | None = None) -
     path in `.gitinclude`, its line in `.gitmodules`. A name already recorded, or a path already on disk, refuses at 4
     before anything is cloned. The root commit is left to `store commit`, as after `store init`."""
     if not ((root / ".git").exists() and (root / "grip.toml").exists()):
-        raise NativeStoreRefusal(f"{root} is not a store; run store init first", 4)
+        raise NativeStoreRefusal(_inside_workspace_message(root) or f"{root} is not a store; run store init first", 4)
     url = _clone_url(url)
     if _url_has_credentials(url):
         raise _credential_refusal(name)
@@ -4399,6 +4408,9 @@ def grip_migrate_reviews_cmd(
     except grip_mod.GripCorruptError as exc:
         typer.echo(f"refused: {exc}", err=True)
         raise typer.Exit(code=4)
+    except grip_mod.GripInitError as exc:
+        typer.echo(f"refused: {exc}", err=True)
+        raise typer.Exit(code=5)
     if json_output:
         typer.echo(json.dumps({"receipt": str(receipt), "rows": rows}))
     else:

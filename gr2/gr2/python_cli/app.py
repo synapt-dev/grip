@@ -5772,7 +5772,11 @@ def _echo_sparse_note(result: dict[str, str]) -> None:
     actually left out (skip-worktree entries), since a profile of `/*` turns sparse mode on and excludes
     nothing."""
     lane = str(result["lane"])
-    listed = subprocess.run(["git", "-C", lane, "ls-files", "-t"], capture_output=True, text=True)
+    listed = gitops.run(Path(lane), "ls-files", "-t")
+    if listed.returncode != 0:
+        typer.echo(f"sparse: cannot list the lane's files ({listed.stderr.strip()[:120]}); "
+                   f"a grep inside it may not cover the tree")
+        return
     entries = listed.stdout.splitlines()
     skipped = sum(1 for entry in entries if entry.startswith("S "))
     if not skipped:

@@ -286,3 +286,14 @@ def test_a_profiled_open_of_two_members_says_it_for_the_sparse_member(tmp_path: 
     line = _note(profile, lanes / "alpha", _git(lanes / "alpha", "rev-parse", "HEAD"))
     assert out.output.splitlines().count(line) == 1, out.output
     assert out.output.count("sparse: ") == 1, out.output
+
+
+def test_a_lane_git_cannot_list_says_so_and_prints_no_count(tmp_path: Path, monkeypatch, capsys) -> None:
+    lane = tmp_path / "not-a-repo"
+    lane.mkdir()
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    gr2_app._echo_sparse_note({"lane": str(lane), "profile": "p", "reconstructed_head": "0" * 40})
+    out = capsys.readouterr().out
+    assert out.startswith("sparse: cannot list the lane's files ("), out
+    assert out.count("sparse: ") == 1, out
+    assert " files not checked out" not in out

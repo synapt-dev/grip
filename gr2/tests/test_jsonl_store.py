@@ -22,6 +22,7 @@ from pathlib import Path
 
 import pytest
 from gr2.prototypes.jsonl_store import (
+    MAX_JSON_DEPTH,
     JsonlRead,
     append_jsonl,
     read_jsonl,
@@ -161,6 +162,50 @@ def test_w2_hostile_line_content_neither_bricks_nor_vanishes(label: str, tmp_pat
     assert [row["n"] for row in read.rows] == [1, 2]
     assert len(read.malformed) == 1
     assert read.malformed[0].reason
+
+
+def _read_between_two_rows(tmp_path: Path, line: str) -> JsonlRead:
+    path = tmp_path / "log" / "events.jsonl"
+    append_jsonl(path, {"n": 1})
+    with path.open("ab") as handle:
+        handle.write(line.encode("utf-8") + b"\n")
+    append_jsonl(path, {"n": 2})
+    return read_jsonl(path)
+
+
+def _nested(depth: int) -> str:
+    """An object holding arrays, ``depth`` levels counting the object itself."""
+    return '{"n": ' + "[" * (depth - 1) + "]" * (depth - 1) + "}"
+
+
+def test_w2_a_line_nested_exactly_to_the_bound_is_kept(tmp_path: Path) -> None:
+    read = _read_between_two_rows(tmp_path, _nested(MAX_JSON_DEPTH))
+    assert len(read.rows) == 3
+    assert read.malformed == ()
+
+
+def test_w2_a_line_nested_past_the_bound_is_malformed_on_every_python(tmp_path: Path) -> None:
+    """Some interpreters raise on deep nesting and some parse it, so the bound is
+    checked before the parser runs and every interpreter gives the same answer."""
+    read = _read_between_two_rows(tmp_path, _nested(MAX_JSON_DEPTH + 1))
+    assert [row["n"] for row in read.rows] == [1, 2]
+    assert len(read.malformed) == 1
+    assert str(MAX_JSON_DEPTH) in read.malformed[0].reason
+
+
+def test_w2_brackets_inside_a_string_do_not_count_as_nesting(tmp_path: Path) -> None:
+    read = _read_between_two_rows(tmp_path, '{"n": "' + "[" * 100000 + '"}')
+    assert read.malformed == ()
+    assert read.rows[1]["n"] == "[" * 100000
+
+
+def test_w2_an_escaped_quote_does_not_end_the_string(tmp_path: Path) -> None:
+    """Past the bound, so a scanner that took the escaped quote as the end of the
+    string would count every bracket after it and call the line malformed."""
+    brackets = "[" * (MAX_JSON_DEPTH + 1)
+    read = _read_between_two_rows(tmp_path, '{"n": "\\"' + brackets + '"}')
+    assert read.malformed == ()
+    assert read.rows[1]["n"] == '"' + brackets
 
 
 # --------------------------------------------------------------------------- W3

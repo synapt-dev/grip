@@ -33,6 +33,8 @@ from pathlib import Path
 
 from gr2.prototypes.propagation_state_machine import MalformedLine
 
+MAX_JSON_DEPTH = 512
+
 
 @dataclass(frozen=True)
 class JsonlRead:
@@ -60,9 +62,41 @@ def _decode_line(raw: bytes) -> tuple[str | None, str]:
         return None, str(exc)
 
 
+def _nests_deeper_than(line: str, bound: int) -> bool:
+    """One pass over the line, counting ``[`` and ``{`` outside strings.
+
+    Deep nesting raises ``RecursionError`` on some interpreters and parses on
+    others, so the bound is checked before the parser runs and every interpreter
+    gives the same answer. Unbalanced brackets are left to ``json.loads``.
+    """
+
+    depth = 0
+    in_string = False
+    escaped = False
+    for char in line:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+        elif char == '"':
+            in_string = True
+        elif char in "[{":
+            depth += 1
+            if depth > bound:
+                return True
+        elif char in "]}":
+            depth -= 1
+    return False
+
+
 def _read_object(line: str) -> tuple[dict | None, str]:
     """``json.loads`` is the only operation over a decoded line that can raise."""
 
+    if _nests_deeper_than(line, MAX_JSON_DEPTH):
+        return None, f"line nests deeper than {MAX_JSON_DEPTH}"
     try:
         obj = json.loads(line)
     except (ValueError, RecursionError) as exc:

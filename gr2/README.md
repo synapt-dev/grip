@@ -255,7 +255,7 @@ in the same JSON payload, and a missing reviewer remains a reported status with 
 A bare `gr2 review open <workspace>` uses the workspace's sole pinned review. Its default directory is `<workspace>.review/<sha8>` in the workspace's parent directory, and the command announces that path on stderr. Give `--lane-dir` to choose another location.
 
 New pinned reviews record the author's Git `user.name` from the workspace root.
-Set it with `git config user.name 'Your Name'` there if Git has no configured name.
+If Git has no configured name, run `export GIT_AUTHOR_NAME='Your Name'` (this shell only) or `git config --global user.name 'Your Name'`.
 `review show --json` and `review verify --json` include this author; older pinned reviews
 remain readable without an author field, and reading them does not invent one.
 

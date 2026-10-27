@@ -5767,11 +5767,17 @@ def _emit_review_opened(workspace_root: Path, sha: str, lane_dir: Path, results:
 
 def _echo_sparse_note(result: dict[str, str]) -> None:
     """A lane cloned sparse by a profile holds only the profile's paths, so a grep inside it that finds no
-    callers is not a census. Say so once, and name where the whole tree can be searched."""
-    if result["profile"] == "none":
+    callers is not a census. Say so once, and name the search that covers the whole tree: the lane holds
+    the head, and its blobless clone fetches the paths left out when a grep needs them. Keyed on the lane
+    actually being sparse, since an empty profile leaves it whole."""
+    lane = str(result["lane"])
+    sparse = subprocess.run(["git", "-C", lane, "config", "--bool", "core.sparseCheckout"],
+                            capture_output=True, text=True)
+    if sparse.stdout.strip() != "true":
         return
-    typer.echo(f"sparse: profile {shlex.quote(result['profile'])}; paths outside it are not in this lane; "
-               f"grep the mirror (git grep {shlex.quote(result['reconstructed_head'])}) for callers")
+    typer.echo(f"sparse: profile {shlex.quote(result['profile'])}; paths outside it are not checked out here; "
+               f"search the whole tree with git -C {shlex.quote(lane)} grep <pattern> "
+               f"{shlex.quote(result['reconstructed_head'])}")
 
 
 @review_app.command("open-gr", hidden=True, cls=json_refusing(RootOptionalCommand))  # hidden alias for one release, dropped at 2.0 GA

@@ -189,12 +189,15 @@ def _open(tmp_path: Path, *, profile: bool):
     return out.output, lane
 
 
+def _note(profile: str, lane: Path, head: str) -> str:
+    return (f"sparse: profile {shlex.quote(profile)}; paths outside it are not checked out here; "
+            f"search the whole tree with git -C {shlex.quote(str(lane))} grep <pattern> {shlex.quote(head)}")
+
+
 def test_a_profiled_open_says_once_that_the_lane_is_sparse(tmp_path: Path) -> None:
     output, lane = _open(tmp_path, profile=True)
     profile = next(l for l in output.splitlines() if l.startswith("source: ")).split("profile: ", 1)[1]
-    head = _git(lane, "rev-parse", "HEAD")
-    line = (f"sparse: profile {shlex.quote(profile)}; paths outside it are not in this lane; "
-            f"grep the mirror (git grep {head}) for callers")
+    line = _note(profile, lane, _git(lane, "rev-parse", "HEAD"))
     assert output.splitlines().count(line) == 1, output
     assert output.count("sparse: ") == 1
 
@@ -205,8 +208,48 @@ def test_a_profile_less_open_says_nothing_about_sparse(tmp_path: Path) -> None:
     assert "sparse: " not in output
 
 
-def test_the_printed_sha_is_the_head_the_lane_holds(tmp_path: Path) -> None:
+def test_the_printed_search_finds_a_path_the_profile_left_out(tmp_path: Path) -> None:
     output, lane = _open(tmp_path, profile=True)
-    shown = re.search(r"\(git grep (\S+)\) for callers", output).group(1)
-    assert shown == _git(lane, "rev-parse", "HEAD")
-    assert f"reconstructed_head: {shown}" in output
+    assert not (lane / "bulk").exists()
+    line = next(l for l in output.splitlines() if l.startswith("sparse: "))
+    cmd = line.split("search the whole tree with ", 1)[1].replace("<pattern>", "bulk")
+    argv = shlex.split(cmd)
+    assert argv[-1] == _git(lane, "rev-parse", "HEAD")
+    assert f"reconstructed_head: {argv[-1]}" in output
+    ran = subprocess.run(argv, text=True, capture_output=True)
+    assert ran.returncode == 0, ran.stderr
+    assert f"{argv[-1]}:bulk/big.txt:bulk" in ran.stdout.splitlines(), ran.stdout
+
+
+def test_an_empty_fallback_profile_leaves_the_lane_whole_and_says_nothing(tmp_path: Path, monkeypatch) -> None:
+    pdir = tmp_path / "profiles"
+    pdir.mkdir()
+    (pdir / "alpha.exclude").write_text("")
+    monkeypatch.setenv("SYNAPT_REVIEW_PROFILE_DIR", str(pdir))
+    ws, commit, _ = _bound(tmp_path, profile=False)
+    lane = tmp_path / "lane"
+    out = CliRunner().invoke(gr2_app.app, ["review", "open", str(ws), f"gr:{commit}", "--lane-dir", str(lane)])
+    assert out.exit_code == 0, out.output
+    assert "profile: fallback " in out.output
+    assert (lane / "bulk" / "big.txt").exists()
+    assert "sparse: " not in out.output
+
+
+def test_a_profiled_open_of_two_members_says_it_for_the_sparse_member(tmp_path: Path) -> None:
+    ws = tmp_path / "ws"
+    (ws / ".grip").mkdir(parents=True)
+    native_root(ws)
+    rows = []
+    for name, profile in (("alpha", True), ("beta", False)):
+        remote, base, head, patch = _remote_with_bulk(tmp_path, profile=profile, name=name)
+        rows.append({"key": name, "remote": remote, "path": f"repos/{name}", "base": base, "head": head,
+                     "ref": "refs/heads/main", "range_patch": patch})
+    commit = grip.create_review_bind_commit(ws, rows)
+    lanes = tmp_path / "lanes"
+    out = CliRunner().invoke(gr2_app.app, ["review", "open", str(ws), f"gr:{commit}", "--lane-dir", str(lanes)])
+    assert out.exit_code == 0, out.output
+    alpha = next(l for l in out.output.splitlines() if l.startswith("alpha: "))
+    profile = alpha.split(" profile=", 1)[1]
+    line = _note(profile, lanes / "alpha", _git(lanes / "alpha", "rev-parse", "HEAD"))
+    assert out.output.splitlines().count(line) == 1, out.output
+    assert out.output.count("sparse: ") == 1, out.output

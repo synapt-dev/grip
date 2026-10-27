@@ -10,7 +10,9 @@ Only the short framing at the top is hand-written, in ``api/skill.intro.md``.
 The gate is ``tests/test_skill_dump.py``: the committed file must equal what this renders
 now, so a change to a verb, a default or a next step changes the skill in the same PR.
 
-Run from ``gr2/``: ``python scripts/dump_skill.py > api/skill.md``.
+Run from ``gr2/``: ``python scripts/dump_skill.py --write``. It writes ``api/skill.md`` and its byte
+copy ``gr2/AGENT_GUIDE.md`` (the page ``gr2 help agent`` prints from the installed package) from one
+render, so the two cannot drift. With no argument it prints the render to stdout.
 """
 from __future__ import annotations
 
@@ -30,6 +32,8 @@ from gr2.python_cli import next_steps  # noqa: E402
 from gr2.python_cli.app import app  # noqa: E402
 
 INTRO = GR2 / "api" / "skill.intro.md"
+SKILL = GR2 / "api" / "skill.md"
+AGENT_GUIDE = GR2 / "gr2" / "AGENT_GUIDE.md"
 
 # The verbs the skill's first screen names, in the order an operator meets them: the workspace move (its verb map
 # and recipes), then the review flow. A curated list, not the whole app: the skill is for these two jobs.
@@ -124,5 +128,17 @@ def render() -> str:
     return "\n".join(out).rstrip("\n") + "\n"
 
 
+def write(*paths: Path) -> None:
+    """Write one render to every path, as bytes, so the copies are equal by construction."""
+    data = render().encode("utf-8")
+    for path in paths:
+        path.write_bytes(data)
+
+
 if __name__ == "__main__":
-    sys.stdout.write(render())
+    if sys.argv[1:] == ["--write"]:
+        write(SKILL, AGENT_GUIDE)
+    elif sys.argv[1:]:
+        raise SystemExit("usage: dump_skill.py [--write]")
+    else:
+        sys.stdout.write(render())

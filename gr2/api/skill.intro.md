@@ -9,7 +9,7 @@ Use gr2 when one piece of work spans several repositories. Inside a single repos
 
 ## This page is the help
 
-Everything an operator needs for the jobs below is on this page, and the reference at the end of this file is generated from this version's own code. Read `gr2 <verb> --help` only for a verb this page does not cover. If a verb refuses, read its refusal: it names the condition and usually prints the next command.
+Everything an operator needs for the jobs below is on this page, and the reference at the end of this file is generated from this version's own code. An installed gr2 prints this page with `gr2 help agent`. Read `gr2 <verb> --help` only for a verb this page does not cover. If a verb refuses, read its refusal: it names the condition and usually prints the next command.
 
 ## Verb map (one line each)
 

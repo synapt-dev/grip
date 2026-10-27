@@ -316,6 +316,62 @@ class TestLifecycleEdgeCases:
 
 
 # ---------------------------------------------------------------------------
+# 3b. Hook output that is not valid UTF-8
+# ---------------------------------------------------------------------------
+
+def _capture_outcomes(monkeypatch) -> list[dict]:
+    sent: list[dict] = []
+    monkeypatch.setattr(
+        "gr2.python_cli.hooks.emit_after_outcome",
+        lambda **kwargs: sent.append(kwargs),
+    )
+    return sent
+
+
+def _run_one(workspace: Path, command: str) -> list[HookResult]:
+    ctx = _make_ctx(workspace)
+    hook = LifecycleHook(
+        stage="on_exit", name="noisy", command=command,
+        cwd=str(ctx.repo_root), when="always", on_failure="warn",
+    )
+    hooks = _make_hooks(lifecycle=[hook], stage="on_exit")
+    return run_lifecycle_stage(
+        hooks, "on_exit", ctx,
+        repo_dirty=False, first_materialize=False,
+    )
+
+
+class TestNonUtf8HookOutput:
+    def test_non_utf8_stderr_failure_is_a_normal_failure(self, workspace: Path, monkeypatch):
+        sent = _capture_outcomes(monkeypatch)
+        results = _run_one(workspace, "printf 'boom \\377 here' >&2; exit 3")
+        assert results[0].status == "warned"
+        failed = [e for e in sent if e["event_type"].name == "HOOK_FAILED"]
+        assert len(failed) == 1
+        assert failed[0]["payload"]["exit_code"] == 3
+        assert "boom" in failed[0]["payload"]["stderr_tail"]
+        assert "here" in failed[0]["payload"]["stderr_tail"]
+
+    def test_non_utf8_stdout_success_completes(self, workspace: Path, monkeypatch):
+        sent = _capture_outcomes(monkeypatch)
+        results = _run_one(workspace, "printf 'ok \\377\\n'")
+        assert results[0].status == "applied"
+        assert [e["event_type"].name for e in sent] == ["HOOK_COMPLETED"]
+
+    def test_failure_text_carries_replacement_character(self, workspace: Path, monkeypatch):
+        sent = _capture_outcomes(monkeypatch)
+        _run_one(workspace, "printf 'a\\377b' >&2; exit 3")
+        failed = [e for e in sent if e["event_type"].name == "HOOK_FAILED"]
+        assert failed[0]["payload"]["stderr_tail"] == "a�b"
+
+    def test_utf8_output_comes_through_exact(self, workspace: Path, monkeypatch):
+        _capture_outcomes(monkeypatch)
+        results = _run_one(workspace, "printf 'caf\\303\\251\\n'")
+        assert results[0].status == "applied"
+        assert results[0].stdout == "café\n"
+
+
+# ---------------------------------------------------------------------------
 # 4. File projection conflict handling
 # ---------------------------------------------------------------------------
 

@@ -941,6 +941,7 @@ def run_lifecycle_stage(
             shell=True,
             capture_output=True,
             text=True,
+            errors="replace",
         )
         duration_ms = int((time.monotonic() - t0) * 1000)
         if proc.returncode == 0:

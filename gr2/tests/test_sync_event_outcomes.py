@@ -50,6 +50,8 @@ def test_strict_sync_started_failure_releases_acquired_lock(
     released: list[object] = []
     monkeypatch.setattr(syncops, "_acquire_sync_lock", lambda _root: lock)
     monkeypatch.setattr(syncops, "_release_sync_lock", released.append)
+    # run_sync asks for the spec before it locks; these rows stub the plan, so the spec seam is stubbed with it
+    monkeypatch.setattr(syncops, "_require_spec", lambda root: root / ".grip" / "workspace_spec.toml")
     monkeypatch.setattr(syncops, "build_sync_plan", lambda *_args, **_kwargs: _empty_plan(tmp_path))
     monkeypatch.setattr(
         syncops,
@@ -89,6 +91,8 @@ def test_strict_blocked_event_failure_releases_acquired_lock(
     )
     monkeypatch.setattr(syncops, "_acquire_sync_lock", lambda _root: lock)
     monkeypatch.setattr(syncops, "_release_sync_lock", released.append)
+    # run_sync asks for the spec before it locks; these rows stub the plan, so the spec seam is stubbed with it
+    monkeypatch.setattr(syncops, "_require_spec", lambda root: root / ".grip" / "workspace_spec.toml")
     monkeypatch.setattr(syncops, "build_sync_plan", lambda *_args, **_kwargs: blocked_plan)
 
     def fail_second_event(*_args, **_kwargs):

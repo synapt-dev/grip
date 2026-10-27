@@ -382,8 +382,13 @@ def _no_spec_message(root: Path) -> str:
     """The refusal for a root with no spec. Init advice only where init belongs: a root that sits inside a workspace
     (a member checkout, or a directory in one) is named with the root above, found by the top-level verbs' own walk
     (`root_verbs.find`), because "store init here" would nest a second store inside a member.
-    A griplink root above takes no store verb, so it is named without one."""
+    A griplink root above takes no store verb, so it is named without one, and a full-mode root itself (which the
+    walk now finds) is named as one, never told to init: it is already a workspace."""
+    from .workspace_guidance import full_mode_not_yet_sentence, is_full_mode_root
+
     head = f"no grip.toml at {root} and no committed spec at HEAD; "
+    if is_full_mode_root(Path(root)):
+        return head + full_mode_not_yet_sentence(Path(root))
     inside = _inside_workspace_message(root)
     if inside is not None:
         return head + inside

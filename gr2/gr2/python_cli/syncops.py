@@ -245,6 +245,24 @@ def _plan_repo_names(plan: SyncPlan) -> list[str]:
     return sorted(dict.fromkeys(repo_names))
 
 
+def _require_spec(workspace_root: Path) -> Path:
+    """Return the spec path; refuse, writing nothing, when the root has no spec to sync from. `run_sync` asks this before it takes its
+    lock: the lock lives under .grip/state, so a refusal reached after it left a .grip/ behind, and every later verb
+    on that root read the stray directory as a broken store."""
+    spec_path = workspace_spec_path(workspace_root)
+    # A native root with no spec file is answered by the spec derived from grip.toml (spec_apply.derived_spec_doc).
+    if not spec_path.exists() and derived_spec_doc(workspace_root) is None:
+        next_step = init_unless_inside_workspace(
+            workspace_root,
+            f"run {workspace_init_command(workspace_root)} first or create .grip/workspace_spec.toml explicitly",
+        )
+        raise SystemExit(
+            f"workspace spec not found: {spec_path}\n"
+            f"{next_step}"
+        )
+    return spec_path
+
+
 def build_sync_plan(
     workspace_root: Path, *, dirty_mode: str = "block", probe_remotes: bool = False
 ) -> SyncPlan:
@@ -257,17 +275,7 @@ def build_sync_plan(
     second network round trip ahead of that would add nothing)."""
     workspace_root = workspace_root.resolve()
     dirty_mode = _normalize_dirty_mode(dirty_mode)
-    spec_path = workspace_spec_path(workspace_root)
-    # A native root with no spec file is answered by the spec derived from grip.toml (spec_apply.derived_spec_doc).
-    if not spec_path.exists() and derived_spec_doc(workspace_root) is None:
-        next_step = init_unless_inside_workspace(
-            workspace_root,
-            f"run {workspace_init_command(workspace_root)} first or create .grip/workspace_spec.toml explicitly",
-        )
-        raise SystemExit(
-            f"workspace spec not found: {spec_path}\n"
-            f"{next_step}"
-        )
+    spec_path = _require_spec(workspace_root)
 
     issues: list[SyncIssue] = []
     operations: list[SyncOperation] = []
@@ -827,6 +835,7 @@ def run_sync(workspace_root: Path, *, dirty_mode: str = "block") -> SyncResult:
     dirty_mode = _normalize_dirty_mode(dirty_mode)
     operation_id = _operation_id()
     started_at = time.monotonic()
+    _require_spec(workspace_root)
     lock_fh = _acquire_sync_lock(workspace_root)
     if lock_fh is None:
         blocked_issue = SyncIssue(

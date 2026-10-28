@@ -30,7 +30,7 @@ import shlex
 import unicodedata
 from pathlib import Path
 
-from . import gitops
+from . import declared_sets, gitops
 from .clone_exec import IncompleteRemoval, rmtree_or_refuse
 
 NS = "refs/dev.synapt.grip"
@@ -333,28 +333,29 @@ def add(root: Path, m: str, url: str) -> str:
     return _cut(root, f"add {m} at {pin[:7]}", [_git(root, "rev-parse", "HEAD")])[1]
 
 
-_SET_NAME = re.compile(r"[A-Za-z0-9._-]+")
-
-
 def _check_set_name(name: str) -> None:
     """A gr2-set name is a config value and later a gate's word, so it is a plain name or it is refused."""
-    if not isinstance(name, str) or not _SET_NAME.fullmatch(name):
+    if not isinstance(name, str) or not declared_sets.SET_NAME.fullmatch(name):
         raise GriplinkRefusal(f"{name!r}: not a set name gr2 takes (letters, digits, '.', '_' and '-'); nothing was "
                               "changed", 4)
 
 
-def _set_lines(root: Path, m: str, names: list[str]) -> None:
-    """Write member m's gr2-set lines in .gitmodules: every name checked before any write, then the member's old lines
-    unset and one line per name, sorted and once each. Every other key and section is kept (git config -f, as add)."""
+def _set_lines(root: Path, m: str, name: str | None) -> None:
+    """Write member m's ONE gr2-set line in .gitmodules (spec 14.1: at most one per member), or clear it with None: the
+    name checked before any write, then the member's old lines unset and the one line added. Every other key and
+    section is kept (git config -f, as add). More than one name is refused, in the reader's words."""
     _check_name(m)
-    for name in names:
+    if isinstance(name, (list, tuple, set)):
+        raise GriplinkRefusal(f"member {m!r}: {declared_sets.ONE_SET_PER_MEMBER}, so it takes one set name, got "
+                              f"{list(name)!r}; nothing was changed", 4)
+    if name is not None:
         _check_set_name(name)
     gm = str(root / ".gitmodules")
     args = ("config", "-f", gm, "--unset-all", f"submodule.{m}.gr2-set")
     proc = gitops.run(root, *args)
     if proc.returncode not in (0, 5):  # 5: there was no line to unset
         raise gitops.GitError(args, proc.returncode, proc.stderr)
-    for name in sorted(set(names)):
+    if name is not None:
         _git(root, "config", "-f", gm, "--add", f"submodule.{m}.gr2-set", name)
 
 

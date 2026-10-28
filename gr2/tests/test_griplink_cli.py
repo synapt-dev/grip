@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from gr2.python_cli import griplink
+from gr2.python_cli import declared_sets, griplink
 from gr2.python_cli.app import app
 from gr2.python_cli.grip_cli import STORE_COMMIT_UNCHANGED
 
@@ -288,9 +288,9 @@ def _section(root: Path, m: str) -> list[str]:
     return lines
 
 
-def _commit_set_lines_for_fixture(root: Path, m: str, *names: str) -> None:
+def _commit_set_lines_for_fixture(root: Path, m: str, name: str) -> None:
     # no verb writes gr2-set yet, so the fixture uses the helper the verb will call
-    griplink._set_lines(root, m, list(names))
+    griplink._set_lines(root, m, name)
     git(root, "add", ".gitmodules")
     griplink._cut(root, f"set {m}", [git(root, "rev-parse", "HEAD")])
 
@@ -310,9 +310,9 @@ def _two_roots(world, monkeypatch) -> Path:
 
 def test_add_of_a_second_member_keeps_the_first_members_gr2_set_lines(world, monkeypatch):
     root = world["root"]
-    _commit_set_lines_for_fixture(root, "api", "billing", "auth")
+    _commit_set_lines_for_fixture(root, "api", "billing")
     api = _section(root, "api")
-    assert api[-2:] == ["gr2-set = auth", "gr2-set = billing"], api
+    assert api[-1:] == ["gr2-set = billing"], api
     r = gr2(root, monkeypatch, "add", str(_web(world)), "web")
     assert r.exit_code == 0, r.stderr
     assert _section(root, "api") == api
@@ -363,28 +363,49 @@ def test_fast_forward_pull_keeps_mine_and_brings_theirs_set_lines(world, monkeyp
     assert _section(root, "api")[-1] == "gr2-set = billing" and _section(root, "web")[-1] == "gr2-set = auth"
 
 
-def test_set_lines_writes_one_members_names_sorted_and_keeps_other_keys(world, monkeypatch):
+def test_set_lines_writes_one_name_replacing_the_old_line_and_keeps_other_keys(world, monkeypatch):
     root = world["root"]
     assert gr2(root, monkeypatch, "add", str(_web(world)), "web").exit_code == 0
     gm = str(root / ".gitmodules")
     git(root, "config", "-f", gm, "--add", "submodule.web.gr2-set", "auth")
     git(root, "config", "-f", gm, "--add", "submodule.api.gr2-set", "old")
     api, web = _section(root, "api"), _section(root, "web")
-    griplink._set_lines(root, "api", ["b", "a", "a"])
-    assert _section(root, "api") == api[:-1] + ["gr2-set = a", "gr2-set = b"]
+    griplink._set_lines(root, "api", "a")
+    assert _section(root, "api") == api[:-1] + ["gr2-set = a"]
     assert _section(root, "web") == web
-    griplink._set_lines(root, "web", ["a.b_c-1"])
+    griplink._set_lines(root, "web", "a.b_c-1")
     assert _section(root, "web") == web[:-1] + ["gr2-set = a.b_c-1"]
 
 
-@pytest.mark.parametrize("bad", ["c#d", "a b", "x;y", "", "é", None, 7])
+def test_set_lines_none_clears_the_members_line_and_keeps_other_keys(world, monkeypatch):
+    root = world["root"]
+    git(root, "config", "-f", str(root / ".gitmodules"), "--add", "submodule.api.gr2-set", "old")
+    api = _section(root, "api")
+    griplink._set_lines(root, "api", None)
+    assert _section(root, "api") == api[:-1]
+
+
+def test_set_lines_refuses_a_second_name_in_the_readers_words_and_writes_nothing(world):
+    # spec 14.1 (one gr2-set line per member): the writer refuses a second name with the sentence the reader uses
+    root = world["root"]
+    git(root, "config", "-f", str(root / ".gitmodules"), "--add", "submodule.api.gr2-set", "old")
+    before = _root_state(root)
+    with pytest.raises(griplink.GriplinkRefusal) as exc:
+        griplink._set_lines(root, "api", ["b", "a"])
+    assert _root_state(root) == before
+    assert _section(root, "api")[-1] == "gr2-set = old"
+    assert exc.value.code == 4 and str(exc.value).startswith(
+        f"member 'api': {declared_sets.ONE_SET_PER_MEMBER}, so it takes one set name, got ['b', 'a']"), str(exc.value)
+
+
+@pytest.mark.parametrize("bad", ["c#d", "a b", "x;y", "", "é", 7])
 def test_set_lines_refuses_a_name_outside_the_set_charset_and_writes_nothing(world, bad):
     root = world["root"]
     # api already has a line, so a refusal that came after the old lines were unset would lose it
     git(root, "config", "-f", str(root / ".gitmodules"), "--add", "submodule.api.gr2-set", "old")
     before = _root_state(root)
     with pytest.raises(griplink.GriplinkRefusal) as exc:
-        griplink._set_lines(root, "api", ["ok", bad])
+        griplink._set_lines(root, "api", bad)
     assert _root_state(root) == before
     assert _section(root, "api")[-1] == "gr2-set = old"
     assert exc.value.code == 4 and str(exc.value).startswith(f"{bad!r}: not a set name gr2 takes"), str(exc.value)
@@ -396,7 +417,7 @@ def test_set_lines_refuses_a_member_name_gr2_does_not_take_and_writes_nothing(wo
     root = world["root"]
     before = _root_state(root)
     with pytest.raises(griplink.GriplinkRefusal) as exc:
-        griplink._set_lines(root, bad, ["ok"])
+        griplink._set_lines(root, bad, "ok")
     assert _root_state(root) == before
     assert exc.value.code == 3 and str(exc.value).startswith(f"{bad!r}: not a member name gr2 takes"), str(exc.value)
 

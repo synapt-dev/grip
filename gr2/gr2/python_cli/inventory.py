@@ -72,6 +72,9 @@ def footprint(root: Path) -> list[Row]:
     # One row per top-level entry of `.grip/`, not one for the dir: `checkouts/` is gr1's, so each checkout is NOT-GR2,
     # named with the gr1 verb that removes it, and stays out of remove_bytes.
     grip_dir = layout.grip_dir(root)
+    # A symlinked `.grip` is one row for the link itself, never followed: the store behind it gets no rows.
+    if os.path.islink(grip_dir):
+        _path_row(rows, grip_dir, REMOVE, "store init, review bind, lane create", "layout.grip_dir")
     for entry in sorted(grip_dir.iterdir()) if grip_dir.is_dir() and not grip_dir.is_symlink() else ():
         if entry.name == layout.GR1_CHECKOUTS_DIR and entry.is_dir() and not entry.is_symlink():
             for checkout in sorted(entry.iterdir()):

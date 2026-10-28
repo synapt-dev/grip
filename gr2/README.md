@@ -27,6 +27,12 @@ The package installs two commands. `gr2` always runs gr2. `gr` picks by the near
 
 The Rust `gr` (gr1, 1.x) installs with `brew install synapt-dev/tap/gitgrip` or `cargo install gitgrip`, as `gr` and `gitgrip`. You can have both installed. Whichever `gr` comes first on `PATH` answers: gitgrip 1.5 and earlier always run gr1, so if it comes first, type `gr2` for gr2 (`gr2` says so once). In a gr1 workspace, this package's `gr` runs gr1 through `gitgrip`. With no gr1 installed, it serves a workspace already moved with `gr2 workspace migrate-gr1`, and in one not yet moved it says how to move it.
 
+For an AI coding agent, gr2 carries its own skill file: `gr2 help agent` prints it (the workspace verbs, the review flow, and the next step for each refusal), the copy of `api/skill.md` that ships in the package you installed. Save it where your agent reads skills, for example:
+
+```bash
+mkdir -p .claude/skills/gr2-review && gr2 help agent > .claude/skills/gr2-review/SKILL.md
+```
+
 ## First five minutes
 
 Every command below was run, in this order, in a clean virtualenv against a throwaway workspace of two repositories. Put two clones side by side in one folder, say `~/ws/repo-a` and `~/ws/repo-b`.

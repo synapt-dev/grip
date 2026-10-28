@@ -711,6 +711,12 @@ cp docs/SKILL.md .claude/skills/gitgrip/SKILL.md
 
 Or copy from an existing gitgrip workspace.
 
+That file covers `gr` (gr1). For `gr2`, the skill ships inside the package; print it with `gr2 help agent`:
+
+```bash
+mkdir -p .claude/skills/gr2-review && gr2 help agent > .claude/skills/gr2-review/SKILL.md
+```
+
 ### What the Skill Provides
 
 The skill file teaches AI assistants to:

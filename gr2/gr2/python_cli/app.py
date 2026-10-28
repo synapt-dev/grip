@@ -5404,7 +5404,7 @@ def _echo_notes(exc: BaseException) -> None:
 
 
 _REVIEW_REFUSALS = (grip.GripReviewRefused, grip.GripCorruptError, grip.StoreSetupRefused,
-                    grip.AlphaRootRefused, grip.ReviewStoreAbsent, grip.GripInitError)
+                    grip.AlphaRootRefused, grip.Gr1RootRefused, grip.ReviewStoreAbsent, grip.GripInitError)
 
 
 def _review_refusal(exc: BaseException) -> tuple[str, str, list[str]]:
@@ -5434,6 +5434,8 @@ def _review_refusal(exc: BaseException) -> tuple[str, str, list[str]]:
         return "store_init_refused", str(exc), []
     if isinstance(exc, grip.AlphaRootRefused):
         return "alpha_root", str(exc), []
+    if isinstance(exc, grip.Gr1RootRefused):
+        return "gr1_root", str(exc), []
     if isinstance(exc, grip.ReviewStoreAbsent):
         # A native root where nothing has been bound. Not a setup error, so no remedy that
         # sends the caller back to the verb they already ran.

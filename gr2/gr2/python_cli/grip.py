@@ -47,6 +47,12 @@ class StoreSetupRefused(GripInitError):
     (no sibling git repositories, a pin not on its upstream, ...). The reason is `store init`'s own."""
 
 
+class Gr1RootRefused(GripInitError):
+    """A bind (or create-project) on a root that is still a gr1 workspace (it holds a gr1 manifest).
+    Setting up the native store there would migrate a desk root, which is a decision made per root,
+    never a side effect of a review; nothing is written and the caller is told the step."""
+
+
 class ReviewStoreAbsent(GripInitError):
     """A native store root with no review store: nothing has been bound here yet.
 
@@ -1940,6 +1946,14 @@ def _validate_bind_store(workspace: Path, *, create: bool = False,
             return None
         if not create:
             raise ReviewStoreAbsent(f"No review is pinned in {workspace}: nothing has been stored there yet.")
+        if _has_gr1_manifest(workspace):
+            moved = " and moves .grip/.git aside" if legacy.exists() else ""
+            raise Gr1RootRefused(
+                f"{workspace} is a gr1 workspace (it holds {_gr1_manifest_rel()}); setting up a native store "
+                f"here would migrate it, so nothing was written. To migrate this root, run `gr2 store init` "
+                f"(it writes a root .git, grip.toml, .gitinclude and a generated .gitignore{moved}); to "
+                "review without migrating, pin from a separate store root."
+            )
         before = {entry.name for entry in workspace.iterdir()}
         had_git = (workspace / ".git").exists()
         _set_up_native_store(workspace)
@@ -1951,6 +1965,28 @@ def _validate_bind_store(workspace: Path, *, create: bool = False,
     if migrate:
         _migrate_legacy_binds(workspace)
     return None
+
+
+def _gr1_manifest_rel() -> str:
+    from .migration import gr1_manifest_path  # migration imports this module
+
+    return gr1_manifest_path(Path(".")).as_posix()
+
+
+def _has_gr1_manifest(workspace: Path) -> bool:
+    """Whether the root holds a gr1 manifest (the test `gr2 workspace status` reads for its phase).
+    A path that cannot be read counts as present: a bind that cannot tell must not migrate the root."""
+    import os
+
+    from .migration import gr1_manifest_path  # migration imports this module
+
+    try:
+        os.lstat(gr1_manifest_path(workspace))
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    except OSError:
+        return True
+    return True
 
 
 def _guarded_bind(workspace: Path, created: tuple[list[str], str] | None, write) -> str:

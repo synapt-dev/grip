@@ -1967,6 +1967,22 @@ def workspace_status_cmd(
         typer.echo(migration.render_status(payload))
 
 
+@app.command("footprint")
+def footprint_cmd(
+    path: Annotated[Path, typer.Argument(help="Workspace root; defaults to the current directory.")] = Path("."),
+    json_output: Annotated[bool, typer.Option("--json", help="Emit the rows as one JSON document.")] = False,
+) -> None:
+    """Lists part of the state gr2 writes for one workspace; slice 1, not yet complete. Read-only: writes nothing."""
+    from . import inventory
+
+    root = path.resolve()
+    if not inventory.is_workspace(root):
+        typer.echo(f"gr2 footprint: {root} is not a gr2 workspace", err=True)
+        raise typer.Exit(2)
+    rows = inventory.footprint(root)
+    typer.echo(json.dumps(inventory.as_json(root, rows)) if json_output else inventory.table(rows))
+
+
 @app.command("status")
 def status_cmd() -> None:
     """Show branch, upstream, and working-tree status for this workspace."""

@@ -174,6 +174,23 @@ def _require_frozen_dir(frozen_dir: Path) -> None:
                             "re-freeze the range with freeze-public-range.sh into a new directory")
 
 
+_IDENT_RE = re.compile(r"^(.*) <([^<>]*)> [0-9]+ [+-][0-9]{4}$")
+
+
+def _committer_identity(repo: Path) -> tuple[str, str]:
+    """The committer a commit in ``repo`` would carry (env over repo config over global),
+    with git's auto-detection off: none set is a refusal, never an invented identity."""
+    proc = _git(repo, "-c", "user.useConfigOnly=true", "var", "GIT_COMMITTER_IDENT", check=False)
+    found = _IDENT_RE.match(proc.stdout.strip()) if proc.returncode == 0 else None
+    if found is None or not found.group(1) or not found.group(2):
+        raise RebindRefused(
+            "committer_identity_missing",
+            f"no committer identity is set for {repo}; set user.name and user.email in the "
+            "--repo clone (git config), then rerun",
+        )
+    return found.group(1), found.group(2)
+
+
 def rebind(frozen_dir: Path, repo: Path, target_ref: str, out_dir: Path,
            *, allow_public_ref: bool = False) -> RebindResult:
     """Rebase the frozen range onto the live tip of ``target_ref`` and emit a new
@@ -228,6 +245,7 @@ def rebind(frozen_dir: Path, repo: Path, target_ref: str, out_dir: Path,
     if frozen_base == live_base:
         return RebindResult(outcome="base_unchanged")
 
+    committer_name, committer_email = _committer_identity(repo)
     clone = Path(tempfile.mkdtemp(prefix="rebind-clone."))
     try:
         cloned = gitops.clone("--quiet", url, str(clone))
@@ -235,14 +253,14 @@ def rebind(frozen_dir: Path, repo: Path, target_ref: str, out_dir: Path,
             raise subprocess.CalledProcessError(cloned.returncode, cloned.args, cloned.stdout, cloned.stderr)
         _git(clone, "checkout", "--quiet", live_base)
         # `git am` writes a commit, which needs a committer identity. A fresh clone
-        # inherits none, and a host with no global git config falls back to git's
-        # auto-detected user@hostname — which on a CI runner whose hostname has no
-        # domain is rejected (email ends in "(none)"; git refuses to invent one),
-        # so `am` fails and the catch-all below would mislabel it "conflict". A
-        # developer host auto-detects a usable address and never hits this. Set the
-        # generic identity explicitly so the rebase never depends on the host's.
-        _git(clone, "config", "user.name", "Layne Penney")
-        _git(clone, "config", "user.email", "dev@layne.pro")
+        # inherits none of --repo's config, and a host with no global git config falls
+        # back to git's auto-detected user@hostname, which on a CI runner whose hostname
+        # has no domain is rejected (email ends in "(none)"), so `am` fails and the
+        # catch-all below would mislabel it "conflict". Set the identity a commit in
+        # --repo would carry (read above, never auto-detected) so the rebased commits
+        # are the rebinding user's and never depend on the host's guess.
+        _git(clone, "config", "user.name", committer_name)
+        _git(clone, "config", "user.email", committer_email)
         # The frozen range was authored in `repo` and may never have been pushed to
         # origin (a pre-push freeze is the whole point), so a fresh clone of origin
         # lacks the range's blobs. Bring them in so `am --3way` has real objects for

@@ -109,6 +109,76 @@ def test_full_root_unreadable_gitmodules_refuses_by_name(full, monkeypatch):
     assert "nothing to pin" not in out
 
 
+def test_full_root_after_root_commit_rows_from_head_pins(full, monkeypatch):
+    """A root `gr2 commit` (rc 0) does not move the members' gitlinks in this fixture; the rows still go from the pins in
+    HEAD to the checkouts, as measured."""
+    root = full["root"]
+    heads = {m: _ahead(root, m) for m in MEMBERS}
+    c = gr2(root, monkeypatch, "commit", "-m", "root f1")
+    assert c.exit_code == 0, _out(c)
+    pins = {m: _pin(root, m) for m in MEMBERS}
+    r = gr2(root, monkeypatch, "review", "pin")
+    out = _out(r)
+    _bind_refused(r, out)
+    for m in MEMBERS:
+        assert f"pin {m} {pins[m][:12]}..{heads[m][:12]}" in out, out
+    assert "nothing to pin" not in out
+
+
+def test_full_root_checkout_not_descended_from_its_pin(full, monkeypatch):
+    root = full["root"]
+    _ahead(root, "web")
+    checkout = _checkout(root, "api")
+    git(checkout, "checkout", "-q", "--orphan", "feat/other")
+    (checkout / "other.txt").write_text("other\n")
+    git(checkout, "add", "other.txt")
+    git(checkout, "commit", "-q", "-m", "unrelated")
+    r = gr2(root, monkeypatch, "review", "pin")
+    out = _out(r)
+    _bind_refused(r, out)
+    assert "api (checkout does not descend from the workspace's pin)" in out, out
+    assert "pin api " not in out, out
+
+
+def test_full_root_unborn_head_refuses(full, monkeypatch):
+    root = full["root"]
+    _ahead(root, "api")
+    git(root, "symbolic-ref", "HEAD", "refs/heads/unborn")
+    r = gr2(root, monkeypatch, "review", "pin")
+    out = _out(r)
+    assert r.exit_code == 2, out
+    assert "root_commit_absent: 'HEAD' is not a commit of this full root" in out, out
+    assert "nothing to pin" not in out and "pin api " not in out, out
+
+
+def test_full_root_crafted_member_names_make_no_row(full, monkeypatch):
+    """The set reader reads these sections as members today (its own guard is another change's); this verb names each as
+    unpinned, makes no row for it and reads nothing outside the root."""
+    root = full["root"]
+    _ahead(root, "api")
+    base = (root / ".gitmodules").read_text()
+    outside = full["tmp"] / "outside"
+    for section, path in (("../x", "x"), ("a/b", "ab"), ("esc", "../outside"), ("abs", str(outside))):
+        (root / ".gitmodules").write_text(base + f'[submodule "{section}"]\n\tpath = {path}\n\turl = {full["urls"]["api"]}\n')
+        git(root, "add", ".gitmodules")
+        git(root, "commit", "-q", "-m", f"crafted {section}")
+        r = gr2(root, monkeypatch, "review", "pin")
+        out = _out(r)
+        _bind_refused(r, out)
+        assert f"{section} (no gitlink at {path} in HEAD)" in out, out
+        assert f"pin {section} " not in out, out
+        assert not outside.exists()
+
+
+def test_full_root_sync_wait_unchanged(full, monkeypatch):
+    """workspace_members is not taught the full root: sync wait there refuses as it did before this change."""
+    root = full["root"]
+    r = gr2(root, monkeypatch, "sync", "wait", str(root), "--all-members", "--timeout", "1")
+    out = _out(r)
+    assert r.exit_code == 3, out
+    assert "refused: the workspace declares no members" in out, out
+
+
 def test_no_members_refuses_with_its_own_words(tmp_path, monkeypatch):
     plain = tmp_path / "plain"
     plain.mkdir()

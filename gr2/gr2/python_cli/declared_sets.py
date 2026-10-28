@@ -26,10 +26,18 @@ from .keys import member_path_key
 
 DECLARED_SET_CHECK = "declared_set"
 _HEX40 = re.compile(r"[0-9a-f]{40}")
+# A full root's set name (spec 14.1): the writer (griplink._set_lines) and this reader take the same names.
+SET_NAME = re.compile(r"[A-Za-z0-9._-]+")
+# One rule for both shapes, so the store root (grip.toml) and the full root (.gitmodules) refuse in the same words.
+ONE_SET_PER_MEMBER = "a member belongs to at most one set"
+
+
+def _two_sets(member: str, first: str, second: str) -> str:
+    return f"member {member!r} is in two sets ({first!r} and {second!r}); {ONE_SET_PER_MEMBER}"
 
 
 class DeclaredSetError(ValueError):
-    """A declaration that cannot be read, named so the author can fix grip.toml."""
+    """A declaration that cannot be read, named so the author can fix grip.toml or .gitmodules."""
 
 
 @dataclass(frozen=True)
@@ -43,6 +51,9 @@ class Declaration:
     sets: tuple[DeclaredSet, ...]
     members: Mapping[str, Mapping[str, str]]  # name -> {"path": ..., "remote": ...}
     mode: str = "compat"  # grip.toml `mode`: a full-mode entry is not a member commit, so this reader refuses it by name
+    # Where the sets were read: a store root's grip.toml, or a full root's .gitmodules (spec 14.1), whose gitlink at a
+    # member's path IS the member's commit, so mode_refusal does not apply to it.
+    source: str = "grip.toml"
 
     def set_named(self, name: str) -> DeclaredSet | None:
         return next((s for s in self.sets if s.name == name), None)
@@ -97,10 +108,7 @@ def parse(document: Mapping) -> Declaration:
             if member not in members:
                 raise DeclaredSetError(f"set {name!r} names unknown member {member!r}")
             if member in owner:
-                raise DeclaredSetError(
-                    f"member {member!r} is in two sets ({owner[member]!r} and {name!r}); "
-                    "a member belongs to at most one set"
-                )
+                raise DeclaredSetError(_two_sets(member, owner[member], name))
             owner[member] = name
         sets.append(DeclaredSet(name, tuple(sorted(listed))))
     return Declaration(tuple(sets), members, mode)
@@ -115,11 +123,92 @@ def _blob(root: Path, revision: str) -> str | None:
     return shown.stdout if shown.returncode == 0 else None
 
 
+def _is_full_root(root: Path) -> bool:
+    from .workspace_guidance import is_full_mode_root  # lazy: the finder reads the disk shape, most readers never need it
+    return is_full_mode_root(root)
+
+
+def _gitmodules_parse_error(root: Path, blob: str) -> str | None:
+    """The named refusal when the committed .gitmodules `blob` does not parse, else None. On a blob, --get-regexp skips
+    a malformed line with a warning and still exits 0 or 1, so a broken .gitmodules would read as no sets; --list exits
+    128 on the same blob, so it is the parse check."""
+    parsed = gitops.run(root, "config", "--blob", blob, "--list")
+    if parsed.returncode:
+        return f"gitmodules_unreadable: git config --blob {blob} exited {parsed.returncode}: {parsed.stderr.strip()}"
+    return None
+
+
+def _gitmodules_rows(root: Path, blob: str, pattern: str) -> list[tuple[str, str]]:
+    """(key, value) for every `pattern` key in the committed .gitmodules `blob`; rc 1 is "none", any other nonzero refuses
+    (14.1 step 3: --get-regexp exits 1 for no match and the gate must not read a failed read as no sets). The parse check
+    runs first. Read with -z: each record is "key\\nvalue" ended by NUL ("key" alone for a key with no value), because a
+    section name may hold a space (git submodule add --name "my api") and a space-split line would cut the key there."""
+    if (unreadable := _gitmodules_parse_error(root, blob)):
+        raise DeclaredSetError(unreadable)
+    got = gitops.run(root, "config", "--blob", blob, "-z", "--get-regexp", pattern)
+    if got.returncode == 1:
+        return []
+    if got.returncode:
+        raise DeclaredSetError(f"gitmodules_unreadable: git config --blob {blob} exited {got.returncode}: {got.stderr.strip()}")
+    return [(key, value) for key, _, value in (record.partition("\n") for record in got.stdout.split("\0") if record)]
+
+
+def _read_full_root(root: Path, commit: str) -> Declaration:
+    """A full root's sets from its root COMMIT's .gitmodules, never the worktree (spec 14.1, at most ONE gr2-set line per
+    member section). Members are the sections' path and url, so a member's pin is its gitlink at that path."""
+    blob = f"{commit}:.gitmodules"
+    if gitops.run(root, "cat-file", "-e", blob).returncode:
+        return Declaration((), {}, source="gitmodules")  # 14.1 step 2: no .gitmodules, no members, no sets
+    members: dict[str, dict[str, str]] = {}
+    for key, value in _gitmodules_rows(root, blob, r"^submodule\..*\.(path|url)$"):
+        name, field = key[len("submodule."):].rsplit(".", 1)
+        members.setdefault(name, {"path": "", "remote": ""})["path" if field == "path" else "remote"] = (
+            member_path_key(value) if field == "path" else value)
+    owner: dict[str, str] = {}
+    for key, value in _gitmodules_rows(root, blob, r"^submodule\..*\.gr2-set$"):
+        member = key[len("submodule."):-len(".gr2-set")]
+        if not SET_NAME.fullmatch(value):
+            raise DeclaredSetError(f"set_name_invalid: member {member!r} names set {value!r} in .gitmodules at "
+                                   f"{commit[:12]}; a set name is letters, digits, '.', '_' and '-'")
+        if member in owner:
+            raise DeclaredSetError(_two_sets(member, owner[member], value))
+        if not members.get(member, {}).get("path"):
+            raise DeclaredSetError(f"set_member_unknown: set {value!r} names {member!r}, which has no path in .gitmodules "
+                                   f"at {commit[:12]}")
+        owner[member] = value
+    sets: dict[str, list[str]] = {}
+    for member, name in owner.items():
+        sets.setdefault(name, []).append(member)
+    for name, listed in sets.items():
+        if len(listed) < 2:  # 14.4: a set left with one member is named, never silently passed
+            raise DeclaredSetError(f"set_with_one_member: set {name!r} names only {listed[0]!r} at {commit[:12]}; a set "
+                                   "couples two or more members, so add a member to it or remove its line")
+    return Declaration(tuple(DeclaredSet(n, tuple(sorted(ms))) for n, ms in sorted(sets.items())), members,
+                       source="gitmodules")
+
+
 def read(root: Path, revision: str = "HEAD") -> Declaration:
-    """The declaration committed at `revision` (HEAD by default). No commit or no grip.toml means no sets."""
-    text = _blob(Path(root), revision)
-    if text is None:
+    """The declaration committed at `revision` (HEAD by default): a store root's grip.toml, or a full root's .gitmodules
+    (spec section 14). A full root whose root commit is not here REFUSES, never reads as no sets (14.1 step 1); a
+    store root with no commit or no grip.toml still means no sets."""
+    root = Path(root)
+    found = gitops.run(root, "rev-parse", "--verify", "-q", f"{revision}^{{commit}}")
+    if found.returncode or not found.stdout.strip():
+        if _is_full_root(root):
+            raise DeclaredSetError(f"root_commit_absent: {revision!r} is not a commit of this full root; fetch it, then "
+                                   "read its sets")
         return Declaration((), {})
+    commit = found.stdout.strip()
+    text = _blob(root, commit)
+    if text is None:
+        return _read_full_root(root, commit)
+    # A store root reads grip.toml; a .gitmodules beside it that does not parse cannot hold gr2-set lines the gate
+    # would honour, so it is not read here and does not change what grip.toml declares.
+    if gitops.run(root, "cat-file", "-e", f"{commit}:.gitmodules").returncode == 0 and \
+            _gitmodules_parse_error(root, f"{commit}:.gitmodules") is None and \
+            _gitmodules_rows(root, f"{commit}:.gitmodules", r"^submodule\..*\.gr2-set$"):
+        raise DeclaredSetError(f"both_set_shapes: the commit {commit[:12]} holds grip.toml and gr2-set lines in .gitmodules; "
+                               "a store root declares its sets in grip.toml only, so remove the gr2-set lines")
     try:
         return parse(tomllib.loads(text))
     except tomllib.TOMLDecodeError as exc:

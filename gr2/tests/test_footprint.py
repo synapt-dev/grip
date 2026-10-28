@@ -136,6 +136,24 @@ def test_footprint_lists_gr1_checkouts_as_not_gr2(native_root):
     assert table.count(f"{checkout} (remove with: gr checkout remove feat-x)") == 1
 
 
+def test_footprint_lists_a_symlinked_grip_dir_as_one_link_row(native_root, tmp_path):
+    grip_dir = layout.grip_dir(native_root)
+    store = tmp_path / "store"
+    (store / "state").mkdir(parents=True)
+    held = store / "state" / "held.bin"
+    held.write_bytes(b"\0" * 1_000_000)
+    grip_dir.symlink_to(store)
+    out = _cli("footprint", "--json", str(native_root))
+    assert out.exit_code == 0, out.output
+    doc = json.loads(out.stdout)
+    paths = [r["path"] for r in doc["rows"] if r["path"]]
+    links = [r for r in doc["rows"] if r["path"] == str(grip_dir)]
+    assert len(links) == 1 and links[0]["disposition"] == "REMOVE" and links[0]["kind"] == "symlink"
+    assert not [p for p in paths if p.startswith(f"{grip_dir}/") or p.startswith(str(store))]
+    assert doc["totals"]["remove_bytes"] < 1_000_000
+    assert grip_dir.is_symlink() and store.is_dir() and held.stat().st_size == 1_000_000
+
+
 def test_footprint_refuses_a_plain_directory(tmp_path):
     out = _cli("footprint", str(tmp_path))
     assert out.exit_code == 2

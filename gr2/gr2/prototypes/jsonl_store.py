@@ -95,7 +95,10 @@ def _nests_deeper_than(line: str, bound: int) -> bool:
 def _read_object(line: str) -> tuple[dict | None, str]:
     """``json.loads`` is the only operation over a decoded line that can raise."""
 
-    if _nests_deeper_than(line, MAX_JSON_DEPTH):
+    # A line with no more opening brackets than the bound cannot nest past it.
+    if line.count("[") + line.count("{") > MAX_JSON_DEPTH and _nests_deeper_than(
+        line, MAX_JSON_DEPTH
+    ):
         return None, f"line nests deeper than {MAX_JSON_DEPTH}"
     try:
         obj = json.loads(line)

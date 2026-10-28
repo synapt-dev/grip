@@ -208,6 +208,28 @@ def test_w2_an_escaped_quote_does_not_end_the_string(tmp_path: Path) -> None:
     assert read.rows[1]["n"] == '"' + brackets
 
 
+def test_w2_a_line_that_cannot_pass_the_bound_is_not_scanned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The scan is a Python loop over every character, so it runs only on a line
+    with more opening brackets than the bound. The count includes brackets inside
+    strings, so such a line is still scanned and still kept."""
+    from gr2.prototypes import jsonl_store
+
+    scanned: list[str] = []
+    scan = jsonl_store._nests_deeper_than
+
+    def recording(line: str, bound: int) -> bool:
+        scanned.append(line)
+        return scan(line, bound)
+
+    monkeypatch.setattr(jsonl_store, "_nests_deeper_than", recording)
+    in_a_string = '{"n": "' + "[" * 100000 + '"}'
+    read = _read_between_two_rows(tmp_path, in_a_string)
+    assert [row["n"] for row in read.rows] == [1, "[" * 100000, 2]
+    assert scanned == [in_a_string]
+
+
 # --------------------------------------------------------------------------- W3
 
 HOSTILE_BYTES = {

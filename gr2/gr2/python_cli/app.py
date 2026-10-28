@@ -5626,7 +5626,7 @@ def review_bind(
     ref: str = typer.Option("", "--ref", show_default=False, help="Target ref whose live head must equal --base (default: the remote's HEAD branch, as ls-remote --symref reports it)"),
     path: Optional[str] = typer.Option(None, "--path", help="Workspace path for the row (defaults to --repo)"),
     source: Optional[Path] = typer.Option(None, "--source", help="Author clone holding the pre-push head; required to carry the range so `review open` can reconstruct"),
-    from_range: Optional[Path] = typer.Option(None, "--from-range", help="A frozen range.patch (freeze-public-range.sh output). Carries the range so `review open` reconstructs, deriving the head-tree by applying it over --base in a throwaway clone — NO author clone that holds the head is needed. Exclusive with --source."),
+    from_range: Optional[Path] = typer.Option(None, "--from-range", help="A frozen range.patch (freeze-public-range.sh output). Carries the range so `review open` reconstructs, deriving the head-tree by applying it over --base in a throwaway clone — NO author clone that holds the head is needed. Exclusive with --source. It does not read the repo, remote, base or head from the patch: give --repo, --remote, --base and --head too."),
     at_base: bool = typer.Option(False, "--at-base", help="With --from-range: pin at --base, the dev the range was cut on, even when --ref has moved past it; read-only (nothing is rebased) and recorded in the pin as at-base"),
     title: str = typer.Option("", "--title", help="Platform title text (NORM-hashed into the object)"),
     body: str = typer.Option("", "--body", help="Platform body text (NORM-hashed into the object)"),
@@ -5643,8 +5643,8 @@ def review_bind(
     cannot be read, when its checkout is behind that head or does not hold it, or when such members are on different
     branches. The rows chosen are printed BEFORE anything is pinned (a pin is a local ref, so it can be thrown away,
     but a run with no terminal cannot stop in between); --members narrows, and it refuses when no member is ahead. Otherwise one
-    row from --repo/--remote/--base/--head, or many from --rows-json (all in
-    ONE commit). For every row, reads the live remote head of its ref and refuses
+    row, which needs all four of --repo, --remote, --base and --head (with --source or --from-range to carry the range),
+    or many from --rows-json (all in ONE commit). For every row, reads the live remote head of its ref and refuses
     before writing if base is not that head (behind-must-be-0) or if head is
     already on the remote without --ratified. That printed id is the whole artifact.
     """

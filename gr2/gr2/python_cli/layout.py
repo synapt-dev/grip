@@ -50,6 +50,10 @@ GRIP_DIR = ".grip"
 #: object store). THE ONE SPELLING of it in the source, for the same reason as `GRIP_DIR`.
 MOVED_MARKER = ".grip-moved"
 
+#: The directory under `GRIP_DIR` that gr1 (not gr2) writes: `gr checkout add <name>` creates
+#: `<root>/.grip/checkouts/<name>` and only `gr checkout remove <name>` removes it.
+GR1_CHECKOUTS_DIR = "checkouts"
+
 #: The field sidecar a FULL workspace's root commit carries for each member (its record and
 #: layers, read from the object store), under `GRIP_DIR` so it spells `.grip` only once.
 FIELDS_DIR = f"{GRIP_DIR}/fields"

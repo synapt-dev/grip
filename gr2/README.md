@@ -38,6 +38,7 @@ gr2 workspace materialize ~/ws --yes    # builds the .grip layout and a default 
 gr2 workspace status ~/ws               # what kind of workspace this is
 gr2 store init ~/ws                     # the workspace snapshot store (needed before review)
 gr2 store commit -m "first snapshot"    # record the workspace once; lanes start from a recorded snapshot
+gr2 footprint ~/ws                      # part of what gr2 wrote here (partial); writes nothing
 ```
 
 `store commit` reads the workspace from the current directory, which is why the walk starts with `cd ~/ws`; from anywhere else, name it: `gr2 store commit -C ~/ws -m "..."`. It prints nothing on success; each repo it records for the first time gets one note on stderr.
@@ -155,7 +156,7 @@ The everyday commands, what `gr2 --help` shows. `gr2 help <command>` prints any 
 
 | Group | Verbs |
 |---|---|
-| (top level) | branch, add, commit, push, status, update |
+| (top level) | branch, add, commit, push, status, update, footprint |
 | `lane` | create, enter, exit, list, push, remove |
 | `store` | init, add, commit, check, push, status, materialize |
 | `review` | open, run, pin, publish, receive, show, stamp, merge, update, close |

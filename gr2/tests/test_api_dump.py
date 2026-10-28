@@ -84,8 +84,10 @@ MIN_ARGS = 95
 
 # 56 -> 57: `review list` prints one row per pinned review, `[{id, pinned_at}]`, the same JSON with or without
 # --json. The shape table is the store group's, so this review verb joins the residual as `lane push` did.
+# 57 -> 58: `footprint --json` emits `{kind: gr2-footprint, workspace, rows, totals}`; the shape table is the store
+# group's, so this top-level verb joins the residual.
 
-JSON_VERBS_PENDING = 57
+JSON_VERBS_PENDING = 58
 
 # The kinds a stranger BUILDS ON INDEPENDENTLY: a verb, a flag, a positional
 # and an exit code are each actionable on their own -- a caller writes

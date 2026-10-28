@@ -118,6 +118,10 @@ verb  exec status (hidden:exec)                                       stable
 arg   follow member <str> (hidden)                                    stable
 flag  follow --record <str> (hidden)                                  stable
 verb  follow (hidden)                                                 stable
+# footprint
+arg   footprint path <str>                                            stable
+flag  footprint --json                                                stable
+verb  footprint                                                       stable
 # grip add
 arg   grip add value <str> (hidden:grip)                              stable
 flag  grip add --ref <str> (hidden:grip)                              stable

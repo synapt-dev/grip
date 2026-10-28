@@ -266,6 +266,141 @@ def test_add_of_an_existing_member_refuses_naming_it_and_changes_nothing(world, 
     assert _root_state(root) == before
 
 
+def _web(world) -> Path:
+    src = world["tmp"] / "src-web"
+    src.mkdir()
+    git(src, "init", "-q", "-b", "main")
+    (src / "w.txt").write_text("w1\n")
+    git(src, "add", "w.txt")
+    git(src, "commit", "-q", "-m", "base")
+    url = world["tmp"] / "web.git"
+    git(world["tmp"], "clone", "-q", "--bare", str(src), str(url))
+    return url
+
+
+def _section(root: Path, m: str) -> list[str]:
+    lines, on = [], False
+    for line in (root / ".gitmodules").read_text().splitlines():
+        if line.startswith("["):
+            on = line == f'[submodule "{m}"]'
+        elif on:
+            lines.append(line.strip())
+    return lines
+
+
+def _commit_set_lines_for_fixture(root: Path, m: str, *names: str) -> None:
+    # no verb writes gr2-set yet, so the fixture uses the helper the verb will call
+    griplink._set_lines(root, m, list(names))
+    git(root, "add", ".gitmodules")
+    griplink._cut(root, f"set {m}", [git(root, "rev-parse", "HEAD")])
+
+
+def _two_roots(world, monkeypatch) -> Path:
+    """R pushed to a bare remote, and a second root C checked out from it; returns C."""
+    root, tmp = world["root"], world["tmp"]
+    remote = tmp / "root.git"
+    git(tmp, "init", "-q", "--bare", "-b", "main", str(remote))
+    git(root, "remote", "add", "origin", str(remote))
+    assert gr2(root, monkeypatch, "push").exit_code == 0
+    c = tmp / "C"
+    git(tmp, "clone", "-q", str(remote), str(c))
+    assert gr2(c, monkeypatch, "checkout").exit_code == 0
+    return c
+
+
+def test_add_of_a_second_member_keeps_the_first_members_gr2_set_lines(world, monkeypatch):
+    root = world["root"]
+    _commit_set_lines_for_fixture(root, "api", "billing", "auth")
+    api = _section(root, "api")
+    assert api[-2:] == ["gr2-set = auth", "gr2-set = billing"], api
+    r = gr2(root, monkeypatch, "add", str(_web(world)), "web")
+    assert r.exit_code == 0, r.stderr
+    assert _section(root, "api") == api
+    assert sorted(_section(root, "web")) == ["ignore = dirty", "path = web.griplink/" + griplink.PIN,
+                                            f"url = {world['tmp'] / 'web.git'}"]
+    assert git(root, "show", "HEAD:.gitmodules") == (root / ".gitmodules").read_text().strip()
+
+
+def test_pull_of_a_lane_on_another_member_keeps_both_members_set_lines(world, monkeypatch):
+    root = world["root"]
+    assert gr2(root, monkeypatch, "add", str(_web(world)), "web").exit_code == 0
+    c = _two_roots(world, monkeypatch)
+    _commit_set_lines_for_fixture(root, "api", "billing")
+    _commit_set_lines_for_fixture(c, "web", "auth")
+    assert gr2(c, monkeypatch, "push").exit_code == 0
+    r = gr2(root, monkeypatch, "pull")
+    assert r.exit_code == 0, r.stderr
+    for text in ((root / ".gitmodules").read_text(), git(root, "show", "HEAD:.gitmodules")):
+        assert "gr2-set = billing" in text and "gr2-set = auth" in text, text
+    assert _section(root, "api")[-1] == "gr2-set = billing" and _section(root, "web")[-1] == "gr2-set = auth"
+
+
+def test_pull_of_a_lane_on_the_same_member_refuses_and_leaves_the_root_as_it_was(world, monkeypatch):
+    root = world["root"]
+    c = _two_roots(world, monkeypatch)
+    _commit_set_lines_for_fixture(root, "api", "billing")
+    _commit_set_lines_for_fixture(c, "api", "ops")
+    assert gr2(c, monkeypatch, "push").exit_code == 0
+    head, gm = git(root, "rev-parse", "HEAD"), (root / ".gitmodules").read_bytes()
+    r = gr2(root, monkeypatch, "pull")
+    assert git(root, "rev-parse", "HEAD") == head
+    assert (root / ".gitmodules").read_bytes() == gm
+    assert _ref(root, "MERGE_HEAD") is None
+    assert r.exit_code == 3, (r.exit_code, r.stderr)
+    assert "the root merge stopped: " in r.stderr and "nothing was pulled" in r.stderr, r.stderr
+
+
+def test_fast_forward_pull_keeps_mine_and_brings_theirs_set_lines(world, monkeypatch):
+    root = world["root"]
+    assert gr2(root, monkeypatch, "add", str(_web(world)), "web").exit_code == 0
+    _commit_set_lines_for_fixture(root, "api", "billing")
+    c = _two_roots(world, monkeypatch)
+    _commit_set_lines_for_fixture(c, "web", "auth")
+    assert gr2(c, monkeypatch, "push").exit_code == 0
+    r = gr2(root, monkeypatch, "pull")
+    assert r.exit_code == 0, r.stderr
+    assert git(root, "rev-parse", "HEAD") == git(c, "rev-parse", "HEAD")
+    assert _section(root, "api")[-1] == "gr2-set = billing" and _section(root, "web")[-1] == "gr2-set = auth"
+
+
+def test_set_lines_writes_one_members_names_sorted_and_keeps_other_keys(world, monkeypatch):
+    root = world["root"]
+    assert gr2(root, monkeypatch, "add", str(_web(world)), "web").exit_code == 0
+    gm = str(root / ".gitmodules")
+    git(root, "config", "-f", gm, "--add", "submodule.web.gr2-set", "auth")
+    git(root, "config", "-f", gm, "--add", "submodule.api.gr2-set", "old")
+    api, web = _section(root, "api"), _section(root, "web")
+    griplink._set_lines(root, "api", ["b", "a", "a"])
+    assert _section(root, "api") == api[:-1] + ["gr2-set = a", "gr2-set = b"]
+    assert _section(root, "web") == web
+    griplink._set_lines(root, "web", ["a.b_c-1"])
+    assert _section(root, "web") == web[:-1] + ["gr2-set = a.b_c-1"]
+
+
+@pytest.mark.parametrize("bad", ["c#d", "a b", "x;y", "", "é", None, 7])
+def test_set_lines_refuses_a_name_outside_the_set_charset_and_writes_nothing(world, bad):
+    root = world["root"]
+    # api already has a line, so a refusal that came after the old lines were unset would lose it
+    git(root, "config", "-f", str(root / ".gitmodules"), "--add", "submodule.api.gr2-set", "old")
+    before = _root_state(root)
+    with pytest.raises(griplink.GriplinkRefusal) as exc:
+        griplink._set_lines(root, "api", ["ok", bad])
+    assert _root_state(root) == before
+    assert _section(root, "api")[-1] == "gr2-set = old"
+    assert exc.value.code == 4 and str(exc.value).startswith(f"{bad!r}: not a set name gr2 takes"), str(exc.value)
+
+
+@pytest.mark.parametrize("bad", ["a b", "..", "-x"])
+def test_set_lines_refuses_a_member_name_gr2_does_not_take_and_writes_nothing(world, bad):
+    # The member name is spliced into the config key submodule.<m>.gr2-set, so it is checked before any write.
+    root = world["root"]
+    before = _root_state(root)
+    with pytest.raises(griplink.GriplinkRefusal) as exc:
+        griplink._set_lines(root, bad, ["ok"])
+    assert _root_state(root) == before
+    assert exc.value.code == 3 and str(exc.value).startswith(f"{bad!r}: not a member name gr2 takes"), str(exc.value)
+
+
 def test_add_of_a_git_directory_under_the_root_refuses_and_names_git_add(world, monkeypatch):
     root = world["root"]
     git(root, "init", "-q", "tools")  # a git directory under the root, not a member

@@ -333,6 +333,31 @@ def add(root: Path, m: str, url: str) -> str:
     return _cut(root, f"add {m} at {pin[:7]}", [_git(root, "rev-parse", "HEAD")])[1]
 
 
+_SET_NAME = re.compile(r"[A-Za-z0-9._-]+")
+
+
+def _check_set_name(name: str) -> None:
+    """A gr2-set name is a config value and later a gate's word, so it is a plain name or it is refused."""
+    if not isinstance(name, str) or not _SET_NAME.fullmatch(name):
+        raise GriplinkRefusal(f"{name!r}: not a set name gr2 takes (letters, digits, '.', '_' and '-'); nothing was "
+                              "changed", 4)
+
+
+def _set_lines(root: Path, m: str, names: list[str]) -> None:
+    """Write member m's gr2-set lines in .gitmodules: every name checked before any write, then the member's old lines
+    unset and one line per name, sorted and once each. Every other key and section is kept (git config -f, as add)."""
+    _check_name(m)
+    for name in names:
+        _check_set_name(name)
+    gm = str(root / ".gitmodules")
+    args = ("config", "-f", gm, "--unset-all", f"submodule.{m}.gr2-set")
+    proc = gitops.run(root, *args)
+    if proc.returncode not in (0, 5):  # 5: there was no line to unset
+        raise gitops.GitError(args, proc.returncode, proc.stderr)
+    for name in sorted(set(names)):
+        _git(root, "config", "-f", gm, "--add", f"submodule.{m}.gr2-set", name)
+
+
 def _staged_change(root: Path, m: str, pin: str) -> tuple[dict, dict]:
     mrepo = member_dir(root, m)
     raw = gitops.out_bytes(mrepo, "diff-index", "--cached", "-z", "--no-renames", pin).decode(errors="replace")

@@ -69,6 +69,14 @@ def _has_griplink_gitlink(d: Path) -> bool:
     return False
 
 
+def _is_full_mode_shape(d: Path) -> bool:
+    """The shape `store init --mode full` makes: a git root whose own git carries a stook, or whose HEAD holds a
+    `<m>.griplink/001.2_pin` gitlink. Either alone is enough: a fresh full root has the stook and no member yet, and a
+    clone of one has the gitlinks and no stook (a default clone does not fetch the stook's ref namespace). The git-root
+    test comes first because `rev-parse` run in a plain subdirectory reads the enclosing repo's stook."""
+    return _is_git_root(d) and (_has_stook(d) or _has_griplink_gitlink(d))
+
+
 def _is_store_root(d: Path) -> bool:
     """A native store root (grip.toml beside a root .git, what `store init` makes). A spec workspace
     (.grip/workspace_spec.toml, the lanes' workspace) is not a root these verbs act on."""

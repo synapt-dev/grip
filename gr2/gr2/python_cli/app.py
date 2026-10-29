@@ -1967,6 +1967,22 @@ def workspace_status_cmd(
         typer.echo(migration.render_status(payload))
 
 
+@app.command("footprint")
+def footprint_cmd(
+    path: Annotated[Path, typer.Argument(help="Workspace root; defaults to the current directory.")] = Path("."),
+    json_output: Annotated[bool, typer.Option("--json", help="Emit the rows as one JSON document.")] = False,
+) -> None:
+    """Lists part of the state gr2 writes for one workspace; slice 1, not yet complete. Read-only: writes nothing."""
+    from . import inventory
+
+    root = path.resolve()
+    if not inventory.is_workspace(root):
+        typer.echo(f"gr2 footprint: {root} is not a gr2 workspace", err=True)
+        raise typer.Exit(2)
+    rows = inventory.footprint(root)
+    typer.echo(json.dumps(inventory.as_json(root, rows)) if json_output else inventory.table(rows))
+
+
 @app.command("status")
 def status_cmd() -> None:
     """Show branch, upstream, and working-tree status for this workspace."""
@@ -5388,7 +5404,7 @@ def _echo_notes(exc: BaseException) -> None:
 
 
 _REVIEW_REFUSALS = (grip.GripReviewRefused, grip.GripCorruptError, grip.StoreSetupRefused,
-                    grip.AlphaRootRefused, grip.ReviewStoreAbsent, grip.GripInitError)
+                    grip.AlphaRootRefused, grip.Gr1RootRefused, grip.ReviewStoreAbsent, grip.GripInitError)
 
 
 def _review_refusal(exc: BaseException) -> tuple[str, str, list[str]]:
@@ -5418,6 +5434,8 @@ def _review_refusal(exc: BaseException) -> tuple[str, str, list[str]]:
         return "store_init_refused", str(exc), []
     if isinstance(exc, grip.AlphaRootRefused):
         return "alpha_root", str(exc), []
+    if isinstance(exc, grip.Gr1RootRefused):
+        return "gr1_root", str(exc), []
     if isinstance(exc, grip.ReviewStoreAbsent):
         # A native root where nothing has been bound. Not a setup error, so no remedy that
         # sends the caller back to the verb they already ran.
@@ -5608,7 +5626,7 @@ def review_bind(
     ref: str = typer.Option("", "--ref", show_default=False, help="Target ref whose live head must equal --base (default: the remote's HEAD branch, as ls-remote --symref reports it)"),
     path: Optional[str] = typer.Option(None, "--path", help="Workspace path for the row (defaults to --repo)"),
     source: Optional[Path] = typer.Option(None, "--source", help="Author clone holding the pre-push head; required to carry the range so `review open` can reconstruct"),
-    from_range: Optional[Path] = typer.Option(None, "--from-range", help="A frozen range.patch (freeze-public-range.sh output). Carries the range so `review open` reconstructs, deriving the head-tree by applying it over --base in a throwaway clone — NO author clone that holds the head is needed. Exclusive with --source."),
+    from_range: Optional[Path] = typer.Option(None, "--from-range", help="A frozen range.patch (freeze-public-range.sh output). Carries the range so `review open` reconstructs, deriving the head-tree by applying it over --base in a throwaway clone — NO author clone that holds the head is needed. Exclusive with --source. It does not read the repo, remote, base or head from the patch: give --repo, --remote, --base and --head too."),
     at_base: bool = typer.Option(False, "--at-base", help="With --from-range: pin at --base, the dev the range was cut on, even when --ref has moved past it; read-only (nothing is rebased) and recorded in the pin as at-base"),
     title: str = typer.Option("", "--title", help="Platform title text (NORM-hashed into the object)"),
     body: str = typer.Option("", "--body", help="Platform body text (NORM-hashed into the object)"),
@@ -5625,8 +5643,8 @@ def review_bind(
     cannot be read, when its checkout is behind that head or does not hold it, or when such members are on different
     branches. The rows chosen are printed BEFORE anything is pinned (a pin is a local ref, so it can be thrown away,
     but a run with no terminal cannot stop in between); --members narrows, and it refuses when no member is ahead. Otherwise one
-    row from --repo/--remote/--base/--head, or many from --rows-json (all in
-    ONE commit). For every row, reads the live remote head of its ref and refuses
+    row, which needs all four of --repo, --remote, --base and --head (with --source or --from-range to carry the range),
+    or many from --rows-json (all in ONE commit). For every row, reads the live remote head of its ref and refuses
     before writing if base is not that head (behind-must-be-0) or if head is
     already on the remote without --ratified. That printed id is the whole artifact.
     """
@@ -5648,14 +5666,14 @@ def review_bind(
                 f"{', '.join(supplied)} requires an explicit row: give --repo/--remote/--base/--head "
                 "or --rows-json; these flags do not apply to inferred members"
             )
-        from . import lane_downstream, review_members
+        from . import declared_sets, lane_downstream, review_members
 
         bind_root = _resolve_workspace_root(workspace_root)
         try:
             choice = review_members.changed_member_rows(
                 Path(bind_root).resolve(), [m.strip() for m in members.split(",") if m.strip()] if members else None
             )
-        except (lane_downstream.MembersUnreadable, lane_downstream.PinConflict) as exc:
+        except (lane_downstream.MembersUnreadable, lane_downstream.PinConflict, declared_sets.DeclaredSetError) as exc:
             raise typer.BadParameter(f"{exc}; fix the file, or name the row with --repo/--remote/--base/--head or --rows-json")
         except commit_ops.LaneAmbiguous as exc:  # one plain line, as _refuse_text prints: a usage panel wraps it
             typer.echo(f"{exc.refusal}: {exc}", err=True)
@@ -5669,7 +5687,12 @@ def review_bind(
                 "the pin) and pin again, or name the rows with --repo/--remote/--base/--head or --rows-json"
             )
         if not choice.rows:
-            why = "; ".join(choice.skipped) or "every member's checkout is at the workspace's pin"
+            if not choice.skipped:
+                raise typer.BadParameter(
+                    "nothing to pin: this workspace declares no members (no workspace spec, no grip.toml, and no member "
+                    "in a full root's .gitmodules at HEAD); give the row with --repo/--remote/--base/--head or --rows-json"
+                )
+            why = "; ".join(choice.skipped)
             raise typer.BadParameter(
                 f"nothing to pin: no member's checkout is ahead of the workspace's pin ({why}). Commit in a member's checkout "
                 "first, or give the row with --repo/--remote/--base/--head or --rows-json"

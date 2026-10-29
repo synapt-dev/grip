@@ -239,9 +239,9 @@ def test_store_commit_and_add_inside_a_griplink_member_refuse_and_write_nothing(
 
 
 def test_store_checkout_inside_a_griplink_member_still_refuses_at_5_and_moves_nothing(tmp_path: Path, monkeypatch):
-    """checkout does not refuse inside a member, and a griplink root is not a store root, so store checkout there
-    takes the older walk, which finds no workspace root and refuses at 5, as before this change; top-level gr2
-    checkout acts there. Pinned as it is: making store checkout act like gr2 checkout is a separate change."""
+    """checkout does not refuse inside a member. The walk finds the griplink root above as a full-mode root, and
+    store checkout refuses there at 5 naming it as one, with no init advice; top-level gr2 checkout acts there.
+    Pinned as it is: making store checkout act like gr2 checkout is a separate change."""
     root, _ = _griplink_root(tmp_path, monkeypatch)
     (root / "api" / "a.txt").write_text("v2\n")
     git(root / "api", "commit", "-q", "-am", "moved")
@@ -249,7 +249,8 @@ def test_store_checkout_inside_a_griplink_member_still_refuses_at_5_and_moves_no
     refs = git(root, "for-each-ref", "--format=%(refname) %(objectname)")
     r = gr2(root / "api", monkeypatch, "store", "checkout", "HEAD")
     assert r.exit_code == 5, (r.stdout, r.stderr)
-    assert "no workspace root at or above" in r.stderr
+    assert "is a full-mode gr2 root" in r.stderr
+    assert "store init" not in r.stderr, "a full-mode root is already a workspace"
     assert git(root / "api", "rev-parse", "HEAD") == moved
     assert git(root, "for-each-ref", "--format=%(refname) %(objectname)") == refs
 

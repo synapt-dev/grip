@@ -48,6 +48,11 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Changed
 
+- **`gr2`: a review bind no longer migrates a gr1 workspace root.** `review pin`, `review bind` and
+  `review create-project` on a root with no store still set up the native store themselves, except on a root that
+  holds a gr1 manifest (`.gitgrip/spaces/main/gripspace.yml`): there they refuse with exit 2 and the code `gr1_root`,
+  write nothing, and name `gr2 store init` and what it would write. Converting an existing workspace is a decision for
+  that root, not a side effect of a review. A manifest path that cannot be read counts as present.
 - **`gr2`: `review pin --from-range` no longer clones the whole remote.** To derive the head-tree it fetched every object of the target repository on every pin; it now fetches the base commit alone and checks out only the paths the range touches. On a 300 MB repository a pin's temporary copy fell from about 589 MB to under 1 MB, and from about 14 s to about 1 s. The pinned result is the same bytes. `--at-base`, a base given as a ref name, and a remote that will not serve a commit by its sha keep the full clone.
 - **`gr2`: `gr2 pr merge`'s pin option is `--head [REPO=]SHA`, repeatable.** It was `--match-head-commit`
   from 2.0.0a6; the old name is removed, with no alias, and is now an unknown option (exit 2). `--review`
@@ -74,6 +79,12 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
   before enabling the rotating capture.
 
 ### Fixed
+
+- **`gr2`: a full-mode root that `workspace init` was also run at is still named a full-mode root.** Its
+  `.grip/workspace_spec.toml` made the full-mode check read it as another kind of root, so `store status` there told
+  the user to run `gr2 store init here`, and reading its sets at a revision that is not a commit returned no sets.
+  Now the tree decides: `store status` names the full-mode root and points to `gr2 status`, and the sets read refuses
+  with `root_commit_absent`. A root with a `grip.toml` is still a native root.
 
 - **`gr2`: `store commit` refuses a staged change the store does not record.** In a root with no `.gitinclude`, a
   file staged by hand rode into the record commit beside the pins. The commit now judges the staged diff against

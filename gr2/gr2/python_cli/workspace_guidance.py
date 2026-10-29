@@ -26,13 +26,35 @@ def missing_gr2_workspace_guidance(workspace_root: Path, fallback: str) -> str:
 
 
 def enclosing_workspace_root(path: Path) -> Path | None:
-    """The nearest strict ancestor of `path` that is a workspace (a spec, or a native grip.toml root), else None.
+    """The nearest strict ancestor of `path` that is a workspace (a spec, a native grip.toml root, or a full-mode
+    root), else None.
     A verb pointed at a member or any directory inside a workspace is sent to that root, never told to init a
     second workspace nested inside the first."""
+    from .workspace_root import _is_workspace_root
+
     for parent in path.resolve().parents:
-        if (grip_dir(parent) / "workspace_spec.toml").is_file() or (parent / "grip.toml").is_file():
+        # A grip.toml file alone still encloses (no .git required), as it did before full-mode roots were read.
+        if (parent / "grip.toml").is_file() or _is_workspace_root(parent):
             return parent
     return None
+
+
+def is_full_mode_root(workspace_root: Path) -> bool:
+    """A full-mode root (`store init --mode full`): no grip.toml, and the root's own git carries a stook or a
+    `<m>.griplink/001.2_pin` gitlink. A workspace spec beside it (`workspace init` run at the root) does not make it
+    another kind of root: the tree decides."""
+    if (workspace_root / "grip.toml").is_file():
+        return False
+    from . import root_verbs
+
+    return root_verbs._is_full_mode_shape(workspace_root)
+
+
+def full_mode_not_yet_sentence(workspace_root: Path) -> str:
+    """The refusal for a verb that reads a workspace spec or a .grip/ store, run on a full-mode root: it names the
+    root's kind and the verb that does read it, and offers no init (the root is already a workspace)."""
+    return (f"{workspace_root} is a full-mode gr2 root (no grip.toml; members under <member>.griplink), and this "
+            "verb does not read a full-mode root yet; `gr2 status` reads it")
 
 
 def missing_workspace_spec_message(workspace_root: Path) -> str:
@@ -67,6 +89,8 @@ def init_unless_inside_workspace(workspace_root: Path, init_advice: str) -> str:
     its own advice, and a gr1 desk is sent to migrate first."""
     if (grip_dir(workspace_root) / "workspace_spec.toml").is_file() or (workspace_root / "grip.toml").is_file():
         return init_advice
+    if is_full_mode_root(workspace_root):
+        return full_mode_not_yet_sentence(workspace_root)
     if is_gr1_only_workspace(workspace_root):
         return GR1_ONLY_NEXT_STEP
     enclosing = enclosing_workspace_root(workspace_root)

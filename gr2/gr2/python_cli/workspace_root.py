@@ -14,9 +14,15 @@ from . import grip, layout
 
 
 def _is_workspace_root(path: Path) -> bool:
-    """A directory that IS a workspace, of either kind: it holds ``.grip/workspace_spec.toml``,
-    or it is a native store root (``grip.toml`` beside a root ``.git``, what ``store init`` makes)."""
-    return (layout.grip_dir(path) / "workspace_spec.toml").is_file() or grip._is_native_workspace(path)
+    """A directory that IS a workspace, of any kind: it holds ``.grip/workspace_spec.toml``, it is a
+    native store root (``grip.toml`` beside a root ``.git``, what ``store init`` makes), or it is a
+    full-mode root, which has neither file: a git root with a stook, or whose HEAD holds a
+    ``<m>.griplink/001.2_pin`` gitlink (the shape ``root_verbs.find`` reads, so both walks agree)."""
+    if (layout.grip_dir(path) / "workspace_spec.toml").is_file() or grip._is_native_workspace(path):
+        return True
+    from . import root_verbs
+
+    return root_verbs._is_full_mode_shape(path)
 
 
 def _resolve_workspace_root(workspace_root: Optional[Path] = None) -> Path:

@@ -33,6 +33,7 @@ PORCELAIN = frozenset({
     "check set",
     "check show",
     "commit",
+    "footprint",
     "lane create",
     "lane enter",
     "lane exit",
@@ -121,7 +122,7 @@ def test_the_visible_commands_are_exactly_the_porcelain() -> None:
         f"porcelain but hidden or gone: {sorted(PORCELAIN - visible)}"
     )
     top = {name for name, cmd in _root().commands.items() if not getattr(cmd, "hidden", False)}
-    assert top == TOP_LEVEL and len(top) == 12, sorted(top)
+    assert top == TOP_LEVEL and len(top) == 13, sorted(top)
 
 
 def test_help_and_bare_gr2_list_the_porcelain_and_no_plumbing(colored: bool) -> None:

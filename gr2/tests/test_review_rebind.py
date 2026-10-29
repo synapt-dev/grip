@@ -217,3 +217,126 @@ def test_range_that_would_change_refuses(tmp_path):
     # collision `am` always writes to stderr, so the message names it. Blanking
     # `detail` in review_rebind.rebind() reds this assertion.
     assert "git am said:" in str(exc.value), str(exc.value)
+
+
+def _no_global_identity(monkeypatch) -> None:
+    """The no-global-config isolation of the patch-id row: only --repo and env can name a committer."""
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    for var in ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL",
+                "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"):
+        monkeypatch.delenv(var, raising=False)
+
+
+def _moved_author(tmp_path: Path) -> tuple[Path, Path]:
+    origin, base = _origin_with_base(tmp_path)
+    frozen = _frozen_range(tmp_path, origin, base)
+    _move_base_unrelated(origin)
+    author = tmp_path / "author"
+    _git(author, "fetch", "-q", "origin")
+    return frozen, author
+
+
+def _cloning_fails(monkeypatch) -> None:
+    """A refusal row replaces cloning with a failure, so a refusal that comes after the clone fails it."""
+    def cloned(*args, **kwargs):
+        raise AssertionError("cloned")
+    monkeypatch.setattr(rb.gitops, "clone", cloned)
+
+
+def _committers(out: Path) -> list[str]:
+    return [line.split(":", 1)[1].strip() for line in (out / "metadata.fuller.txt").read_text().splitlines()
+            if line.startswith("Commit:")]
+
+
+def test_rebound_commits_carry_the_repo_committer(tmp_path, monkeypatch):
+    frozen, author = _moved_author(tmp_path)
+    _git(author, "config", "user.name", "Outside Dev")
+    _git(author, "config", "user.email", "outside@example.invalid")
+    _no_global_identity(monkeypatch)
+    out = tmp_path / "frozen-v2"
+    assert rb.rebind(frozen, author, "refs/remotes/origin/dev", out).outcome == "rebased"
+    committers = _committers(out)
+    assert committers and set(committers) == {"Outside Dev <outside@example.invalid>"}, committers
+
+
+def test_no_committer_identity_refuses_before_cloning(tmp_path, monkeypatch):
+    frozen, author = _moved_author(tmp_path)
+    _git(author, "config", "--unset", "user.name")
+    _git(author, "config", "--unset", "user.email")
+    _no_global_identity(monkeypatch)
+    _cloning_fails(monkeypatch)
+    out = tmp_path / "frozen-v2"
+    with pytest.raises(rb.RebindRefused) as exc:
+        rb.rebind(frozen, author, "refs/remotes/origin/dev", out)
+    assert exc.value.code == "committer_identity_missing", exc.value
+    assert "user.name" in str(exc.value) and "user.email" in str(exc.value), exc.value
+    assert not out.exists()
+
+
+def test_a_guessed_email_refuses_before_cloning(tmp_path, monkeypatch):
+    frozen, author = _moved_author(tmp_path)
+    _git(author, "config", "--unset", "user.name")
+    _git(author, "config", "--unset", "user.email")
+    _no_global_identity(monkeypatch)
+    monkeypatch.setenv("GIT_COMMITTER_NAME", "Guess Name")
+    monkeypatch.setenv("EMAIL", "guess@example.invalid")
+    _cloning_fails(monkeypatch)
+    out = tmp_path / "frozen-v2"
+    with pytest.raises(rb.RebindRefused) as exc:
+        rb.rebind(frozen, author, "refs/remotes/origin/dev", out)
+    assert exc.value.code == "committer_identity_missing", exc.value
+    assert not out.exists()
+
+
+def test_an_empty_email_in_repo_config_refuses_before_cloning(tmp_path, monkeypatch):
+    frozen, author = _moved_author(tmp_path)
+    _git(author, "config", "user.name", "Outside Dev")
+    _git(author, "config", "user.email", "")
+    _no_global_identity(monkeypatch)
+    _cloning_fails(monkeypatch)
+    out = tmp_path / "frozen-v2"
+    with pytest.raises(rb.RebindRefused) as exc:
+        rb.rebind(frozen, author, "refs/remotes/origin/dev", out)
+    assert exc.value.code == "committer_identity_missing", exc.value
+    assert not out.exists()
+
+
+def test_env_committer_identity_is_used(tmp_path, monkeypatch):
+    frozen, author = _moved_author(tmp_path)
+    _git(author, "config", "--unset", "user.name")
+    _git(author, "config", "--unset", "user.email")
+    _no_global_identity(monkeypatch)
+    monkeypatch.setenv("GIT_COMMITTER_NAME", "Env Dev")
+    monkeypatch.setenv("GIT_COMMITTER_EMAIL", "env@example.invalid")
+    out = tmp_path / "frozen-v2"
+    assert rb.rebind(frozen, author, "refs/remotes/origin/dev", out).outcome == "rebased"
+    assert set(_committers(out)) == {"Env Dev <env@example.invalid>"}, _committers(out)
+
+
+def test_global_committer_identity_is_used(tmp_path, monkeypatch):
+    frozen, author = _moved_author(tmp_path)
+    _git(author, "config", "--unset", "user.name")
+    _git(author, "config", "--unset", "user.email")
+    _no_global_identity(monkeypatch)
+    global_config = tmp_path / "global.gitconfig"
+    global_config.write_text("[user]\n\tname = Global Dev\n\temail = global@example.invalid\n")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_config))
+    out = tmp_path / "frozen-v2"
+    assert rb.rebind(frozen, author, "refs/remotes/origin/dev", out).outcome == "rebased"
+    assert set(_committers(out)) == {"Global Dev <global@example.invalid>"}, _committers(out)
+
+
+def test_repin_cli_without_identity_prints_the_code_and_next_step(tmp_path, monkeypatch):
+    from tests.test_store_break_attempts import _cli
+    frozen, author = _moved_author(tmp_path)
+    _git(author, "config", "--unset", "user.name")
+    _git(author, "config", "--unset", "user.email")
+    _no_global_identity(monkeypatch)
+    out = tmp_path / "frozen-v2"
+    code, text = _cli("review", "repin", str(frozen), "--repo", str(author), "--out-dir", str(out),
+                      "--ref", "refs/remotes/origin/dev")
+    assert code != 0, text
+    assert "committer_identity_missing" in text, text
+    assert "set user.name and user.email" in text and "then rerun" in text, text
+    assert not out.exists()

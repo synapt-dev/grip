@@ -10,9 +10,10 @@ from pathlib import Path
 
 import pytest
 
-from gr2.python_cli import declared_sets
+from gr2.python_cli import declared_sets, events
 from gr2.python_cli.app import app
 from gr2.python_cli.declared_sets import DeclaredSetError
+from gr2.python_cli.events import EventType
 from gr2.python_cli.workspace_guidance import is_full_mode_root
 
 from tests.conftest import make_cli_runner
@@ -87,3 +88,51 @@ def test_sets_at_an_absent_revision_of_an_adopted_full_root_refuse(adopted):
     assert set(declared_sets.read(adopted).members) == {"app"}  # control: HEAD reads the root's .gitmodules
     with pytest.raises(DeclaredSetError, match="^root_commit_absent: "):
         declared_sets.read(adopted, "0" * 40)
+
+
+def _emit(root: Path) -> None:
+    events.emit(EventType.REVIEW_BOUND, root, "x", "u", {"n": 1})
+
+
+def _git_dir_events(root: Path) -> Path:
+    return Path(_git("-C", str(root), "rev-parse", "--absolute-git-dir")) / "grip-events"
+
+
+def test_adopted_full_root_with_old_events_refuses_the_read_by_name(adopted):
+    old = adopted / ".grip" / "events"
+    old.mkdir(parents=True, exist_ok=True)
+    (old / "outbox.jsonl").write_text('{"seq": 1, "type": "review.bound"}\n')
+    with pytest.raises(events.EventsLeftBehindError, match="^events_left_behind: ") as exc:
+        events.read_events(adopted, "c")
+    assert f"Move {old} aside first; it holds events written before full mode." in str(exc.value)
+    assert str(old) in str(exc.value) and str(_git_dir_events(adopted)) in str(exc.value)
+
+
+def test_adopted_full_root_with_old_events_refuses_the_write_and_writes_nothing(adopted):
+    old = adopted / ".grip" / "events"
+    (old / "cursors").mkdir(parents=True, exist_ok=True)
+    (old / "cursors" / "c.json").write_text('{"last_seq": 1}')
+    with pytest.raises(events.EventEmitError, match="^events_left_behind: ") as exc:
+        _emit(adopted)
+    assert str(old) in str(exc.value) and str(_git_dir_events(adopted)) in str(exc.value)
+    assert not _git_dir_events(adopted).exists()
+
+
+@pytest.mark.parametrize("old_dir", ["empty", "absent"])
+def test_adopted_full_root_with_no_old_events_reads_the_git_dir(adopted, old_dir):
+    old = adopted / ".grip" / "events"
+    if old_dir == "empty":
+        (old / "cursors").mkdir(parents=True, exist_ok=True)  # dirs alone hold no events
+    else:
+        assert not old.exists()
+    _emit(adopted)
+    assert (_git_dir_events(adopted) / "outbox.jsonl").is_file()
+    assert [e["type"] for e in events.read_events(adopted, "c")] == ["review.bound"]
+
+
+def test_native_root_with_events_reads_its_own_events_dir(adopted):
+    (adopted / "grip.toml").write_text("")
+    _emit(adopted)
+    assert (adopted / ".grip" / "events" / "outbox.jsonl").is_file()
+    assert [e["type"] for e in events.read_events(adopted, "c")] == ["review.bound"]
+    assert not _git_dir_events(adopted).exists()

@@ -40,6 +40,11 @@ class EventEmitError(RuntimeError):
     """The event could not be durably recorded."""
 
 
+class EventsLeftBehindError(RuntimeError):
+    """A full-mode root whose `.grip/events` still holds files: its events dir is the git dir's, and reading or
+    writing there alone would hide the events left in the work tree, so neither is done."""
+
+
 class EventType(str, Enum):
     LANE_CREATED = "lane.created"
     LANE_ENTERED = "lane.entered"
@@ -100,12 +105,34 @@ class EventType(str, Enum):
     REVIEW_CLOSED = "review.closed"
 
 
+def _events_dir(workspace_root: Path) -> Path:
+    """Where the outbox, its lock and the cursors live: `.grip/events` at a native or spec root. At a full-mode
+    (griplink) root gr2's own working files live under the root's git dir, never in its work tree, so no verb
+    leaves a `.grip/` there; the writer and every reader resolve through here. A full-mode root that also holds a
+    workspace spec may still have files in `.grip/events`: it refuses, naming both dirs, rather than read or write
+    the git dir's alone."""
+    from .workspace_guidance import is_full_mode_root  # lazy: workspace_guidance reaches root_verbs and grip
+
+    work_tree_dir = workspace_root / ".grip" / "events"
+    if is_full_mode_root(workspace_root):
+        from .griplink import _git_dir
+
+        git_dir_events = _git_dir(workspace_root) / "grip-events"
+        if work_tree_dir.is_dir() and any(p.is_file() for p in work_tree_dir.rglob("*")):
+            raise EventsLeftBehindError(
+                f"events_left_behind: {work_tree_dir} still holds events, and this full-mode root's events live in "
+                f"{git_dir_events}; gr2 reads neither alone. Move {work_tree_dir} aside first; it holds events written before full mode."
+            )
+        return git_dir_events
+    return work_tree_dir
+
+
 def _outbox_path(workspace_root: Path) -> Path:
-    return workspace_root / ".grip" / "events" / "outbox.jsonl"
+    return _events_dir(workspace_root) / "outbox.jsonl"
 
 
 def _cursors_dir(workspace_root: Path) -> Path:
-    return workspace_root / ".grip" / "events" / "cursors"
+    return _events_dir(workspace_root) / "cursors"
 
 
 def _lock_path(outbox: Path) -> Path:
@@ -325,7 +352,10 @@ def emit(
     if collisions:
         raise ValueError(f"payload keys collide with reserved envelope/context names: {collisions}")
 
-    outbox = _outbox_path(workspace_root)
+    try:
+        outbox = _outbox_path(workspace_root)
+    except EventsLeftBehindError as exc:
+        raise EventEmitError(str(exc)) from exc
     try:
         outbox.parent.mkdir(parents=True, exist_ok=True)
         with _event_write_lock(outbox):

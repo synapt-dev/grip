@@ -25,7 +25,8 @@ def _gated_emit_worker(
 ) -> None:
     """Pause each process after reading seq so an unlocked RMW races deterministically."""
     events_path = Path(source_root) / "gr2" / "gr2" / "python_cli" / "events.py"
-    spec = importlib.util.spec_from_file_location("event_integrity_worker_events", events_path)
+    # Named inside its package: events resolves its directory through sibling modules (relative imports).
+    spec = importlib.util.spec_from_file_location("gr2.python_cli.event_integrity_worker_events", events_path)
     assert spec is not None and spec.loader is not None
     events = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(events)

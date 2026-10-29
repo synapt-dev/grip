@@ -1595,6 +1595,12 @@ def _native_store_init(root: Path, member_paths: list[str] | None = None,
         root.mkdir(parents=True, exist_ok=True)
         _make_clones(root, todo)
         member_paths = [*(member_paths or []), *(name for name, _ in clones)]
+    # A compat store adopts the checkouts already beside it, so its root must already be a directory: refused by
+    # name (exit 2, the root option's words) rather than a raw FileNotFoundError. --clone made it just above.
+    if not root.is_dir():
+        raise NativeStoreRefusal(
+            f"{str(root)!r} is not a directory, so it cannot be the workspace root; pass the workspace root first, "
+            f"or name it with -C <root>", 2)
     if (root / ".git").exists() and (root / "grip.toml").exists():
         _refuse_init_disagreement(root)
         _regenerate_workspace_gitignore(root)

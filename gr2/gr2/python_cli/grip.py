@@ -20,7 +20,7 @@ from . import gitops, next_steps
 from .clone_exec import IncompleteRemoval, rmtree_or_refuse
 from .gitops import git
 from .layout import GRIP_DIR, LANE_CONTROL_PREFIX, LANE_VENV, grip_dir as _layout_grip_dir
-from .workspace_guidance import init_unless_inside_workspace
+from .workspace_guidance import init_unless_inside_workspace, is_full_mode_root
 
 
 # ---------------------------------------------------------------------------
@@ -45,6 +45,11 @@ class AlphaRootRefused(GripInitError):
 class StoreSetupRefused(GripInitError):
     """The native store a bind sets up on a root with no store was refused by `store init` itself
     (no sibling git repositories, a pin not on its upstream, ...). The reason is `store init`'s own."""
+
+
+class LegacyBindsLeftBehind(GripInitError):
+    """A bind at a full-mode root whose `.grip/.git` still holds the binds an older gr2 kept there. The root's
+    own `.git` is its store; binding beside the old one would leave two records, so the caller moves one."""
 
 
 class Gr1RootRefused(GripInitError):
@@ -1933,7 +1938,20 @@ def _validate_bind_store(workspace: Path, *, create: bool = False,
     the `/.grip/` exclude line that `store init` wrote, both harmless.
 
     ``migrate=False`` (receive) leaves `.grip/.git` exactly as it is: receive publishes the one review
-    it fetched and moves nothing else; the next bind-touching verb migrates."""
+    it fetched and moves nothing else; the next bind-touching verb migrates.
+
+    A full-mode root's own `.git` is already its store: a bind there writes its ref and nothing else (no
+    grip.toml, which would turn the root native for every later verb). One that still holds binds an older
+    gr2 left in `.grip/.git` (any ref, or a HEAD that resolves) is refused naming both stores: gr2 reads
+    neither alone, and binding in the root's `.git` beside them would split the record."""
+    if create and is_full_mode_root(workspace):
+        legacy = _layout_grip_dir(workspace) / ".git"
+        if legacy.is_dir() and _store_holds_anything(legacy):
+            raise LegacyBindsLeftBehind(
+                f"legacy_binds_left_behind: {legacy} still holds review binds, and this full-mode root's binds live in "
+                f"{workspace / '.git'}; gr2 reads neither alone, so nothing was bound. Move {legacy} aside first; it holds review binds made before full mode."
+            )
+        return None
     if not _is_native_workspace(workspace):
         legacy = _layout_grip_dir(workspace) / ".git"
         if legacy.is_dir() and _alpha_state_commits(legacy):
@@ -2027,6 +2045,16 @@ def _move_aside_empty_store(workspace: Path, legacy: Path) -> None:
         return  # every aside name is taken; leave this one rather than overwrite
     legacy.rename(target)
     print(f"moved an empty .grip/.git aside to .grip/{target.name}", file=sys.stderr)
+
+
+def _store_holds_anything(store: Path) -> bool:
+    """A git dir holds something when any ref exists or its HEAD resolves (a detached HEAD has no ref). A
+    `git init` store with neither is empty; one git cannot read is not empty."""
+    refs = gitops.run_argv(["git", "--git-dir", str(store), "for-each-ref", "--count=1", "--format=%(refname)"])
+    if refs.returncode != 0 or refs.stdout.strip():
+        return True
+    head = gitops.run_argv(["git", "--git-dir", str(store), "rev-parse", "--verify", "--quiet", "HEAD"])
+    return head.returncode == 0
 
 
 def _alpha_state_commits(store: Path) -> list[str]:

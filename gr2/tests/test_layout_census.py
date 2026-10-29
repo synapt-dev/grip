@@ -126,7 +126,7 @@ EXPECTED = {
     "gr2/prototypes/repo_maintenance_prototype.py": 1,
     "gr2/python_cli/app.py": 7,
     "gr2/python_cli/clone_exec.py": 1,
-    "gr2/python_cli/events.py": 2,
+    "gr2/python_cli/events.py": 1,
     "gr2/python_cli/failures.py": 1,
     "gr2/python_cli/file_exec.py": 1,
     "gr2/python_cli/gitops.py": 1,

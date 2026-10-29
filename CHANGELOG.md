@@ -86,6 +86,7 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
   Now the tree decides: `store status` names the full-mode root and points to `gr2 status`, and the sets read refuses
   with `root_commit_absent`. A root with a `grip.toml` is still a native root.
 
+- **`gr2` review pin binds at a full-mode root.** At a root made by `store init --mode full`, `review pin` now binds its rows (exit 0) where it refused with "does not read a full-mode root yet": the root's own `.git` is the review store, so the bind adds one review ref and writes no `grip.toml`. The event outbox, its lock and the event cursors at such a root live under the root's git dir (`<git-dir>/grip-events/`), so no verb leaves a `.grip/` in its work tree; a native root keeps `.grip/events/`. A full-mode root that `workspace init` was also run at, and whose `.grip/events/` still holds files, refuses to read or write its events with `events_left_behind`, naming both dirs, rather than read the git dir's alone.
 - **`gr2`: `store commit` refuses a staged change the store does not record.** In a root with no `.gitinclude`, a
   file staged by hand rode into the record commit beside the pins. The commit now judges the staged diff against
   `HEAD` and refuses, at exit 4 with the first such path and how many there are, any path it does not write itself

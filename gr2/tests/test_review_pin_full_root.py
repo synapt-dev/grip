@@ -170,6 +170,35 @@ def test_full_root_crafted_member_names_make_no_row(full, monkeypatch):
         assert not outside.exists()
 
 
+def _ghost(full) -> Path:
+    """Declare a member "ghost" in .gitmodules with no gitlink in HEAD, and commit."""
+    root = full["root"]
+    gm = root / ".gitmodules"
+    gm.write_text(gm.read_text() + f'[submodule "ghost"]\n\tpath = ghost\n\turl = {full["urls"]["api"]}\n')
+    git(root, "add", ".gitmodules")
+    git(root, "commit", "-q", "-m", "declare ghost")
+    return root
+
+
+def test_full_root_members_flag_names_unpinned_member_once(full, monkeypatch):
+    root = _ghost(full)
+    _ahead(root, "api")
+    r = gr2(root, monkeypatch, "review", "pin", "--members", "ghost")
+    out = _out(r)
+    assert "ghost (no gitlink at ghost in HEAD)" in out, out
+    assert "ghost (not a member of this workspace)" not in out, out
+    assert "pin ghost " not in out, out
+
+
+def test_full_root_members_flag_excludes_unpinned_member(full, monkeypatch):
+    root = _ghost(full)
+    _ahead(root, "api")
+    r = gr2(root, monkeypatch, "review", "pin", "--members", "api")
+    out = _out(r)
+    _bind_refused(r, out)
+    assert "ghost" not in out, out
+
+
 def test_full_root_sync_wait_unchanged(full, monkeypatch):
     """workspace_members is not taught the full root: sync wait there refuses as it did before this change."""
     root = full["root"]

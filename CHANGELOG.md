@@ -80,6 +80,12 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Fixed
 
+- **`gr2`: a full-mode root that `workspace init` was also run at is still named a full-mode root.** Its
+  `.grip/workspace_spec.toml` made the full-mode check read it as another kind of root, so `store status` there told
+  the user to run `gr2 store init here`, and reading its sets at a revision that is not a commit returned no sets.
+  Now the tree decides: `store status` names the full-mode root and points to `gr2 status`, and the sets read refuses
+  with `root_commit_absent`. A root with a `grip.toml` is still a native root.
+
 - **`gr2`: `store commit` refuses a staged change the store does not record.** In a root with no `.gitinclude`, a
   file staged by hand rode into the record commit beside the pins. The commit now judges the staged diff against
   `HEAD` and refuses, at exit 4 with the first such path and how many there are, any path it does not write itself

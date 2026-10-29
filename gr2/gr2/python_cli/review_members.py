@@ -42,6 +42,19 @@ def workspace_members(workspace_root: Path) -> list[Member]:
     ]
 
 
+def _full_root_members(workspace_root: Path) -> tuple[list[Member], dict[str, str]]:
+    """A full root's members (no workspace spec, no grip.toml), read from the root commit's .gitmodules by the one set
+    reader, each pinned by its gitlink in HEAD; a member HEAD does not pin is named, never pinned from elsewhere. A
+    declaration the reader refuses (DeclaredSetError) is raised to the caller, never read as no members."""
+    from .declared_sets import DeclaredSet, read, gitlinks
+
+    declaration = read(workspace_root, "HEAD")
+    pins, missing = gitlinks(workspace_root, "HEAD", declaration, DeclaredSet("", tuple(sorted(declaration.members))))
+    members = [Member(name, declaration.members[name]["path"], _text(declaration.members[name].get("remote")), None,
+                      pins[name]) for name in sorted(pins)]
+    return members, {name: f"{name} (no gitlink at {declaration.members[name]['path']} in HEAD)" for name in missing}
+
+
 def changed_member_rows(workspace_root: Path, only: list[str] | None = None) -> Choice:
     """One bind row per member whose pin is an ancestor of its distinct checkout head. A member with no pin takes the live
     remote head of its ref as base instead, and is refused by name when its HEAD is detached, when that head is not an
@@ -52,13 +65,20 @@ def changed_member_rows(workspace_root: Path, only: list[str] | None = None) -> 
     names any that the workspace does not declare."""
     from .commit import entered_member_roots
 
-    members = workspace_members(workspace_root)
+    from .workspace_guidance import is_full_mode_root
+
+    unpinned: dict[str, str] = {}
+    if lane_downstream.load_members(workspace_root) is None and is_full_mode_root(workspace_root):
+        members, unpinned = _full_root_members(workspace_root)
+    else:
+        members = workspace_members(workspace_root)
     roots = entered_member_roots(workspace_root)
-    declared = {m.name for m in members}
+    declared = {m.name for m in members} | set(unpinned)
     rows: list[dict] = []
     refused: list[str] = []
     branches: dict[str, str] = {}  # member -> branch, for the members whose base came from the live head
-    skipped: list[str] = [f"{n} (not a member of this workspace)" for n in (only or []) if n not in declared]
+    skipped: list[str] = [f"{n} (not a member of this workspace)" for n in (only or []) if n not in declared] + [
+        why for n, why in unpinned.items() if only is None or n in only]
     for m in members:
         if only is not None and m.name not in only:
             skipped.append(f"{m.name} (excluded by --members)")

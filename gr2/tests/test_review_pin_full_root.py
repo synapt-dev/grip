@@ -12,6 +12,7 @@ Written by the author of the change (not by an independent reader). Each row nam
 from __future__ import annotations
 
 import re
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -123,6 +124,20 @@ def test_full_root_unreadable_gitmodules_refuses_by_name(full, monkeypatch):
     assert "nothing to pin" not in out
 
 
+def test_past_gitmodules_that_does_not_parse_is_skipped_once_fixed(full):
+    """A .gitmodules git cannot parse in an old commit, fixed on top: git reads the root (fsck --strict only warns), so
+    the history check skips that blob and the read keeps its members."""
+    root = full["root"]
+    good = (root / ".gitmodules").read_text()
+    (root / ".gitmodules").write_text(good + '[submodule "a"\n')
+    git(root, "commit", "-q", "-m", "unclosed section", "--", ".gitmodules")
+    assert subprocess.run(["git", "config", "--blob", "HEAD:.gitmodules", "--list"], cwd=root,
+                          capture_output=True).returncode == 128
+    (root / ".gitmodules").write_text(good)
+    git(root, "commit", "-q", "-m", "fixed on top", "--", ".gitmodules")
+    assert "api" in declared_sets.read(root, "HEAD").members
+
+
 def test_full_root_after_root_commit_rows_from_head_pins(full, monkeypatch):
     """A root `gr2 commit` (rc 0) does not move the members' gitlinks in this fixture; the rows still go from the pins in
     HEAD to the checkouts, as measured."""
@@ -166,30 +181,205 @@ def test_full_root_unborn_head_refuses(full, monkeypatch):
 
 
 def test_full_root_crafted_member_names_make_no_row(full, monkeypatch):
-    """The set reader reads these sections as members today (its own guard is another change's); this verb names each as
-    unpinned, makes no row for it and reads nothing outside the root. A section name git itself disallows ("../x") is
-    then refused by the record's fsck, as measured: it binds nothing new and writes nothing."""
+    """Section names git allows but whose path is crafted: this verb names each as unpinned, makes no row for it and
+    reads nothing outside the root. (A name git disallows is refused by the set reader; see the rows below.)"""
     root = full["root"]
     _ahead(root, "api")
     base = (root / ".gitmodules").read_text()
     outside = full["tmp"] / "outside"
     bound = 0  # a rebind adds one review or rewrites the same one (both measured)
-    for section, path in (("a/b", "ab"), ("esc", "../outside"), ("abs", str(outside)), ("../x", "x")):
+    for section, path in (("a/b", "ab"), ("esc", "../outside"), ("abs", str(outside))):
         (root / ".gitmodules").write_text(base + f'[submodule "{section}"]\n\tpath = {path}\n\turl = {full["urls"]["api"]}\n')
         git(root, "add", ".gitmodules")
         git(root, "commit", "-q", "-m", f"crafted {section}")
         r = gr2(root, monkeypatch, "review", "pin")
         out = _out(r)
-        if section == "../x":
-            assert r.exit_code != 0 and "disallowed submodule name" in str(r.exception), out
-            assert len(_reviews(root)) == bound and not (root / ".grip").exists()
-        else:  # the same api row each time
-            _bound(r, out, root, reviews=None)
-            assert max(bound, 1) <= len(_reviews(root)) <= bound + 1, _reviews(root)
-            bound = len(_reviews(root))
+        _bound(r, out, root, reviews=None)  # the same api row each time
+        assert max(bound, 1) <= len(_reviews(root)) <= bound + 1, _reviews(root)
+        bound = len(_reviews(root))
         assert f"{section} (no gitlink at {path} in HEAD)" in out, out
         assert f"pin {section} " not in out, out
         assert not outside.exists()
+
+
+PORT = "is not a name git allows for a submodule"
+RUN = "does not make a valid member ref"
+REFUSED = 2  # the pin's exit on every DeclaredSetError; measured by test_bad_member_name_exits_like_the_other_reader_refusals
+BAD_NAMES = (("../x", PORT), ("..", PORT), ("a/../b", PORT), ("a\\..\\b", PORT), ("", PORT),
+             ("/abs/x", RUN), (".lock/x", RUN), ("x.lock", RUN))
+
+
+def _section(root: Path, url, name: str, field: str = "path") -> None:
+    value = "x" if field == "path" else "s"
+    quoted = name.replace("\\", "\\\\")  # a backslash in a section name is written escaped
+    body = (root / ".gitmodules").read_text() + f'[submodule "{quoted}"]\n\t{field} = {value}\n\turl = {url}\n'
+    (root / ".gitmodules").write_text(body)
+    git(root, "add", ".gitmodules")
+    git(root, "commit", "-q", "-m", "a section")
+
+
+def _objects(root: Path) -> str:
+    return git(root, "count-objects", "-v")
+
+
+@pytest.mark.parametrize("name, reason", BAD_NAMES, ids=[n or "empty" for n, _ in BAD_NAMES])
+def test_bad_member_name_refuses_the_whole_read_and_writes_nothing(full, monkeypatch, name, reason):
+    root = full["root"]
+    _ahead(root, "api")
+    _section(root, full["urls"]["api"], name)
+    reviews, objects = _reviews(root), _objects(root)
+    r = gr2(root, monkeypatch, "review", "pin")
+    out = _out(r)
+    assert r.exit_code == REFUSED, out
+    assert f"submodule_name_disallowed: member {name!r} in .gitmodules" in out, out
+    assert reason in out, out
+    assert "remove" not in out and "delete" not in out, out
+    assert _reviews(root) == reviews and _objects(root) == objects, out
+    assert not (root / ".grip").exists()
+
+
+@pytest.mark.parametrize("name", ("x", "ok/nested"))
+def test_allowed_member_name_still_pins(full, monkeypatch, name):
+    root = full["root"]
+    _ahead(root, "api")
+    _section(root, full["urls"]["api"], name)
+    r = gr2(root, monkeypatch, "review", "pin")
+    _bound(r, _out(r), root)
+
+
+@pytest.mark.parametrize("name, reason", (("../x", PORT), ("x.lock", RUN)))
+def test_bad_name_on_a_set_line_alone_is_refused(full, monkeypatch, name, reason):
+    """A section with ONLY a gr2-set line (no path, no url) never reaches the path/url loop; the set loop refuses it
+    with the same words. x.lock is a name git's fsck allows, so only the set loop's check can refuse it."""
+    root = full["root"]
+    _ahead(root, "api")
+    (root / ".gitmodules").write_text((root / ".gitmodules").read_text() + f'[submodule "{name}"]\n\tgr2-set = s\n')
+    git(root, "add", ".gitmodules")
+    git(root, "commit", "-q", "-m", "a set line alone")
+    r = gr2(root, monkeypatch, "review", "pin")
+    out = _out(r)
+    assert r.exit_code == REFUSED and f"submodule_name_disallowed: member {name!r}" in out and reason in out, out
+
+
+def test_bad_member_name_exits_like_the_other_reader_refusals(full, monkeypatch):
+    """The exit is measured, not read: a set_name_invalid refusal (the same DeclaredSetError branch) and a bad name
+    exit alike."""
+    root = full["root"]
+    _ahead(root, "api")
+    git(root, "config", "-f", ".gitmodules", "submodule.api.gr2-set", "bad name")
+    git(root, "commit", "-q", "-am", "bad set name")
+    r = gr2(root, monkeypatch, "review", "pin")
+    assert "set_name_invalid" in _out(r) and r.exit_code == REFUSED, _out(r)
+    git(root, "config", "-f", ".gitmodules", "--unset", "submodule.api.gr2-set")
+    git(root, "commit", "-q", "-am", "no set")
+    _section(root, full["urls"]["api"], "../x")
+    assert gr2(root, monkeypatch, "review", "pin").exit_code == REFUSED
+
+
+def test_printed_rename_step_recovers_the_pin(full, monkeypatch):
+    """The step is parsed from the refusal as printed, not retyped; the one chosen name 'x' stands in for <new>."""
+    root = full["root"]
+    _ahead(root, "api")
+    _section(root, full["urls"]["api"], "../x")
+    out = _out(gr2(root, monkeypatch, "review", "pin"))
+    step = re.search(r"with (git config -f \.gitmodules --rename-section .*?), then run the verb again", out)
+    assert step, out
+    argv = [word.replace("<new>", "x") for word in shlex.split(step.group(1))]
+    assert subprocess.run(argv, cwd=root).returncode == 0
+    assert "rewrite the commit that added the name" in _flat(out) and "reflog" not in out and "prune" not in out, out
+    old_blob = git(root, "rev-parse", "HEAD:.gitmodules").strip()
+    # The rewrite path: amend the commit that added the name (only .gitmodules; -a would stage api's moved gitlink).
+    git(root, "commit", "-q", "--amend", "--no-edit", "--", ".gitmodules")
+    assert subprocess.run(["git", "cat-file", "-e", old_blob], cwd=root).returncode == 0  # the old blob is still stored
+    r = gr2(root, monkeypatch, "review", "pin")
+    _bound(r, _out(r), root)
+    assert "x" in declared_sets.read(root, "HEAD").members
+
+
+def test_printed_rename_step_quotes_a_name_holding_a_quote(full, monkeypatch):
+    """The refusal fires on hostile names, so a ' in the name stays inside one shell word of the printed step."""
+    root = full["root"]
+    _ahead(root, "api")
+    _section(root, full["urls"]["api"], "../a'b")
+    r = gr2(root, monkeypatch, "review", "pin")
+    out = _out(r)
+    assert "submodule_name_disallowed:" in out and r.exit_code == REFUSED, out
+    step = re.search(r"with (git config -f \.gitmodules --rename-section .*?), then run the verb again", out)
+    assert step, out
+    argv = ["git", "config", "-f", ".gitmodules", "--rename-section", "submodule.../a'b", "submodule.<new>"]
+    assert shlex.split(step.group(1)) == argv, step.group(1)
+
+
+def test_bad_name_in_an_older_commit_refuses_with_the_same_word(full, monkeypatch):
+    """Renaming on top leaves the bad name in history: git's gitmodulesName error is caught into the reader's word."""
+    root = full["root"]
+    _ahead(root, "api")
+    _section(root, full["urls"]["api"], "../x")
+    argv = ["git", "config", "-f", ".gitmodules", "--rename-section", "submodule.../x", "submodule.x"]
+    assert subprocess.run(argv, cwd=root).returncode == 0
+    git(root, "commit", "-q", "-m", "renamed on top", "--", ".gitmodules")
+    r = gr2(root, monkeypatch, "review", "pin")
+    out = _out(r)
+    assert "submodule_name_disallowed:" in out and r.exit_code == REFUSED, out
+    assert "Traceback" not in out and (r.exception is None or isinstance(r.exception, SystemExit)), out
+    assert "rewrite the commit that added the name" in _flat(out), out
+
+
+def test_bad_name_on_a_merged_side_branch_refuses_naming_the_side_commit(full, monkeypatch):
+    """A side branch adds the bad name and takes it back out, then merges --no-ff: the merge's .gitmodules matches its
+    first parent, so the default history walk drops the side branch. The full history walk still reads the bad blob."""
+    root = full["root"]
+    _ahead(root, "api")
+    base = git(root, "rev-parse", "HEAD").strip()
+    trunk = git(root, "symbolic-ref", "--short", "HEAD").strip()
+    git(root, "checkout", "-q", "-b", "side")
+    _section(root, full["urls"]["api"], "../x")
+    bad = git(root, "rev-parse", "HEAD").strip()
+    git(root, "checkout", "-q", base, "--", ".gitmodules")
+    git(root, "commit", "-q", "-m", "took the section back out", "--", ".gitmodules")
+    git(root, "checkout", "-q", trunk)
+    git(root, "merge", "-q", "--no-ff", "-m", "merge side", "side")
+    assert bad not in git(root, "rev-list", "HEAD", "--", ".gitmodules").split()  # the default walk misses it
+    reviews, objects = _reviews(root), _objects(root)
+    r = gr2(root, monkeypatch, "review", "pin")
+    out = _out(r)
+    assert r.exit_code == REFUSED and "submodule_name_disallowed: member '../x'" in out and bad[:12] in out, out
+    assert _reviews(root) == reviews and _objects(root) == objects
+
+
+def test_the_history_check_never_runs_fsck(full, monkeypatch):
+    """The read's history check walks the commits that touch .gitmodules; it never pays for a whole-store fsck."""
+    root = full["root"]
+    _section(root, full["urls"]["api"], "../x")
+    git(root, "config", "-f", ".gitmodules", "--rename-section", "submodule.../x", "submodule.x")
+    git(root, "commit", "-q", "-m", "renamed on top", "--", ".gitmodules")
+    seen, real = [], declared_sets.gitops.run
+    monkeypatch.setattr(declared_sets.gitops, "run", lambda cwd, *args, **kw: seen.append(args) or real(cwd, *args, **kw))
+    with pytest.raises(declared_sets.DeclaredSetError, match="submodule_name_disallowed"):
+        declared_sets.read(root, "HEAD")
+    assert any(a[:2] == ("rev-list", "--full-history") for a in seen) and not any("fsck" in a for a in seen), seen
+
+
+def test_newline_in_a_section_name_is_unreadable_not_a_member(full, monkeypatch):
+    root = full["root"]
+    _ahead(root, "api")
+    (root / ".gitmodules").write_text((root / ".gitmodules").read_text() + '[submodule "a\nb"]\n\tpath = x\n')
+    git(root, "add", ".gitmodules")
+    git(root, "commit", "-q", "-m", "newline section")
+    reviews, objects = _reviews(root), _objects(root)
+    r = gr2(root, monkeypatch, "review", "pin")
+    out = _out(r)
+    assert r.exit_code == REFUSED and "gitmodules_unreadable" in out, out
+    assert _reviews(root) == reviews and _objects(root) == objects
+
+
+def test_check_set_refuses_a_bad_member_name_with_the_same_word(full, monkeypatch):
+    """A second verb through the same reader (check set --root-commit) refuses with the same word."""
+    root = full["root"]
+    _section(root, full["urls"]["api"], "../x")
+    r = gr2(root, monkeypatch, "check", "set", str(root), "--root-commit", "HEAD", "--set", "s", "--", "true")
+    out = _out(r)
+    assert r.exit_code != 0 and "submodule_name_disallowed: member '../x'" in out and PORT in out, out
 
 
 def _ghost(full) -> Path:

@@ -4286,6 +4286,15 @@ def _store_status_line(member: dict) -> str:
             f"dirty={count(member.get('dirty'))}")
 
 
+def _compose_document(root: Path) -> dict:
+    """The root's grip.toml for a root compose. A root with no grip.toml and no committed spec composes nothing, so
+    a verb that reached this point another way (its members given to it) keeps its own outcome."""
+    try:
+        return _grip_document(root)
+    except NativeStoreRefusal:
+        return {}
+
+
 def _compose_members(root: Path) -> list[dict[str, str]]:
     """Each member's name and the working root a verb reads it at, for a root compose. Unreadable members: none."""
     try:
@@ -4333,7 +4342,7 @@ def grip_status_cmd(
     for line in store_hooks.gitmodules_problems(root):
         typer.echo(line, err=True)
     # A root compose whose dest is missing or stale is named on stderr; status writes nothing.
-    for line in root_compose.drift(root, _grip_document(root), _compose_members(root)):
+    for line in root_compose.drift(root, _compose_document(root), _compose_members(root)):
         typer.echo(line, err=True)
     # THE TABLE PRINTS IN EVERY CASE, and the code follows it. A diagnostic that exits 0 on
     # an inconsistency is the silent-success class: the root snapshot a clone would
@@ -4379,7 +4388,7 @@ def grip_materialize_cmd(
         raise typer.Exit(code=5)
     # The root's own composed files (a root AGENTS.md built from members), after every member is in place.
     try:
-        composed = root_compose.apply(root, _grip_document(root), members)
+        composed = root_compose.apply(root, _compose_document(root), members)
     except root_compose.RootComposeRefusal as exc:
         typer.echo(f"gr2 checkout: {exc}", err=True)
         raise typer.Exit(code=exc.code)

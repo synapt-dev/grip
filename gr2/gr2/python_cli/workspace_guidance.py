@@ -40,9 +40,10 @@ def enclosing_workspace_root(path: Path) -> Path | None:
 
 
 def is_full_mode_root(workspace_root: Path) -> bool:
-    """A full-mode root (`store init --mode full`): no grip.toml and no workspace spec, and the root's own git
-    carries a stook or a `<m>.griplink/001.2_pin` gitlink."""
-    if (workspace_root / "grip.toml").is_file() or (grip_dir(workspace_root) / "workspace_spec.toml").is_file():
+    """A full-mode root (`store init --mode full`): no grip.toml, and the root's own git carries a stook or a
+    `<m>.griplink/001.2_pin` gitlink. A workspace spec beside it (`workspace init` run at the root) does not make it
+    another kind of root: the tree decides."""
+    if (workspace_root / "grip.toml").is_file():
         return False
     from . import root_verbs
 

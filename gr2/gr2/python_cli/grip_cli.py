@@ -26,6 +26,7 @@ from . import grip as grip_mod
 from . import keys
 from . import names as name_rules
 from . import next_steps
+from . import root_compose
 from . import store_hooks
 from . import workspace_mode
 from .gitops import git, repo_dirty
@@ -4296,6 +4297,28 @@ def _store_status_line(member: dict) -> str:
             f"dirty={count(member.get('dirty'))}")
 
 
+def _compose_document(root: Path) -> dict:
+    """The root's grip.toml for a root compose. A root with no grip.toml and no committed spec composes nothing, so
+    a verb that reached this point another way (its members given to it) keeps its own outcome."""
+    try:
+        return _grip_document(root)
+    except NativeStoreRefusal:
+        return {}
+
+
+def _compose_members(root: Path) -> list[dict[str, str]]:
+    """Each member's name and the working root a verb reads it at, for a root compose. Unreadable members: none."""
+    try:
+        members = _native_members(root)
+    except NativeStoreRefusal:
+        return []
+    rows = []
+    for member in members:
+        claimed = _claimed_member_paths(root, members, exclude=member)
+        rows.append({"name": member["name"], "path": str(_native_member_working_root(root, member, claimed))})
+    return rows
+
+
 @grip_app.command("status")
 def grip_status_cmd(
     root: Optional[Path] = STORE_ROOT_OPTION,
@@ -4328,6 +4351,9 @@ def grip_status_cmd(
     for line in store_hooks.hook_problems(root, store_hooks.hook_states(root)):
         typer.echo(line, err=True)
     for line in store_hooks.gitmodules_problems(root):
+        typer.echo(line, err=True)
+    # A root compose whose dest is missing or stale is named on stderr; status writes nothing.
+    for line in root_compose.drift(root, _compose_document(root), _compose_members(root)):
         typer.echo(line, err=True)
     # THE TABLE PRINTS IN EVERY CASE, and the code follows it. A diagnostic that exits 0 on
     # an inconsistency is the silent-success class: the root snapshot a clone would
@@ -4371,6 +4397,12 @@ def grip_materialize_cmd(
         # fire).
         typer.echo(f"{STORE_INCOMPLETE_PREFIX}{exc}", err=True)
         raise typer.Exit(code=5)
+    # The root's own composed files (a root AGENTS.md built from members), after every member is in place.
+    try:
+        composed = root_compose.apply(root, _compose_document(root), members)
+    except root_compose.RootComposeRefusal as exc:
+        typer.echo(f"gr2 checkout: {exc}", err=True)
+        raise typer.Exit(code=exc.code)
     # A plain `git clone` copies no hooks, so a root cloned and materialized ran plain git with none of the store's
     # checks (an unpushed pin committed with exit 0). The same installer `store init` uses: it never writes over
     # another owner's hook or into a core.hooksPath, and reports both. The members are already in place here, so a
@@ -4391,7 +4423,7 @@ def grip_materialize_cmd(
                     err=True,
                 )
     # stderr in both modes, so neither stdout contract moves
-    for line in hook_lines:
+    for line in [*composed, *hook_lines]:
         typer.echo(line, err=True)
 
 

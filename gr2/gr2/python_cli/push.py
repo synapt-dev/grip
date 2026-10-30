@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -142,6 +143,34 @@ def _porcelain_up_to_date(stdout: str) -> bool:
     return bool(flags) and all(flag == "=" for flag in flags)
 
 
+_PORCELAIN_SUMMARY = re.compile(r"\[([^\]]+)\](?: \((.+)\))?")
+
+
+def _push_refusal(stdout: str, stderr: str, remote: str) -> str:
+    """A failed push as one sentence parsed from git's porcelain '!' line, then git's hint lines, then
+    git's other lines verbatim. Only the bare "Done" line is dropped (porcelain's end marker, not a
+    reason). When no '!' line parses, git's lines are returned as they came, so none are lost."""
+    lines = [
+        line
+        for part in (stdout.strip(), stderr.strip())
+        for line in part.splitlines()
+        if line != "Done"
+    ]
+    for line in stdout.splitlines():
+        fields = line.split("\t")
+        if len(fields) != 3 or fields[0] != "!":
+            continue
+        ref = fields[1].partition(":")[2]
+        summary = _PORCELAIN_SUMMARY.fullmatch(fields[2])
+        if not ref or summary is None:
+            continue
+        reason = f" ({summary.group(2)})" if summary.group(2) else ""
+        sentence = f"{summary.group(1)}: {ref.removeprefix('refs/heads/')} on {remote}{reason}"
+        hints = [line for line in lines if line.startswith("hint:")]
+        return "\n".join([sentence, *hints, *(line for line in lines if not line.startswith("hint:"))])
+    return "\n".join(lines)
+
+
 def push_current_branch(
     repo: Path,
     *,
@@ -171,7 +200,7 @@ def push_current_branch(
     if pushed.returncode != 0:
         # --porcelain puts the per-ref reason ("[rejected] (fetch first)") on stdout and git's
         # error and hints on stderr; the refusal carries both.
-        detail = "\n".join(part for part in (pushed.stdout.strip(), pushed.stderr.strip()) if part)
+        detail = _push_refusal(pushed.stdout, pushed.stderr, selected_remote)
         raise PushError(detail or f"git push failed with exit {pushed.returncode}")
 
     remote_sha = _remote_branch_sha(repo, selected_remote, branch)

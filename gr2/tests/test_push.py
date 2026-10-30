@@ -157,6 +157,39 @@ def test_divergent_push_refuses_without_rewriting_the_remote(tmp_path: Path) -> 
     assert _git(remote, "rev-parse", "refs/heads/main").stdout.strip() == remote_advanced
 
 
+def test_push_cli_rejected_push_prints_the_refusal_sentence_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from gr2.python_cli.app import app
+    from gr2.python_cli.push import push_current_branch
+
+    repo = _init_repo(tmp_path / "repo")
+    remote = _bare(tmp_path / "remote.git")
+    _git(repo, "remote", "add", "upstream", str(remote))
+    push_current_branch(repo, set_upstream=True)
+
+    other = tmp_path / "other"
+    subprocess.run(
+        ["git", "clone", str(remote), str(other)], check=True, capture_output=True, text=True
+    )
+    _git(other, "config", "user.name", "Other")
+    _git(other, "config", "user.email", "other@example.com")
+    _commit(other, "remote advance")
+    _git(other, "push", "origin", "main")
+    _commit(repo, "local divergence")
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(app, ["push", "--repo-path", str(repo)])
+
+    assert result.exit_code == 1, result.output
+    lines = [line for line in _strip_ansi(result.output).splitlines() if line.strip()]
+    assert lines[0] == "Error: rejected: main on upstream (fetch first)", lines
+    assert "Done" not in lines, lines
+    hints = [i for i, line in enumerate(lines) if line.startswith("hint:")]
+    to_line = next(i for i, line in enumerate(lines) if line.startswith("To "))
+    assert hints and max(hints) < to_line, lines
+
+
 def test_acknowledged_push_without_matching_receipt_evidence_refuses(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

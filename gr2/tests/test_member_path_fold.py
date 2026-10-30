@@ -57,6 +57,8 @@ def test_r1_a_case_pair_is_refused_naming_both_paths(tmp_path, monkeypatch, bran
 @pytest.mark.parametrize("branch", BRANCHES)
 @pytest.mark.parametrize("twin", [".github.", ".github "])
 def test_r2_a_trailing_dot_or_space_pair_is_refused(tmp_path, monkeypatch, branch, twin):
+    """The `.github ` revision case is a PIN: base already refuses it, since _normalise_member_path strips the
+    space. The `.github.` revision case is the witness."""
     _refused(tmp_path, monkeypatch, branch, ".github", twin)
 
 

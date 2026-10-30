@@ -482,6 +482,14 @@ def _refuse_symlinked_members(root: Path, members: list[dict[str, str]]) -> None
 _PLAIN_REMOTE = re.compile(r"^(?!.*\.\.)[A-Za-z0-9_][A-Za-z0-9._-]*$")
 
 
+def _member_path_fold(path: object) -> str:
+    """A member path key as the directory a case- and normalization-insensitive filesystem opens, each part folded on
+    its own: the NTFS and HFS+ alias (grip._filesystem_alias: ASCII case, trailing dots and spaces, ignorable code
+    points) and then the Unicode fold (grip.member_key_fold: casefold and NFD). Each misses what the other catches."""
+    return "/".join(grip_mod.member_key_fold(grip_mod._filesystem_alias(part))
+                    for part in keys.member_path_key(path).split("/"))
+
+
 def _native_members(root: Path, revision: str | None = None) -> list[dict[str, str]]:
     # A selected workspace commit owns the whole document, not only its pins.
     data = (_grip_document(root) if revision is None else
@@ -523,14 +531,22 @@ def _native_members(root: Path, revision: str | None = None) -> list[dict[str, s
             item["path"] = _normalise_member_path(root, str(item["path"]))
         # Keyed for the working document too: `./alpha` and `alpha` are one gitlink, so two members there collide.
         # There it compares PATHS only: a duplicate NAME is left to the fallback's containment (see
-        # _native_member_working_root), which refuses only the collision it can act on.
-        path_key = keys.member_path_key(item.get("path"))
+        # _native_member_working_root), which refuses only the collision it can act on. Paths compare as the directory
+        # a case-folding filesystem opens (`.github`, `.GITHUB` and `.github.` are one).
+        path_key = _member_path_fold(item.get("path"))
         if revision is None:
-            if any(keys.member_path_key(previous.get("path")) == path_key for previous in result):  # mut:pathsonly
-                raise NativeStoreRefusal("grip.toml has duplicate member paths", 4)
-        elif any(previous.get("name") == item.get("name")
-                 or keys.member_path_key(previous.get("path")) == path_key for previous in result):
-            raise NativeStoreRefusal("selected workspace commit has duplicate member names or paths", 4)
+            twin = next((previous for previous in result
+                         if _member_path_fold(previous.get("path")) == path_key), None)  # mut:pathsonly
+            if twin is not None:
+                raise NativeStoreRefusal(
+                    f"grip.toml has duplicate member paths: {twin.get('path')!r} and {item.get('path')!r}", 4)
+        else:
+            twin = next((previous for previous in result if previous.get("name") == item.get("name")
+                         or _member_path_fold(previous.get("path")) == path_key), None)
+            if twin is not None:
+                raise NativeStoreRefusal(
+                    f"selected workspace commit has duplicate member names or paths: {twin.get('path')!r} and "
+                    f"{item.get('path')!r}", 4)
         if revision is not None:
             link = _store_git(root, "ls-tree", revision, "--", item["path"]).stdout.split()
             entry = link[2] if len(link) >= 3 and link[0] == "160000" else None

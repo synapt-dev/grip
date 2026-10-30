@@ -91,6 +91,10 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
   Now the tree decides: `store status` names the full-mode root and points to `gr2 status`, and the sets read refuses
   with `root_commit_absent`. A root with a `grip.toml` is still a native root.
 
+- **`gr2`: the two full-mode checks agree on a full-mode root.** `workspace_mode.of_root` read only grip.toml, so it
+  called a `store init --mode full` root (no grip.toml) compat while the full-mode root check called it full; it now
+  reads such a root as full. `workspace init` still reads that root's pins (the members' real commits), and its refusal
+  of a grip.toml `mode = "full"` workspace now ends with the verb that reads it: `run gr2 status in <root> to read it`.
 - **`gr2`: `review list` and `review show` at a full-mode root refuse the same way after `workspace init`.** Before
   `workspace init` they refuse with "does not read a full-mode root yet"; after it they said `not_bound: No review is
   pinned`, which is false while a pin's ref is in the root's `.git`. Now they keep the full-mode sentence (exit 2,

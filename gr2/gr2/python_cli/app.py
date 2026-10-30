@@ -1419,11 +1419,11 @@ def _root_gitlink_pins(workspace_root: Path) -> dict[str, str]:
     from . import workspace_mode
 
     try:
-        mode = workspace_mode.of_root(workspace_root, "HEAD")
+        mode = workspace_mode.of_grip_toml(workspace_root, "HEAD")
     except workspace_mode.WorkspaceModeError as exc:
         raise SystemExit(str(exc)) from exc
     if mode == "full":
-        raise SystemExit(workspace_mode.full_mode_refusal(f"the superproject scan of {workspace_root}"))
+        raise SystemExit(workspace_mode.full_mode_refusal("the superproject scan", workspace_root))
     return repo_proto.root_gitlink_pins(workspace_root)
 
 

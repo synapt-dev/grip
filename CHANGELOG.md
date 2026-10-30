@@ -80,6 +80,12 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Fixed
 
+- **`gr2`: `review open`, `show` and `verify` carry a range that is not UTF-8 byte for byte.** A range that pin
+  stored with a byte that is not UTF-8 was refused by all three readers as a corrupt text field, so a pinned
+  Latin-1 or high-byte hunk could not be opened. The readers now carry the range the way pin does: open rebuilds
+  the lane to the bound head tree, verify hashes the stored bytes (a UTF-8 range hashes as before), and pin no
+  longer crashes on a file name that is not UTF-8. A file with a NUL byte pinned through `--source` is not covered
+  here.
 - **`gr2`: `review pin` carries a range that is not UTF-8 byte for byte.** A range whose hunk holds a byte that is
   not UTF-8 (a binary descriptor, a Latin-1 text file) crashed `--from-range`, a rows-json `range` and `--source`
   with an uncaught decode error. The range is now read as bytes and every write (the stored range, `git am`,

@@ -170,13 +170,13 @@ def test_reconstruction_needs_a_range_and_its_tree_before_any_clone(record_world
 
 
 def test_text_that_is_not_utf8_is_refused_by_name(record_world, tmp_path):
-    """A title that is not UTF-8 (a string field), and a range that is not UTF-8 (bytes the lane applies)."""
+    """A title that is not UTF-8 (a string field) is refused by name; a range that is not UTF-8 is bytes the
+    lane applies byte for byte (test_review_open_range_bytes.py), so it is no longer refused here."""
     w = record_world
     member = {**w["record"]["members"][0]}
     raw = fd.encode({**w["record"], "members": [member]})
     bad_title = raw.replace(member["title"].encode(), b"\xff\xfe" + member["title"].encode()[2:], 1)
-    bad_range = raw.replace(member["range_patch"], member["range_patch"].replace(b"From", b"Fr\xffm", 1), 1)
-    for raw_bad in (bad_title, bad_range):
+    for raw_bad in (bad_title,):
         tree = fd.write_tree(w["author"], raw_bad)
         commit = git(w["author"], "commit-tree", tree, "-m", "not utf-8")
         git(w["author"], "update-ref", review_ref(commit), commit, "0" * 40)

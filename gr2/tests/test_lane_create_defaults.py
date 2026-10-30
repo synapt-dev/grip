@@ -692,6 +692,24 @@ def test_a_local_branch_with_no_unpushed_work_starts_at_the_live_tip_and_the_doc
     assert lanes.load_lane_doc(ws, "atlas", "demo")["fork_base"]["beta"] == {"branch": "fresh", "sha": live, "start": "tip"}
     assert f"gr2: beta: fresh tip {live}" in _flat(res)
 
+
+def test_a_review_type_lane_with_a_stale_local_branch_still_starts_at_the_live_tip(tmp_path: Path) -> None:
+    """The sibling of the row above under `--type review`. Only `review checkout-pr` keeps a seed its integration
+    ref already contains (the fetched PR head); the lane type does not, so a review-type lane on a stale local
+    branch still starts at the live tip. Goes red if keeping the seed is read from the lane type."""
+    ws, _ = _workspace(tmp_path, ["beta"])
+    src = ws / "repos" / "beta"
+    _git(src, "branch", "fresh")
+    pin = _git(src, "rev-parse", "fresh")
+    live = _move_main(ws, "beta")
+    assert subprocess.run(["git", "merge-base", "--is-ancestor", pin, live], cwd=src).returncode == 0
+    res = _create(ws, "--type", "review", "--branch", "fresh")
+    assert res.exit_code == 0, res.output
+    assert lanes.load_lane_doc(ws, "atlas", "demo")["lane_type"] == "review"
+    assert _git(_lane_repo(ws, "beta"), "rev-parse", "HEAD") == live != pin
+    assert lanes.load_lane_doc(ws, "atlas", "demo")["fork_base"]["beta"] == {"branch": "fresh", "sha": live, "start": "tip"}
+
+
 def test_a_member_that_declares_a_ref_starts_at_the_live_tip_of_that_ref_not_the_remote_default(tmp_path: Path) -> None:
     """A spec root whose alpha declares `ref = "dev"`; dev is pushed ahead and main moves on too. A branch new to the
     remote starts at the live tip of dev, the member's integration ref, not of the remote's HEAD (main).

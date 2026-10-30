@@ -85,6 +85,9 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
   with an uncaught decode error. The range is now read as bytes and every write (the stored range, `git am`,
   `git apply`, the policy hook) gives back exactly the bytes git wrote. A range path that cannot be read refuses
   with exit 2, `range_unreadable`.
+- **`gr2`: `review checkout-pr` opens a merged PR at its head.** A merged PR's head is already in its target branch,
+  so the lane dropped it as a stale local branch, started at the live tip, and the checkout refused. The fetched PR
+  head is now kept (fork base start `local`, as for an open PR); `lane create` keeps its rule for a stale local branch.
 - **`gr2`: a full-mode root that `workspace init` was also run at is still named a full-mode root.** Its
   `.grip/workspace_spec.toml` made the full-mode check read it as another kind of root, so `store status` there told
   the user to run `gr2 store init here`, and reading its sets at a revision that is not a commit returned no sets.

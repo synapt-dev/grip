@@ -16,6 +16,7 @@ it was made for, and an edited declaration does not ride an old record.
 from __future__ import annotations
 
 import re
+import shlex
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -153,6 +154,61 @@ def _gitmodules_rows(root: Path, blob: str, pattern: str) -> list[tuple[str, str
     return [(key, value) for key, _, value in (record.partition("\n") for record in got.stdout.split("\0") if record)]
 
 
+MEMBER_REF = "refs/dev.synapt.grip/__members__/{name}/STOOK"
+
+
+def _member_name_refusal(root: Path, name: str) -> str | None:
+    """Why `name` cannot be a full root's member, else None. Two halves, each with its own words: git's submodule name
+    rule (ported), then git check-ref-format on the member ref the name would make (run, never ported)."""
+    if gitops.submodule_name_bad(name):
+        return "is not a name git allows for a submodule (empty, or a '..' part)"
+    ref = MEMBER_REF.format(name=name)
+    checked = gitops.run(root, "check-ref-format", ref)
+    if checked.returncode:
+        return f"does not make a valid member ref (git check-ref-format {ref} exited {checked.returncode})"
+    return None
+
+
+def _refuse_member_name(root: Path, commit: str, name: str) -> None:
+    """Refuses the WHOLE read on a disallowed section name, before any member is kept, so nothing is pinned or written."""
+    if (reason := _member_name_refusal(root, name)):
+        raise DeclaredSetError(
+            f"submodule_name_disallowed: member {name!r} in .gitmodules at {commit[:12]} {reason}; {_REWRITE_STEP} "
+            f"with git config -f .gitmodules --rename-section {shlex.quote('submodule.' + name)} 'submodule.<new>', "
+            "then run the verb again")
+
+
+_REWRITE_STEP = ("a commit on top does not recover: rewrite the commit that added the name (git commit --amend, or git "
+                 "rebase), renaming the section")
+
+
+def _refuse_name_in_history(root: Path, commit: str) -> None:
+    """The ported submodule name rule over every root .gitmodules in `commit`'s history, so a name renamed away on top
+    still refuses. Walks only the commits reachable from `commit` that touch .gitmodules, never the whole store, so a
+    blob a rewrite left behind does not count. --full-history, because the default walk drops a side branch whose
+    merge matches a parent and never reads the bad blob on it. A past blob that does not parse is skipped, as git skips
+    it; the tip blob refuses through _gitmodules_rows (14.1 step 3)."""
+    walk = gitops.run(root, "rev-list", "--full-history", commit, "--", ".gitmodules")
+    if walk.returncode:
+        raise DeclaredSetError(f"gitmodules_unreadable: git rev-list {commit[:12]} -- .gitmodules exited "
+                               f"{walk.returncode}: {walk.stderr.strip()}")
+    added: dict[str, str] = {}  # blob -> the oldest walked commit holding it, the one that added it
+    for past in walk.stdout.split():
+        held = gitops.run(root, "rev-parse", "--verify", "--quiet", f"{past}:.gitmodules")
+        if held.returncode == 0:
+            added[held.stdout.strip()] = past
+    for blob, past in added.items():
+        if _gitmodules_parse_error(root, blob):
+            continue  # git's submodule config and fsck read names with the same parser, so neither reads one here
+        listed = gitops.run(root, "config", "--blob", blob, "-z", "--name-only", "--list")
+        for key in listed.stdout.split("\0"):
+            name, dot, _ = key[len("submodule."):].rpartition(".")
+            if key.startswith("submodule.") and dot and gitops.submodule_name_bad(name):
+                raise DeclaredSetError(f"submodule_name_disallowed: member {name!r} in .gitmodules at {past[:12]}, in "
+                                       f"the history of {commit[:12]}, is not a name git allows for a submodule "
+                                       f"(empty, or a '..' part); {_REWRITE_STEP}, then run the verb again")
+
+
 def _read_full_root(root: Path, commit: str) -> Declaration:
     """A full root's sets from its root COMMIT's .gitmodules, never the worktree (spec 14.1, at most ONE gr2-set line per
     member section). Members are the sections' path and url, so a member's pin is its gitlink at that path."""
@@ -162,11 +218,15 @@ def _read_full_root(root: Path, commit: str) -> Declaration:
     members: dict[str, dict[str, str]] = {}
     for key, value in _gitmodules_rows(root, blob, r"^submodule\..*\.(path|url)$"):
         name, field = key[len("submodule."):].rsplit(".", 1)
+        if name not in members:
+            _refuse_member_name(root, commit, name)
         members.setdefault(name, {"path": "", "remote": ""})["path" if field == "path" else "remote"] = (
             member_path_key(value) if field == "path" else value)
     owner: dict[str, str] = {}
     for key, value in _gitmodules_rows(root, blob, r"^submodule\..*\.gr2-set$"):
         member = key[len("submodule."):-len(".gr2-set")]
+        if member not in members:
+            _refuse_member_name(root, commit, member)
         if not SET_NAME.fullmatch(value):
             raise DeclaredSetError(f"set_name_invalid: member {member!r} names set {value!r} in .gitmodules at "
                                    f"{commit[:12]}; a set name is letters, digits, '.', '_' and '-'")
@@ -176,6 +236,7 @@ def _read_full_root(root: Path, commit: str) -> Declaration:
             raise DeclaredSetError(f"set_member_unknown: set {value!r} names {member!r}, which has no path in .gitmodules "
                                    f"at {commit[:12]}")
         owner[member] = value
+    _refuse_name_in_history(root, commit)
     sets: dict[str, list[str]] = {}
     for member, name in owner.items():
         sets.setdefault(name, []).append(member)

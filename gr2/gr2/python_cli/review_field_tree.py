@@ -711,6 +711,30 @@ def _check_message(repo: Path, tree: str, message: str | None, schema: Schema | 
                 _check_message(repo, o, f.type if f is not None else None, schema, reader)
 
 
+_OID = re.compile(r"\b[0-9a-f]{40}(?:[0-9a-f]{24})?\b")
+_OID_PATH = re.compile(r"objects/([0-9a-f]{2})/([0-9a-f]{38}(?:[0-9a-f]{24})?)\b")
+
+
+def _fsck_names_record(repo: Path, tree: str, stderr: str) -> bool:
+    """fsck reads every object in the store, so an object the record never reaches (a blob a rewritten
+    commit left behind, until reflog expire and gc) still fails it. Refuse when any error line names an
+    object reachable from `tree`, or names no object at all (a line this reader cannot place). A
+    hash-path mismatch names the object it was asked for only by its loose path (objects/xx/yyyy), and
+    leads with the hash of the bytes it found, so the path is read as an object name too."""
+    lines = [ln for ln in stderr.splitlines() if ln.strip()]
+    if not lines:
+        return True
+    walk = gitops.run(repo, "rev-list", "--objects", "--no-object-names", tree, binary=True, env=_local())
+    if walk.returncode != 0:
+        return True
+    reachable = set(walk.stdout.decode(errors="replace").split())
+    for ln in lines:
+        oids = _OID.findall(ln) + [a + b for a, b in _OID_PATH.findall(ln)]
+        if not oids or reachable.intersection(oids):
+            return True
+    return False
+
+
 def verify_tree(repo: Path, tree: str, message: str = "ReviewBind", schema: Schema | None = None,
                 reader: GitReader | None = None) -> None:
     """Check the record AS WRITTEN: every object re-hashes from its own content
@@ -720,7 +744,7 @@ def verify_tree(repo: Path, tree: str, message: str = "ReviewBind", schema: Sche
     are never regenerated from the schema and compared. This checks a tree, not WHICH
     tree: binding a record to its identity is the ref writer's job."""
     proc = gitops.run(repo, "fsck", "--strict", "--no-dangling", tree, binary=True, env=_local())
-    if proc.returncode != 0:
+    if proc.returncode != 0 and _fsck_names_record(repo, tree, proc.stderr.decode(errors="replace")):
         raise ReviewRecordError(f"fsck refused record {tree}: {proc.stderr.decode(errors='replace').strip()[:200]}")
     reader = reader or GitReader(repo)
     _check_message(repo, tree, message, schema, reader)

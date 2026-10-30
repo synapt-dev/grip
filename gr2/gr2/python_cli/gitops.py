@@ -63,6 +63,18 @@ def _is_ntfs_dot(name: str, needle: str, short_prefix: str) -> bool:
     return _ntfs_tail(name[8:])
 
 
+def submodule_name_bad(name: str) -> bool:
+    """True when git refuses ``name`` as a submodule name: git's check_submodule_name ported whole. The name is bad when
+    it is empty or holds a ``..`` part, a part being cut at EITHER separator (``/`` or ``\\``) on every platform."""
+    if not name:
+        return True
+
+    def dotdot_at(i: int) -> bool:
+        return name.startswith("..", i) and (i + 2 == len(name) or name[i + 2] in "/\\")
+
+    return dotdot_at(0) or any(c in "/\\" and dotdot_at(i + 1) for i, c in enumerate(name))
+
+
 def fsck_bad_name(name: str) -> str | None:
     """The message id git fsck reports for a tree or gitlink entry named ``name``, or None when fsck accepts
     the name. A tree built here holds no entry fsck would reject."""

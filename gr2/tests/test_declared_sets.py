@@ -414,3 +414,35 @@ def test_check_set_root_commit_needs_a_set_name(world):
     out = _check(world, str(world["author"]), "--root-commit", world["root"])
 
     assert out.exit_code == 2 and "declared_set_check_needs_a_set" in out.stdout, out.output
+
+
+# -- member names on a full root: the table is RAN here, not copied -------------------------------------------------
+
+MEMBER_NAMES = (("../x", "port"), ("..", "port"), ("a/../b", "port"), ("a\\..\\b", "port"), ("", "port"),
+                ("/abs/x", "run"), (".lock/x", "run"), ("x.lock", "run"), ("x", None), ("ok/nested", None))
+
+
+@pytest.mark.parametrize("name, half", MEMBER_NAMES, ids=[n or "empty" for n, _ in MEMBER_NAMES])
+def test_member_name_refusal_names_its_half(tmp_path, name, half):
+    ref = declared_sets.MEMBER_REF.format(name=name)
+    measured = subprocess.run(["git", "check-ref-format", ref], capture_output=True).returncode
+    assert measured == (0 if half is None else 1), (name, measured)
+    reason = declared_sets._member_name_refusal(tmp_path, name)
+    want = {"port": "is not a name git allows", "run": "does not make a valid member ref", None: None}[half]
+    assert reason == want if want is None else want in reason, (name, reason)
+
+
+def test_every_section_key_split_is_followed_by_the_name_check():
+    """Every slice that takes a member name from a .gitmodules section key in the shipped CLI sits in declared_sets and
+    is checked on the next lines (the tip's two reads by the whole check, the history walk by the ported rule); a fourth
+    site, or a site without the check, reds this row."""
+    from pathlib import Path
+    cli = Path(declared_sets.__file__).parent
+    sites = []
+    for path in sorted(cli.glob("*.py")):
+        lines = path.read_text().splitlines()
+        for i, line in enumerate(lines):
+            if "key[len(\"submodule.\"):" in line:
+                after = "".join(lines[i + 1:i + 3])
+                sites.append((path.name, "_refuse_member_name(" in after or "submodule_name_bad(" in after))
+    assert sites == [("declared_sets.py", True)] * 3, sites

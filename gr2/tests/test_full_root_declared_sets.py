@@ -192,16 +192,17 @@ def test_a_set_line_for_a_member_with_no_path_is_refused_by_name(full):
     assert message.startswith("set_member_unknown: set 'billing' names 'ghost', which has no path"), message
 
 
-# R12: a section named with a space is a member (git allows the name); its set reads whole, key never cut at the space
-def test_a_section_named_with_a_space_reads_its_set(full):
+# R12: a section named with a space cannot make its member ref, so the read refuses it by its WHOLE name, never cut at the space
+def test_a_section_named_with_a_space_is_refused_by_its_whole_name(full):
     root = full["root"]
     gm = root / ".gitmodules"
     gm.write_text(gm.read_text() + '[submodule "my api"]\n\tpath = myapi\n\turl = https://example.invalid/my-api.git\n'
                   '\tgr2-set = billing\n')
     _declare(root, ("web", "billing"))
-    d = declared_sets.read(root)
-    assert [(s.name, s.members) for s in d.sets] == [("billing", ("my api", "web"))]
-    assert d.members["my api"]["path"] == "myapi"
+    message = _refused(root)
+    assert message.startswith("submodule_name_disallowed: member 'my api' in .gitmodules at "), message
+    assert "does not make a valid member ref" in message and "/my api/" in message, message
+    assert "'submodule.my api'" in message, message
 
 
 # R13: a store root reads grip.toml even when the .gitmodules beside it does not parse

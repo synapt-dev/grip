@@ -168,3 +168,23 @@ def test_legacy_mirror_git_output_carries_control_raw_to_the_identity_check(tmp_
     assert read.stdout == url + "\n"
     with pytest.raises(ReviewError, match="remote_control_character"):
         allocation._legacy_transport_source(member, expected)
+
+
+def test_close_of_an_absent_lane_names_the_state_and_the_next_step(tmp_path, monkeypatch):
+    """A hand-removed lane still refuses (its record may be all that guards a moved tree), but the refusal says
+    what is wrong and what to do, not legacy adoption or reopen."""
+    import shutil
+
+    workspace, target = _owned(tmp_path)
+    pending = allocation.allocation_path(workspace, target)
+    original = pending.read_bytes()
+    shutil.rmtree(target)
+    attempts = []
+    monkeypatch.setattr(og, "rmtree_or_refuse", lambda path: attempts.append(path))
+    with pytest.raises(og.OpenGrReviewError) as refused:
+        og.close_open_gr_lane(target, workspace_root=workspace)
+    message = str(refused.value)
+    assert f"{target.resolve()} is absent" in message and "move it back" in message, message
+    assert "close" in message and "legacy adoption" not in message and "--forget" not in message, message
+    assert attempts == []
+    assert pending.read_bytes() == original

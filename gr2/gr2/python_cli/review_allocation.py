@@ -17,6 +17,10 @@ class ReviewAllocationError(ValueError):
     pass
 
 
+class _AbsentTarget(ReviewAllocationError):
+    """An open allocation whose target is gone: refused with its own state and next step, not the generic text."""
+
+
 def allocation_path(workspace: Path, target: Path) -> Path:
     key = hashlib.sha256(str(target.resolve()).encode()).hexdigest()
     return grip_dir(workspace.resolve()) / "state" / "review-allocations" / f"{key}.json"
@@ -106,8 +110,13 @@ def _read_allocation(workspace: Path, target: Path, *, owner_unit: str | None,
                     if head.returncode or head.stdout.strip() != item["head"]:
                         raise ValueError("allocated member HEAD changed")
         elif doc["state"] != "closing":
-            raise ValueError("open allocation target is absent")
+            # Still a refusal: a moved lane may hold work, and this record is what lets gr2 reclaim it once back.
+            raise _AbsentTarget(
+                f"open allocation target is absent: {target} is absent, and gr2 keeps its allocation for it because a "
+                "moved lane may hold work. If you moved it, move it back to that path and close the review again.")
         return doc
+    except _AbsentTarget:
+        raise
     except (OSError, ValueError, KeyError, TypeError) as exc:
         raise ReviewAllocationError(
             f"no valid owning allocation for {target}: {exc}; marker alone cannot authorize deletion. "

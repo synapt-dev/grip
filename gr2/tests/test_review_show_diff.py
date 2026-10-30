@@ -462,3 +462,31 @@ def test_no_merge_base_clears_after_deepening_from_the_heads_source(tmp_path, mo
     out = runner.invoke(app, ["review", "show", str(w["author"]), rid, "--stat"])
     assert out.exit_code == 0, out.output
     assert "  diff: 2 files, 2 commits, +2 -1\n" in out.stdout, out.stdout
+
+
+# Plain show (no --diff/--stat) reads each member's files too; a refusal there other than member_objects_missing
+# exits 2 with the refusal on stderr, as --diff/--stat do, never an uncaught exception.
+def test_plain_show_no_merge_base_refuses_plainly(tmp_path, monkeypatch):
+    w, m, rid, head, _ = _cut_clone(tmp_path, monkeypatch)
+    out = runner.invoke(app, ["review", "show", str(w["author"]), rid])
+    assert out.exit_code == 2 and isinstance(out.exception, SystemExit), (out.exception, out.output)
+    assert "refused: member_no_merge_base" in out.stderr and "--is-shallow-repository" in out.stderr, out.stderr
+    assert out.stdout == "" and "Traceback" not in out.stderr, out.output
+    data = runner.invoke(app, ["review", "show", str(w["author"]), rid, "--json"])
+    assert data.exit_code == 2 and '"refusal": "member_no_merge_base"' in data.stdout, data.output
+    assert json.loads(data.stdout)["status"] == "refused" and data.stderr == "", data.output
+
+
+def test_plain_show_diff_failed_refuses_plainly(tmp_path, monkeypatch):
+    w = build(tmp_path, monkeypatch, ["alpha"])
+    m = w["members"]["alpha"]
+    _mine(m)
+    rid, head = _repin(w, tmp_path, "alpha")
+    blob = git(m["repo"], "rev-parse", f"{head}:mine.txt")
+    loose = m["repo"] / ".git" / "objects" / blob[:2] / blob[2:]
+    assert loose.is_file(), loose  # both commits stay; only the head's new blob is gone, so the diff itself fails
+    loose.unlink()
+    out = runner.invoke(app, ["review", "show", str(w["author"]), rid])
+    assert out.exit_code == 2 and isinstance(out.exception, SystemExit), (out.exception, out.output)
+    assert "refused: member_diff_failed" in out.stderr and blob in out.stderr, out.stderr
+    assert out.stdout == "" and "Traceback" not in out.stderr, out.output

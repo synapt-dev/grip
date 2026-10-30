@@ -82,3 +82,10 @@ def test_c1_c2_other_names_are_other_directories(tmp_path, monkeypatch, branch, 
 
 def test_c3_dot_slash_alpha_beside_alpha_is_still_refused(tmp_path, monkeypatch):
     _refused(tmp_path, monkeypatch, "working", "./alpha", "alpha")
+
+
+@pytest.mark.parametrize("branch", BRANCHES)
+@pytest.mark.parametrize("pair", [("a/x", "a./x"), ("a/x", "A/x")])
+def test_r5_a_fold_on_a_leading_part_is_refused(tmp_path, monkeypatch, branch, pair):
+    # Each part folds on its own: a trailing dot on a leading part names the same parent directory.
+    _refused(tmp_path, monkeypatch, branch, *pair)

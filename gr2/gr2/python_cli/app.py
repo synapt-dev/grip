@@ -5305,10 +5305,10 @@ def review_create_project(
                 lane_repo = _lane_repo_root(ws, owner_unit, lane_name, p.key)
                 # Both range reads go through the real history, so a replace ref in the lane cannot change
                 # what the review records.
-                cap = gitops.real_history_run(lane_repo, "format-patch", f"{p.base}..{p.head}", "--stdout")
+                cap = gitops.real_history_run(lane_repo, "format-patch", f"{p.base}..{p.head}", "--stdout", binary=True)
                 if cap.returncode != 0 or not cap.stdout.strip():
-                    raise ValueError(f"cannot capture range for {p.key} from {lane_repo}: {cap.stderr.strip() or 'empty range'}")
-                ranges[p.key] = cap.stdout
+                    raise ValueError(f"cannot capture range for {p.key} from {lane_repo}: {grip._range_text(cap.stderr).strip() or 'empty range'}")
+                ranges[p.key] = grip._range_text(cap.stdout)
                 # Capture each commit's committer identity+date in apply order (oldest
                 # first, the order format-patch/mailsplit use) so reconstruction can
                 # re-stamp and reproduce the pinned head SHA, not merely its tree. The
@@ -5614,10 +5614,10 @@ def _normalize_review_row(raw: object, index: int) -> dict:
     if raw.get("range"):
         range_path = Path(raw["range"])
         try:
-            row["range_patch"] = range_path.read_text()
+            row["range_patch"] = grip._range_text(range_path.read_bytes())
         except OSError as exc:
             raise typer.BadParameter(
-                f"rows-json entry {raw['key']!r} range {range_path}: {exc.strerror or exc}"
+                f"rows-json entry {raw['key']!r} range {range_path}: range_unreadable: {exc.strerror or exc}"
             )
     return row
 
@@ -5810,9 +5810,9 @@ def review_bind(
             row["source"] = str(source.resolve())
         if from_range is not None:
             try:
-                row["range_patch"] = from_range.read_text()
+                row["range_patch"] = grip._range_text(from_range.read_bytes())
             except OSError as exc:
-                raise typer.BadParameter(f"--from-range {from_range}: {exc.strerror or exc}")
+                raise typer.BadParameter(f"--from-range {from_range}: range_unreadable: {exc.strerror or exc}")
             if at_base:
                 row["at_base"] = True
         rows = [row]

@@ -252,7 +252,9 @@ def encode(record: dict, message: str = "ReviewBind", schema: Schema | None = No
             if f.message:
                 out += _emit(number, 2, encode(v, f.type, schema))
             elif f.wire_type == 2:
-                out += _emit(number, 2, v.encode("utf-8") if isinstance(v, str) else bytes(v))
+                # a bytes field carried as str (a range read with surrogateescape) goes back to the exact bytes
+                errors = "surrogateescape" if f.type == "bytes" else "strict"
+                out += _emit(number, 2, v.encode("utf-8", errors) if isinstance(v, str) else bytes(v))
             else:
                 raise ReviewRecordError(f"{message}.{f.name}: scalar type {f.type} is not written by this package")
     return out

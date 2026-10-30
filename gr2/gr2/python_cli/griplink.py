@@ -151,9 +151,14 @@ _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 _MODES = ("100644", "100755", "120000")
 
 
+def is_member_name(m: str) -> bool:
+    """A plain member name: letters, digits, '.', '_' and '-', starting with a letter or digit, no '..'."""
+    return bool(_NAME.fullmatch(m)) and ".." not in m
+
+
 def _check_name(m: str) -> None:
     """A member name reaches paths, config keys and ref names, so it is a plain name or it is refused."""
-    if not _NAME.fullmatch(m) or ".." in m:
+    if not is_member_name(m):
         raise GriplinkRefusal(f"{m!r}: not a member name gr2 takes (letters, digits, '.', '_' and '-', starting with a "
                               "letter or digit, no '..'); nothing was changed", 3)
 

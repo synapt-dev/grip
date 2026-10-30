@@ -1424,7 +1424,12 @@ def _root_gitlink_pins(workspace_root: Path) -> dict[str, str]:
 
 
 def _scan_existing_repos(workspace_root: Path) -> list[dict[str, object]]:
+    from collections import Counter
+
+    from . import griplink
+
     repos: list[dict[str, object]] = []
+    adopted: set[str] = set()  # paths whose member took its section name
     # Read once, not per repo: the root's own declarations about its members.
     pins = _root_gitlink_pins(workspace_root)
     declared_refs = repo_proto.root_submodule_branches(workspace_root)
@@ -1454,6 +1459,13 @@ def _scan_existing_repos(workspace_root: Path) -> list[dict[str, object]]:
         rel = child.relative_to(workspace_root).as_posix()
         declared = modules_by_key.get(member_path_key(rel), {})
         pinned = pins_by_key.get(member_path_key(rel))
+        section = declared.get("name") or ""
+        if pinned is not None and griplink.is_member_name(section) and rel == f"{section}.griplink/{griplink.PIN}":
+            # A full root's member is its section name (`[submodule "<m>"] path = <m>.griplink/001.2_pin`); the
+            # gitlink path is never its name. Only that exact shape, and only a section griplink takes as a member
+            # name (the root's remote wrote it, and a name is joined into paths): else the path stays its name.
+            name = section
+            adopted.add(rel)
 
         if pinned is not None and not repo_proto.is_own_toplevel(child):
             # A member that is NOT materialized -- the ordinary state after a
@@ -1510,6 +1522,15 @@ def _scan_existing_repos(workspace_root: Path) -> list[dict[str, object]]:
             )
         )
         repos.append(repo)
+
+    # A section is not adopted when another member already has that name (`[submodule "other"] path = api` beside
+    # `[submodule "api"] path = api.griplink/001.2_pin`): two members named `api` is a spec its own validator refuses.
+    # That member keeps its path as its name, as before. Two ADOPTED names cannot collide: an adopted name fixes its
+    # path as `<name>.griplink/001.2_pin`, and two members never share a path.
+    names = Counter(str(entry["name"]) for entry in repos)
+    for entry in repos:
+        if entry["path"] in adopted and names[str(entry["name"])] > 1:
+            entry["name"] = entry["path"]
     return repos
 
 

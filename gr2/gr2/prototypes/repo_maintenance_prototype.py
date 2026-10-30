@@ -387,7 +387,9 @@ def root_submodule_declarations(workspace_root: Path) -> dict[str, dict[str, str
     """What the root's ``.gitmodules`` declares per member PATH.
 
     Keyed by path rather than by submodule name, since the two are different
-    strings and only the path is what a workspace uses.
+    strings and only the path is what a workspace uses. The submodule name is
+    kept in each spec as ``name``: a full root's member is its section name,
+    not its ``<m>.griplink/001.2_pin`` path.
     """
     gitmodules = workspace_root / ".gitmodules"
     if not gitmodules.is_file():
@@ -406,7 +408,7 @@ def root_submodule_declarations(workspace_root: Path) -> dict[str, dict[str, str
         name, _, field = key[len("submodule.") :].rpartition(".")
         if not name or field not in ("path", "url", "branch"):
             continue
-        fields.setdefault(name, {})[field] = value
+        fields.setdefault(name, {"name": name})[field] = value
     return {spec["path"]: spec for spec in fields.values() if spec.get("path")}
 
 

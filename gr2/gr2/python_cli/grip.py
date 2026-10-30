@@ -20,7 +20,7 @@ from . import gitops, next_steps
 from .clone_exec import IncompleteRemoval, rmtree_or_refuse
 from .gitops import git
 from .layout import GRIP_DIR, LANE_CONTROL_PREFIX, LANE_VENV, grip_dir as _layout_grip_dir
-from .workspace_guidance import init_unless_inside_workspace, is_full_mode_root
+from .workspace_guidance import full_mode_not_yet_sentence, init_unless_inside_workspace, is_full_mode_root
 
 
 # ---------------------------------------------------------------------------
@@ -63,6 +63,12 @@ class ReviewStoreAbsent(GripInitError):
 
     This is the state of every fresh `store init` root, not a setup mistake, so it is
     reported as "nothing bound" and never as advice to run the verb that was just run."""
+
+
+class FullRootReadRefused(ReviewStoreAbsent):
+    """A read at a full-mode root after `workspace init`: its pins are in the root's `.git`, which the read does
+    not take yet, so the message is the full-mode sentence. Kept a ReviewStoreAbsent so a caller that reads
+    "nothing bound" as an empty state goes on as it did before the spec existed."""
 
 
 class GripCorruptError(Exception):
@@ -1943,7 +1949,8 @@ def _validate_bind_store(workspace: Path, *, create: bool = False,
     A full-mode root's own `.git` is already its store: a bind there writes its ref and nothing else (no
     grip.toml, which would turn the root native for every later verb). One that still holds binds an older
     gr2 left in `.grip/.git` (any ref, or a HEAD that resolves) is refused naming both stores: gr2 reads
-    neither alone, and binding in the root's `.git` beside them would split the record."""
+    neither alone, and binding in the root's `.git` beside them would split the record. A read at a full root refuses
+    with the full-mode sentence after `workspace init` too, as it does before: the spec moves none of its pins."""
     if create and is_full_mode_root(workspace):
         legacy = _layout_grip_dir(workspace) / ".git"
         if legacy.is_dir() and _store_holds_anything(legacy):
@@ -1962,6 +1969,8 @@ def _validate_bind_store(workspace: Path, *, create: bool = False,
         if not (legacy.exists() or (_layout_grip_dir(workspace) / "workspace_spec.toml").is_file()):
             _validate_grip_repo(workspace)  # not a workspace at all: the existing refusal
             return None
+        if not create and is_full_mode_root(workspace):
+            raise FullRootReadRefused(full_mode_not_yet_sentence(workspace))
         if not create:
             raise ReviewStoreAbsent(f"No review is pinned in {workspace}: nothing has been stored there yet.")
         if _has_gr1_manifest(workspace):

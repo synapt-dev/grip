@@ -5513,6 +5513,8 @@ def _review_refusal(exc: BaseException) -> tuple[str, str, list[str]]:
         return "alpha_root", str(exc), []
     if isinstance(exc, grip.Gr1RootRefused):
         return "gr1_root", str(exc), []
+    if isinstance(exc, grip.FullRootReadRefused):  # its pins are there; the read does not take a full root yet
+        return "not_initialized", str(exc), []
     if isinstance(exc, grip.ReviewStoreAbsent):
         # A native root where nothing has been bound. Not a setup error, so no remedy that
         # sends the caller back to the verb they already ran.

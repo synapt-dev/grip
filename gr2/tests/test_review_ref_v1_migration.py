@@ -6,6 +6,7 @@ measure the read AFTER that setup, so conversion cannot hide behind legal copy.
 """
 from __future__ import annotations
 
+import itertools
 import json
 import shutil
 import subprocess
@@ -327,6 +328,35 @@ def _v1_refs(root: Path) -> dict[str, str]:
     return {r: oid for r, oid in refs(root).items() if r == review_ref(oid)}
 
 
+def _legacy_refs(root: Path) -> dict[str, str]:
+    return {r: oid for r, oid in refs(root).items() if r == legacy_review_ref(oid)}
+
+
+def _first_sorting_before(candidates, ceiling: str, tries: int = 64) -> str:
+    """The first of at most `tries` candidate ids that sorts before `ceiling`; never draws more."""
+    for _, candidate in zip(range(tries), candidates):
+        if candidate < ceiling:
+            return candidate
+    raise AssertionError(f"no refused candidate sorted before a valid bind in {tries} tries")
+
+
+def _never_past(candidate: str, tries: int):
+    for _ in range(tries):
+        yield candidate
+    raise AssertionError("drew past the bound")
+
+
+def test_choosing_the_refused_bind_stops_at_its_bound():
+    with pytest.raises(AssertionError, match="no refused candidate sorted before a valid bind in 64 tries"):
+        _first_sorting_before(_never_past("f" * 40, 64), "0" * 40)
+
+
+def test_choosing_the_refused_bind_keeps_the_first_that_sorts_before():
+    drawn = []
+    pick = _first_sorting_before((drawn.append(c) or c for c in ["f" * 40, "0" * 40, "1" * 40]), "8" * 40)
+    assert pick == "0" * 40 and len(drawn) == 2
+
+
 @pytest.mark.parametrize("bad", ["dash-remote", "non-hex-commit"])
 def test_migrate_refuses_a_twin_the_field_tree_readers_would_refuse(handoff, tmp_path, monkeypatch, bad):
     """A legacy bind whose twin breaks a reader rule is refused, never published."""
@@ -350,13 +380,14 @@ def test_one_refused_bind_does_not_block_the_binds_after_it(handoff, tmp_path, m
     _, _, remote, _, base, head = handoff
     root = native_root(tmp_path / "continue")
     good = dict(key="member", path="member", remote=str(remote), base=base, head=head, title="t", body="b")
-    bad = _legacy(root, dict(good, remote="-x"))
     olds = [_legacy(root, dict(good, title=f"t{i}")) for i in range(3)]
-    i = 3
-    while max(olds) < bad:  # ids are content hashes: keep adding until one sorts after the refusal
-        olds.append(_legacy(root, dict(good, title=f"t{i}")))
-        i += 1
-    assert any(o > bad for o in olds), "the witness needs a valid bind that sorts after the refused one"
+    # ids are content hashes: draw unreferenced candidates of the refused bind, bind only the one that sorts first
+    bad_tree = legacy_bind_tree(root, dict(good, remote="-x"))
+    bad = _first_sorting_before((git(root, "commit-tree", bad_tree, "-m", f"legacy bind refused {k}")
+                                 for k in itertools.count()), max(olds))
+    git(root, "update-ref", legacy_review_ref(bad), bad)
+    assert bad < max(olds), "the witness needs a valid bind that sorts after the refused one"
+    assert len(_legacy_refs(root)) == len(olds) + 1, "only the kept refused candidate is bound"
     result, rows = _run(root, monkeypatch)
     assert result.exit_code == 4, result.output
     assert rows[bad]["status"] == "refused"

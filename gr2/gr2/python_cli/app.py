@@ -6339,7 +6339,9 @@ def review_show(
             m["files"] = review_diff.change(workspace_root.resolve(), m, with_diff=False)["files"]
         except grip.GripReviewRefused as exc:
             if exc.refusal != "member_objects_missing":
-                raise
+                if _JSON_REFUSALS.get():
+                    raise  # the --json command class prints it as one object
+                _refuse_text(exc)
             m["files"], m["files_unread"] = None, f"{exc.refusal} {exc.expected}"
     runs = _review_call(merge_receipts.runs, workspace_root.resolve(), str(result["id"]))
     result["merge"] = runs[-1] if runs else None  # the latest `review merge` run's receipt, or null when never merged

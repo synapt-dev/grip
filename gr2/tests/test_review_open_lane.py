@@ -1385,3 +1385,124 @@ def test_canonical_identity_refuses_a_file_url_with_an_extra_slash(tmp_path, pre
     # raises URLError, which must surface as a refusal, not a traceback
     with pytest.raises(ReviewError):
         canonical_source_identity(f"{prefix}{tmp_path}", allow_local=True)
+
+
+# ---- a refused checkout-pr rolls back only what THIS call made, and only when it holds no work
+
+
+def _refusing_checkout_pr_world(world, monkeypatch, *, branch_made_here=True, on_refuse=None):
+    """checkout-pr whose last check refuses (the real ReviewError type) after the lane is written. With
+    ``branch_made_here`` the source has no pr/7 until the call's own branch step makes it."""
+    from gr2.python_cli import review as review_mod
+
+    ws, app_mod = _checkout_pr_world(world, monkeypatch)
+    source = world["source"]
+    if branch_made_here:
+        _run(source, "branch", "-D", world["review_branch"])
+
+        def make_branch(*args):
+            _run(source, "branch", world["review_branch"], world["head_sha"])
+            return world["review_branch"]
+
+        monkeypatch.setattr(app_mod, "_prepare_review_branch", make_branch)
+
+    def refuse(record, **kw):
+        if on_refuse is not None:
+            on_refuse(kw["lane_repo_root"])
+        raise review_mod.ReviewError("lane HEAD is not the fetched PR head (injected)")
+
+    monkeypatch.setattr(review_mod, "record_checked_out_pr_lane", refuse)
+    return ws, app_mod
+
+
+def _has_branch(repo: Path, name: str) -> bool:
+    return subprocess.run(["git", "-C", str(repo), "show-ref", "--verify", "-q", f"refs/heads/{name}"]).returncode == 0
+
+
+def test_a_refused_checkout_pr_removes_the_lane_and_branch_it_made(review_world, monkeypatch):
+    from typer.testing import CliRunner
+    from gr2.prototypes import lane_workspace_prototype as lanes
+
+    world = review_world
+    ws, app_mod = _refusing_checkout_pr_world(world, monkeypatch)
+    made = CliRunner().invoke(app_mod.app, ["review", "checkout-pr", str(ws), "atlas", "grip", "7"])
+    assert made.exit_code == 2, (made.output, made.exception)
+    assert "refused: lane HEAD is not the fetched PR head (injected)" in made.output, made.output
+    assert not lanes.lane_file(ws, "atlas", "review-7").exists(), made.output
+    assert not lanes.lane_dir(ws, "atlas", "review-7").exists(), made.output
+    assert not (ws / "agents" / "atlas" / "lanes" / "review-7").exists(), made.output
+    assert not _has_branch(world["source"], "pr/7"), made.output
+
+
+def test_a_refused_checkout_pr_keeps_a_branch_it_did_not_make(review_world, monkeypatch):
+    from typer.testing import CliRunner
+
+    world = review_world
+    ws, app_mod = _refusing_checkout_pr_world(world, monkeypatch, branch_made_here=False)
+    before = _run(world["source"], "rev-parse", "refs/heads/pr/7")
+    made = CliRunner().invoke(app_mod.app, ["review", "checkout-pr", str(ws), "atlas", "grip", "7"])
+    assert made.exit_code == 2, (made.output, made.exception)
+    assert _has_branch(world["source"], "pr/7"), made.output
+    assert _run(world["source"], "rev-parse", "refs/heads/pr/7") == before
+
+
+def test_a_refused_checkout_pr_keeps_a_lane_with_work(review_world, monkeypatch):
+    from typer.testing import CliRunner
+    from gr2.prototypes import lane_workspace_prototype as lanes
+
+    world = review_world
+    ws, app_mod = _refusing_checkout_pr_world(
+        world, monkeypatch, on_refuse=lambda lane: (lane / "notes.md").write_text("review notes\n"))
+    made = CliRunner().invoke(app_mod.app, ["review", "checkout-pr", str(ws), "atlas", "grip", "7"])
+    assert made.exit_code == 2, (made.output, made.exception)
+    assert lanes.lane_file(ws, "atlas", "review-7").exists(), made.output
+    notes = list((ws / "agents" / "atlas" / "lanes" / "review-7").rglob("notes.md"))
+    assert [p.read_text() for p in notes] == ["review notes\n"], made.output
+    assert f"remove with gr2 lane remove {ws} atlas review-7" in made.output, made.output
+    # The lane is kept for its work; the pr/7 branch this call made still names the fetched head, so it goes.
+    assert not _has_branch(world["source"], "pr/7"), made.output
+
+
+def test_a_refused_checkout_pr_leaves_a_lane_that_existed_before(review_world, monkeypatch):
+    import dataclasses
+    from typer.testing import CliRunner
+    from gr2.prototypes import lane_workspace_prototype as lanes
+    from gr2.python_cli import review as review_mod
+
+    world = review_world
+    ws, app_mod = _checkout_pr_world(world, monkeypatch)
+    runner = CliRunner()
+    first = runner.invoke(app_mod.app, ["review", "checkout-pr", str(ws), "atlas", "grip", "7"])
+    assert first.exit_code == 0, (first.output, first.exception)
+    lane_file = lanes.lane_file(ws, "atlas", "review-7")
+    lane_record = lane_file.read_text()
+    checkout = ws / "agents" / "atlas" / "lanes" / "review-7"
+    assert lanes.lane_dir(ws, "atlas", "review-7").is_dir() and checkout.is_dir(), first.output
+    # The real HEAD check refuses: the record names a head the lane is not at.
+    real_record = review_mod.record_checked_out_pr_lane
+    monkeypatch.setattr(review_mod, "record_checked_out_pr_lane",
+                        lambda record, **kw: real_record(dataclasses.replace(record, head="0" * 40), **kw))
+    again = runner.invoke(app_mod.app, ["review", "checkout-pr", str(ws), "atlas", "grip", "7"])
+    assert again.exit_code == 2, (again.output, again.exception)
+    # checkout-pr rewrites a pre-existing lane record before its last check (not the rollback), so pin identity.
+    assert lane_file.exists() and [ln for ln in lane_file.read_text().splitlines() if ln.startswith(("lane_name", "owner_unit", "branch"))] == [
+        ln for ln in lane_record.splitlines() if ln.startswith(("lane_name", "owner_unit", "branch"))], again.output
+    assert lanes.lane_dir(ws, "atlas", "review-7").is_dir() and checkout.is_dir(), again.output
+    assert "gr2 lane remove" not in again.output, again.output
+    assert f"gr2 review close {ws} atlas grip 7 --lane review-7" in again.output, again.output
+
+
+def test_footprint_lists_a_lane_checkout_as_the_users(review_world, monkeypatch):
+    from typer.testing import CliRunner
+
+    world = review_world
+    ws, app_mod = _checkout_pr_world(world, monkeypatch)
+    runner = CliRunner()
+    made = runner.invoke(app_mod.app, ["review", "checkout-pr", str(ws), "atlas", "grip", "7"])
+    assert made.exit_code == 0, (made.output, made.exception)
+    out = runner.invoke(app_mod.app, ["footprint", "--json", str(ws)])
+    assert out.exit_code == 0, (out.output, out.exception)
+    rows = json.loads(out.stdout)["rows"]
+    lane = str(ws / "agents" / "atlas" / "lanes" / "review-7")
+    assert [(r["disposition"], r["remove_with"]) for r in rows if r.get("path") == lane] == [
+        ("KEEP-USER", f"gr2 lane remove {ws} atlas review-7")], rows

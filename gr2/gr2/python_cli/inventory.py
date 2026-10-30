@@ -108,8 +108,9 @@ def footprint(root: Path) -> list[Row]:
         if path != root and (path / ".git").exists():
             _path_row(rows, path, KEEP_USER, "store add, clone", "grip_cli._native_members")
             _ref_rows(rows, path, "check run", "grip_cli.GRIP_REF_ROOT")
+    _lane_rows(rows, root)
     review = app_review_root(root)
-    _path_row(rows, review, REMOVE, "review open", "app._default_review_lane_dir")
+    _path_row(rows, review, REMOVE, "review open", "app._review_lanes_root")
     # The shim keys its state by the install prefix it runs under, not the workspace: shared by every workspace.
     prefix = sys.prefix
     _path_row(rows, Path(prefix) / gr_shadow.MARKER, KEEP_SHARED, "gr shim", "gr_shadow.MARKER")
@@ -121,11 +122,32 @@ def footprint(root: Path) -> list[Row]:
     return rows
 
 
+def _lane_rows(rows: list[Row], root: Path) -> None:
+    # One row per lane checkout inside the workspace, named from the lane records (not a glob of `agents/`). A lane
+    # can hold work, so it is the user's, with the verb that removes it. A lane kept under `.grip/` is already in
+    # that dir's row; a bound lane's worktree is outside the workspace and is the user's own.
+    from gr2.prototypes import lane_workspace_prototype as lane_proto
+    from .next_steps import _shown
+
+    lanes = lane_proto.lane_state_root(root)
+    for unit in sorted(lanes.iterdir()) if lanes.is_dir() and not lanes.is_symlink() else ():
+        for lane in sorted(unit.iterdir()) if unit.is_dir() and not unit.is_symlink() else ():
+            if not (lane / "lane.toml").is_file():
+                continue
+            try:
+                checkout = lane_proto.lane_checkout_root(root, unit.name, lane.name)
+            except (SystemExit, Exception):
+                continue
+            if checkout != lane and checkout.is_relative_to(root) and os.path.lexists(checkout):
+                rows.append(Row(_kind(checkout), KEEP_USER, "lane create, review checkout-pr",
+                                "lane_proto.lane_checkout_root", path=str(checkout), size=_size(checkout),
+                                remove_with=f"gr2 lane remove {_shown(str(root))} {_shown(unit.name)} {_shown(lane.name)}"))
+
+
 def app_review_root(root: Path) -> Path:
-    # The lane dir helper refuses an existing lane, so ask it for a lane under a sha that cannot be one and take its
-    # parent: `<workspace>.review`, the helper's own spelling.
-    from .app import _default_review_lane_dir
-    return _default_review_lane_dir(root, "g" * 8).parent
+    # `<workspace>.review`, in the spelling `review open` uses, from its pure helper (the lane dir helper prints).
+    from .app import _review_lanes_root
+    return _review_lanes_root(root)
 
 
 def as_json(root: Path, rows: list[Row]) -> dict:

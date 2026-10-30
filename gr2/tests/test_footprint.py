@@ -161,3 +161,15 @@ def test_footprint_refuses_a_plain_directory(tmp_path):
 
 def test_shadow_ref_prefix_is_one_spelling():
     assert griplink.NS == grip_cli.GRIP_REF_ROOT.rstrip("/")
+
+
+def test_footprint_prints_no_lane_dir_line(native_root):
+    """footprint learns the `<ws>.review` spelling from a pure helper: no `review open` announcement on stderr,
+    and no refusal when a directory with the old probe's name is there."""
+    review = native_root.parent / f"{native_root.name}.review"
+    (review / ("g" * 8)).mkdir(parents=True)
+    out = _cli("footprint", "--json", str(native_root))
+    assert out.exit_code == 0, out.output
+    assert "lane-dir=" not in out.output
+    rows = json.loads(out.stdout)["rows"]
+    assert [r["disposition"] for r in rows if r.get("path") == str(review)] == ["REMOVE"]

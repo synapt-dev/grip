@@ -1821,6 +1821,7 @@ def create_review_lane(args: argparse.Namespace) -> int:
         pr_associations=[association],
     )
     create_lane(create_args)
+    args.created_lane_file = getattr(create_args, "created_lane_file", None)
     print(f"created review lane {args.owner_unit}/{lane_name} for {association}")
     return 0
 

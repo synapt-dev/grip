@@ -631,6 +631,7 @@ def _create_review_lane_metadata(
     *,
     lane_name: str | None = None,
     branch: str | None = None,
+    created_lane_file: list | None = None,
 ) -> str:
     review_lane = lane_name or f"review-{pr_number}"
     review_branch = branch or f"pr/{pr_number}"
@@ -644,6 +645,9 @@ def _create_review_lane_metadata(
     )
     with contextlib.redirect_stdout(io.StringIO()):
         _exit(lane_proto.create_review_lane(ns))
+    # Set only when this call wrote the lane file: the identity a rollback checks before it removes anything.
+    if created_lane_file is not None and getattr(ns, "created_lane_file", None):
+        created_lane_file[:] = ns.created_lane_file
     return review_lane
 
 
@@ -3646,6 +3650,34 @@ def _remove_lane_artifacts(workspace_root: Path, owner_unit: str, lane_name: str
     rmtree_or_refuse(lane_proto.lane_dir(workspace_root, owner_unit, lane_name))
 
 
+def _roll_back_refused_checkout(workspace_root: Path, owner_unit: str, lane_name: str, lane_repo_root: Path,
+                                materialized_head: str, *, lane_existed: bool, created_lane_file: list,
+                                created_checkout_roots: list, source_repo_root: Path, branch: str,
+                                branch_existed: bool, head_sha: str) -> list[str]:
+    """A refused `review checkout-pr` removes what THIS call made and nothing else: the lane only when the call
+    created it and it holds no work (HEAD where materialize left it, nothing in `git status`, no stash), the branch
+    only when the call created it and it still names the fetched head (old-value checked). Returns one line each."""
+    notes: list[str] = []
+    if not lane_existed:
+        remove = f"gr2 lane remove {next_steps._shown(str(workspace_root))} {next_steps._shown(owner_unit)} {next_steps._shown(lane_name)}"
+        status = git(lane_repo_root, "status", "--porcelain", "--untracked-files=all")
+        clean = (git(lane_repo_root, "rev-parse", "HEAD").stdout.strip() == materialized_head
+                 and status.returncode == 0 and not status.stdout.strip()
+                 and git(lane_repo_root, "rev-parse", "-q", "--verify", "refs/stash").returncode != 0)
+        if clean and created_lane_file:
+            try:
+                _remove_lane_artifacts(workspace_root, owner_unit, lane_name, created_lane_file=created_lane_file,
+                                       created_checkout_roots=created_checkout_roots)
+                notes.append(f"removed lane {owner_unit}/{lane_name}, which this checkout made")
+            except (OSError, RuntimeError, SystemExit) as exc:
+                notes.append(f"kept lane {owner_unit}/{lane_name}: {exc}; remove with {remove}")
+        else:
+            notes.append(f"kept lane {owner_unit}/{lane_name}: it holds work; remove with {remove}")
+    if not branch_existed and git(source_repo_root, "update-ref", "-d", f"refs/heads/{branch}", head_sha).returncode == 0:
+        notes.append(f"removed branch {next_steps._shown(branch)}, which this checkout made")
+    return notes
+
+
 def _actor_source_payload(items: dict) -> dict[str, str]:
     """`actor_source` for an event whose actor was inferred, so an inferred name cannot read as a typed one;
     a typed `--actor` adds nothing, which keeps the event as it was."""
@@ -4726,13 +4758,16 @@ def review_checkout_pr(
 ) -> None:
     """Create and materialize a review lane for a PR."""
     workspace_root = workspace_root.resolve()
+    source_repo_root = (workspace_root / str(_workspace_repo_spec(workspace_root, repo)["path"])).resolve()
+    # What was there before this call, so a refusal after the lane is written removes only what the call made.
+    branch_existed = source_repo_root.exists() and branch_exists(source_repo_root, branch or f"pr/{pr_number}")
+    lane_existed = lane_proto.lane_file(workspace_root, owner_unit, lane_name or f"review-{pr_number}").exists()
     resolved_branch = _prepare_review_branch(workspace_root, repo, pr_number, branch)
     # The record `review close` needs, worked out before any lane state is written, so a refusal leaves
     # nothing behind: the head is the PR head this checkout fetched, the base comes from the rule
     # `review open` uses.
     from . import review as review_mod
 
-    source_repo_root = (workspace_root / str(_workspace_repo_spec(workspace_root, repo)["path"])).resolve()
     try:
         head_sha = review_mod.fetched_review_head(source_repo_root, resolved_branch)
         record = review_mod.pr_lane_record(
@@ -4742,6 +4777,8 @@ def review_checkout_pr(
         )
     except review_mod.ReviewError as exc:
         _refuse(str(exc))
+    created_lane_file: list = []
+    created_checkout_roots: list = []
     resolved_lane = _create_review_lane_metadata(
         workspace_root,
         owner_unit,
@@ -4749,12 +4786,16 @@ def review_checkout_pr(
         pr_number,
         lane_name=lane_name,
         branch=resolved_branch,
+        created_lane_file=created_lane_file,
     )
-    _materialize_lane_repos(workspace_root, owner_unit, resolved_lane, manual_hooks=manual_hooks)
+    _materialize_lane_repos(workspace_root, owner_unit, resolved_lane, manual_hooks=manual_hooks,
+                            created_checkout_roots=created_checkout_roots, created_lane_file=created_lane_file or None)
+    lane_repo_root = _lane_repo_root(workspace_root, owner_unit, resolved_lane, repo)
+    materialized_head = git(lane_repo_root, "rev-parse", "HEAD").stdout.strip()
     try:
         review_mod.record_checked_out_pr_lane(
             record,
-            lane_repo_root=_lane_repo_root(workspace_root, owner_unit, resolved_lane, repo),
+            lane_repo_root=lane_repo_root,
             workspace_root=workspace_root,
             owner_unit=owner_unit,
             lane_name=resolved_lane,
@@ -4762,6 +4803,12 @@ def review_checkout_pr(
             pr_number=pr_number,
         )
     except review_mod.ReviewError as exc:
+        for note in _roll_back_refused_checkout(
+                workspace_root, owner_unit, resolved_lane, lane_repo_root, materialized_head,
+                lane_existed=lane_existed, created_lane_file=created_lane_file,
+                created_checkout_roots=created_checkout_roots, source_repo_root=source_repo_root,
+                branch=resolved_branch, branch_existed=branch_existed, head_sha=head_sha):
+            typer.echo(f"gr2: {note}", err=True)
         _refuse(str(exc))
 
     entered = False
@@ -4851,11 +4898,16 @@ def _the_one_review_bind(workspace_root: Path, verb: str = "open") -> str:
     return f"gr:{commit}"
 
 
+def _review_lanes_root(workspace_root: Path) -> Path:
+    """``<workspace>.review``, beside the workspace: where `review open` reconstructs by default. Pure: no print."""
+    return workspace_root.parent / f"{workspace_root.name}.review"
+
+
 def _default_review_lane_dir(workspace_root: Path, target: str) -> Path:
     """Where `review open` reconstructs when no --lane-dir is given: ``<workspace>.review/<first 8 of the sha>``,
     BESIDE the workspace and not inside it, named in full on stderr. An existing directory is refused, never reused."""
     sha = _strip_gr_prefix(target)
-    path = workspace_root.parent / f"{workspace_root.name}.review" / sha[:8]
+    path = _review_lanes_root(workspace_root) / sha[:8]
     if path.exists():
         raise typer.BadParameter(
             f"{path} already exists, so `open` will not reconstruct into it; pass --lane-dir <new directory>, or "

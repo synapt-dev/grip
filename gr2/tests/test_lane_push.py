@@ -289,3 +289,99 @@ def test_a_lane_tip_that_cannot_be_fetched_says_cannot_tell(tmp_path: Path, monk
     assert result.exit_code == 3, result.output
     said = f"gamma cannot tell whether head {head} is on origin/{BRANCH}: its tip could not be fetched"
     assert said in result.output and "push it first" not in result.output, result.output
+
+
+# A rejected push prints ONE sentence first, parsed from git's porcelain '!' line; under it, indented,
+# git's hint lines, then git's other lines verbatim. Only the bare "Done" line (porcelain's end
+# marker) is dropped; the exit code and the --json error text are otherwise unchanged.
+
+
+def _rejected_beta(tmp_path: Path, *extra: str):
+    ws, repos = _lane(tmp_path)
+    assert _push(ws).exit_code == 0
+    _move_remote(tmp_path, "beta")
+    for repo in repos.values():
+        _commit(repo, "second.txt", "second\n")
+    return _push(ws, *extra)
+
+
+def _failed_block(output: str, repo: str) -> list[str]:
+    """The FAILED line for `repo` and the indented lines under it."""
+    lines = output.splitlines()
+    start = next(i for i, line in enumerate(lines) if line.startswith(f"{repo}: FAILED, "))
+    block = [lines[start]]
+    for line in lines[start + 1:]:
+        if not line.startswith("  "):
+            break
+        block.append(line)
+    return block
+
+
+def test_an_all_pushed_lane_prints_only_the_pushed_lines(tmp_path: Path) -> None:
+    ws, repos = _lane(tmp_path)
+    result = _push(ws)
+    assert result.exit_code == 0, result.output
+    assert result.output.splitlines() == [
+        f"{name}: pushed {BRANCH} to origin at {_git(repo, 'rev-parse', 'HEAD')} (remote ref verified)"
+        for name, repo in repos.items()
+    ]
+
+
+def test_a_rejected_push_says_one_sentence_then_git_hints_indented(tmp_path: Path) -> None:
+    result = _rejected_beta(tmp_path)
+    assert result.exit_code == 1, result.output
+    block = _failed_block(result.output, "beta")
+    assert block[0] == f"beta: FAILED, rejected: {BRANCH} on origin (fetch first)", block
+    under = block[1:]
+    assert "Done" not in [line.strip() for line in under], block
+    hints = [i for i, line in enumerate(under) if line.startswith("  hint: ")]
+    assert hints and hints == list(range(len(hints))), block  # the hints come first, indented
+    assert any(line.startswith("  error: failed to push some refs") for line in under), block
+    assert any("\t[rejected] (fetch first)" in line for line in under), block  # git's own line kept
+
+
+def test_done_inside_the_remote_path_survives(tmp_path: Path) -> None:
+    where = tmp_path / "Done"
+    where.mkdir()
+    result = _rejected_beta(where)
+    assert result.exit_code == 1, result.output
+    block = _failed_block(result.output, "beta")
+    assert block[0] == f"beta: FAILED, rejected: {BRANCH} on origin (fetch first)", block
+    assert f"  To {where / 'beta.git'}" in block, block
+    assert "  Done" not in block, block
+
+
+def test_two_rejected_pushes_each_say_their_sentence(tmp_path: Path) -> None:
+    ws, repos = _lane(tmp_path)
+    assert _push(ws).exit_code == 0
+    _move_remote(tmp_path, "beta")
+    _move_remote(tmp_path, "gamma")
+    for repo in repos.values():
+        _commit(repo, "second.txt", "second\n")
+    result = _push(ws)
+    assert result.exit_code == 1, result.output
+    for name in ("beta", "gamma"):
+        assert _failed_block(result.output, name)[0] == (
+            f"{name}: FAILED, rejected: {BRANCH} on origin (fetch first)"
+        ), result.output
+    assert "Done" not in [line.strip() for line in result.output.splitlines()], result.output
+
+
+def test_json_error_keeps_git_text_but_the_done_line(tmp_path: Path) -> None:
+    result = _rejected_beta(tmp_path, "--json")
+    assert result.exit_code == 1, result.output
+    beta = next(r for r in json.loads(result.output)["repos"] if r["repo"] == "beta")
+    error = beta["error"].splitlines()
+    assert beta["status"] == "failed" and "Done" not in error, error
+    assert error[0] == f"rejected: {BRANCH} on origin (fetch first)", error
+    assert any(line.startswith("hint: ") for line in error), error
+    assert any(line.startswith("To ") and line.endswith("beta.git") for line in error), error
+    assert any(line.startswith("error: failed to push some refs") for line in error), error
+    assert any(line.startswith("!\t") and line.endswith("[rejected] (fetch first)") for line in error), error
+
+
+def test_help_says_what_a_failure_prints(tmp_path: Path) -> None:
+    result = runner.invoke(gr2_app.app, ["lane", "push", "--help"])
+    assert result.exit_code == 0, result.output
+    said = " ".join(result.output.replace("│", " ").split())
+    assert "Under a FAILED line, indented, git's hint lines" in said, said

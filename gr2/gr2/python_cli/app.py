@@ -4426,7 +4426,8 @@ def lane_push(
 
     Each repo goes through the same path as `gr2 push` (its remote, a refusal of a detached HEAD,
     and an `ls-remote` check that the remote ref equals the head), one line per repo: pushed, up to
-    date, or FAILED. Exit 1 when any push failed; the repos that landed are not rolled back. Exit 3
+    date, or FAILED. Under a FAILED line, indented, git's hint lines, then the rest of git's output
+    (its bare Done line dropped). Exit 1 when any push failed; the repos that landed are not rolled back. Exit 3
     when every push landed but a head is not on the lane's branch at its remote (the store's root
     push would refuse that pin), or that could not be read."""
     _announce_context(ctx)
@@ -4449,7 +4450,10 @@ def lane_push(
     else:
         for row in rows:
             if row.status == "failed":
-                typer.echo(f"{row.repo}: FAILED, {row.error}")
+                first, *rest = (row.error or "").splitlines() or [""]
+                typer.echo(f"{row.repo}: FAILED, {first}")
+                for line in rest:
+                    typer.echo(f"  {line}")
             elif row.status == "up_to_date":
                 typer.echo(f"{row.repo}: up to date at {row.sha}")
             else:

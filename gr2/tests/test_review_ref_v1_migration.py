@@ -6,6 +6,7 @@ measure the read AFTER that setup, so conversion cannot hide behind legal copy.
 """
 from __future__ import annotations
 
+import hashlib
 import itertools
 import json
 import shutil
@@ -340,6 +341,17 @@ def _first_sorting_before(candidates, ceiling: str, tries: int = 64) -> str:
     raise AssertionError(f"no refused candidate sorted before a valid bind in {tries} tries")
 
 
+def _commit_sorting_at_or_above(root: Path, tree: str, floor: str) -> str:
+    """An unreferenced commit of `tree` whose id sorts at or above `floor`, searched by hashing, written once."""
+    for n in range(1 << 22):
+        body = f"tree {tree}\nauthor F <f@example.invalid> 0 +0000\ncommitter F <f@example.invalid> 0 +0000\n\nlegacy bind refused high {n}\n"
+        oid = hashlib.sha1(b"commit %d\0" % len(body.encode()) + body.encode()).hexdigest()
+        if oid >= floor:
+            assert git(root, "hash-object", "-t", "commit", "-w", "--stdin", input=body) == oid
+            return oid
+    raise AssertionError("no refused candidate sorted at or above every valid bind")
+
+
 def _never_past(candidate: str, tries: int):
     for _ in range(tries):
         yield candidate
@@ -383,8 +395,10 @@ def test_one_refused_bind_does_not_block_the_binds_after_it(handoff, tmp_path, m
     olds = [_legacy(root, dict(good, title=f"t{i}")) for i in range(3)]
     # ids are content hashes: draw unreferenced candidates of the refused bind, bind only the one that sorts first
     bad_tree = legacy_bind_tree(root, dict(good, remote="-x"))
-    bad = _first_sorting_before((git(root, "commit-tree", bad_tree, "-m", f"legacy bind refused {k}")
-                                 for k in itertools.count()), max(olds))
+    # the first candidate never qualifies, so binding every candidate would always leave a stray ref
+    first = _commit_sorting_at_or_above(root, bad_tree, max(olds))
+    bad = _first_sorting_before(itertools.chain([first], (git(root, "commit-tree", bad_tree, "-m", f"legacy bind refused {k}")
+                                                          for k in itertools.count())), max(olds))
     git(root, "update-ref", legacy_review_ref(bad), bad)
     assert bad < max(olds), "the witness needs a valid bind that sorts after the refused one"
     assert len(_legacy_refs(root)) == len(olds) + 1, "only the kept refused candidate is bound"

@@ -134,7 +134,7 @@ def _apply_range_in_lane(lane: Path, range_patch: str, committers: str | None) -
 
     with tempfile.TemporaryDirectory() as td:
         mbox = Path(td) / "range.patch"
-        mbox.write_text(range_patch)
+        mbox.write_bytes(_range_bytes(range_patch))
         if committers is None:
             p = _run("am", "--empty=keep", str(mbox))
             if p.returncode != 0:
@@ -180,10 +180,10 @@ def _shallow_base_into(lane: Path, remote: str, base: str) -> bool:
 def _range_paths(lane: Path, range_patch: str) -> list[str] | None:
     """Every path the range touches, both sides of a rename, read by git itself (`apply --numstat -z`), so a
     quoted, renamed or binary path comes out exact. None when git cannot read the range that way."""
-    p = gitops.run(lane, "apply", "--numstat", "-z", input=range_patch)
+    p = gitops.run(lane, "apply", "--numstat", "-z", input=_range_bytes(range_patch), binary=True)
     if p.returncode != 0:
         return None
-    toks, paths, i = p.stdout.split("\0"), [], 0
+    toks, paths, i = _range_text(p.stdout).split("\0"), [], 0
     while i < len(toks):
         rec = toks[i]
         i += 1
@@ -782,12 +782,12 @@ def _source_capture(source: str, *args: str) -> str:
     live base, so bind derives the range, the fuller metadata, and the head tree
     from the source that actually holds the head. Read-only; a failure refuses
     the bind rather than writing a partial object."""
-    proc = gitops.run(Path(source), *args)
+    proc = gitops.run(Path(source), *args, binary=True)
     if proc.returncode != 0:
         raise GripReviewRefused(
-            "source_unreadable", f"{source} git {' '.join(args)}", proc.stderr.strip()[:160]
+            "source_unreadable", f"{source} git {' '.join(args)}", _range_text(proc.stderr).strip()[:160]
         )
-    return proc.stdout
+    return _range_text(proc.stdout)
 
 
 def _flattened_range(source: str, base: str, head: str, merge_count: int) -> str:
@@ -853,7 +853,7 @@ def _run_policy_hook(policy_hook: list[str] | None, scan_items: list[tuple[str, 
     import tempfile
     with tempfile.TemporaryDirectory() as td:
         for name, content in scan_items:
-            (Path(td) / name).write_text(content)
+            (Path(td) / name).write_bytes(_range_bytes(content))
         proc = subprocess.run(
             [*policy_hook, td], capture_output=True, text=True, check=False
         )
@@ -863,6 +863,16 @@ def _run_policy_hook(policy_hook: list[str] | None, scan_items: list[tuple[str, 
                 (proc.stdout + proc.stderr).strip()[:200],
             )
         return f"clean: {' '.join(policy_hook)} exit 0"
+
+
+def _range_text(data: bytes) -> str:
+    """A range read as bytes, carried as str without losing a byte: a hunk that is not UTF-8 (a binary file,
+    Latin-1 text) rides as surrogates, and _range_bytes gives back exactly the bytes git wrote."""
+    return data.decode("utf-8", "surrogateescape")
+
+
+def _range_bytes(text: str) -> bytes:
+    return text.encode("utf-8", "surrogateescape")
 
 
 def _range_terminal_head(range_patch: str) -> str | None:
@@ -1050,7 +1060,7 @@ def _bind_review_rows_body(
             obj = _carry_objects_from_range(workspace, remote, base, range_patch,
                                             at_base_of=observed if row.get("at_base") else None)
         if obj is not None:
-            size = len(obj["range.patch"].encode())
+            size = len(_range_bytes(obj["range.patch"]))
             if size > fd.MAX_BLOB_BYTES:
                 # Refused here, before anything is written, so the store never holds a record its own reader refuses.
                 raise GripReviewRefused("range_patch_over_limit", f"<= {fd.MAX_BLOB_BYTES} bytes", f"{size} bytes")
@@ -1900,10 +1910,11 @@ def _bind_run(workspace: Path, argv: list[str], *, input: str | None = None, env
 
 
 def _bind_blob(workspace: Path, content: str) -> str:
-    proc = _bind_run(workspace, ["git", "hash-object", "-w", "--stdin"], input=content)
+    proc = gitops.run_argv(["git", "hash-object", "-w", "--stdin"], cwd=_bind_dir(workspace),
+                           input=_range_bytes(content), binary=True)
     if proc.returncode != 0:
-        raise RuntimeError(f"hash-object failed: {proc.stderr}")
-    return proc.stdout.strip()
+        raise RuntimeError(f"hash-object failed: {_range_text(proc.stderr)}")
+    return proc.stdout.decode().strip()
 
 
 def _bind_mktree(workspace: Path, entries: list[str]) -> str:

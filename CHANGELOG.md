@@ -80,6 +80,11 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Fixed
 
+- **`gr2`: `review pin` carries a range that is not UTF-8 byte for byte.** A range whose hunk holds a byte that is
+  not UTF-8 (a binary descriptor, a Latin-1 text file) crashed `--from-range`, a rows-json `range` and `--source`
+  with an uncaught decode error. The range is now read as bytes and every write (the stored range, `git am`,
+  `git apply`, the policy hook) gives back exactly the bytes git wrote. A range path that cannot be read refuses
+  with exit 2, `range_unreadable`.
 - **`gr2`: a full-mode root that `workspace init` was also run at is still named a full-mode root.** Its
   `.grip/workspace_spec.toml` made the full-mode check read it as another kind of root, so `store status` there told
   the user to run `gr2 store init here`, and reading its sets at a revision that is not a commit returned no sets.

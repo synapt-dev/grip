@@ -2,6 +2,8 @@
 ``alpha/`` are the member ``alpha``. The key does not fold ``..``: ``a/../alpha`` is a different key, as git keeps it."""
 from __future__ import annotations
 
+import pytest
+
 from gr2.python_cli import declared_sets
 
 
@@ -20,8 +22,8 @@ def test_a_member_stored_as_alpha_slash_is_found_by_the_path_alpha():
 
 def test_behaviour_change_a_dot_dot_path_no_longer_matches_the_member_it_resolves_to():
     # Before, the loader and the lookup both ran normpath, which folds `..`; the member key does not.
-    declaration = declared_sets.parse({"members": [{"name": "alpha", "path": "a/../alpha"}]})
-    assert declaration.member_name("not-a-name", "alpha") is None
+    with pytest.raises(declared_sets.DeclaredSetError, match="member_path_outside_root"):  # a '..' part leaves no member
+        declared_sets.parse({"members": [{"name": "alpha", "path": "a/../alpha"}]})
     declaration = declared_sets.parse({"members": [{"name": "alpha", "path": "alpha"}]})
     assert declaration.member_name("not-a-name", "a/../alpha") is None
     assert declaration.member_name("not-a-name", "./alpha/") == "alpha"

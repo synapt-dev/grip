@@ -181,8 +181,10 @@ def test_full_root_unborn_head_refuses(full, monkeypatch):
 
 
 def test_full_root_crafted_member_names_make_no_row(full, monkeypatch):
-    """Section names git allows but whose path is crafted: this verb names each as unpinned, makes no row for it and
-    reads nothing outside the root. (A name git disallows is refused by the set reader; see the rows below.)"""
+    """Section names git allows but whose path is crafted: this verb names `a/b` as unpinned and makes no row for it, a
+    path that leaves the root refuses the whole read and writes no review, and nothing outside the root is read. (A
+    name git disallows is refused by the set reader; see the rows below.)"""
+    monkeypatch.setenv("COLUMNS", "2000")  # Rich folds a long temp path inside the refusal at the default width
     root = full["root"]
     _ahead(root, "api")
     base = (root / ".gitmodules").read_text()
@@ -194,10 +196,14 @@ def test_full_root_crafted_member_names_make_no_row(full, monkeypatch):
         git(root, "commit", "-q", "-m", f"crafted {section}")
         r = gr2(root, monkeypatch, "review", "pin")
         out = _out(r)
-        _bound(r, out, root, reviews=None)  # the same api row each time
-        assert max(bound, 1) <= len(_reviews(root)) <= bound + 1, _reviews(root)
-        bound = len(_reviews(root))
-        assert f"{section} (no gitlink at {path} in HEAD)" in out, out
+        if path in ("../outside", str(outside)):  # a path that leaves the root refuses the whole read
+            assert r.exit_code == 2 and f"member_path_outside_root: member {section!r} path {path!r}" in out, out
+            assert len(_reviews(root)) == bound, _reviews(root)
+        else:
+            _bound(r, out, root, reviews=None)  # the api row
+            assert max(bound, 1) <= len(_reviews(root)) <= bound + 1, _reviews(root)
+            bound = len(_reviews(root))
+            assert f"{section} (no gitlink at {path} in HEAD)" in out, out
         assert f"pin {section} " not in out, out
         assert not outside.exists()
 

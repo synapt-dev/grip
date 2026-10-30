@@ -99,3 +99,14 @@ def test_a_utf8_range_opens_and_verifies_as_before(tmp_path: Path) -> None:
     _open_matches_source(w, tmp_path / "lane")
     rows = grip.verify_review_commit(w["ws"], w["commit"])["rows"]
     assert rows[0]["range_sha256"] == hashlib.sha256(w["patch"]).hexdigest()
+
+
+def test_pin_then_open_through_the_cli_rebuilds_a_latin1_hunk(tmp_path: Path) -> None:
+    w = _pinned(tmp_path, "latin1.txt", b"caf\xe9\n")  # pinned through `review pin` on the CLI
+    lane = tmp_path / "lane"
+    res = CliRunner().invoke(gr2_app.app, [
+        "review", "open", str(w["ws"]), "gr:" + w["commit"], "--lane-dir", str(lane)])
+    assert res.exit_code == 0, res.output
+    assert "tree_match: True" in res.output.splitlines(), res.output
+    got = _git(lane, "hash-object", "--", w["name"]).decode().strip()
+    assert got == _git(w["work"], "hash-object", "--", w["name"]).decode().strip()

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 from gr2.prototypes import lane_workspace_prototype as lanes
@@ -378,6 +379,52 @@ def test_json_error_keeps_git_text_but_the_done_line(tmp_path: Path) -> None:
     assert any(line.startswith("To ") and line.endswith("beta.git") for line in error), error
     assert any(line.startswith("error: failed to push some refs") for line in error), error
     assert any(line.startswith("!\t") and line.endswith("[rejected] (fetch first)") for line in error), error
+
+
+_DECLINE_WITH_A_TAB = '''import sys
+
+i, o = sys.stdin.buffer, sys.stdout.buffer
+
+
+def read():
+    out = []
+    while True:
+        n = int(i.read(4), 16)
+        if n == 0:
+            return out
+        out.append(i.read(n - 4).rstrip(b"\\n"))
+
+
+def send(lines):
+    for line in lines:
+        data = line + b"\\n"
+        o.write(b"%04x" % (len(data) + 4) + data)
+    o.write(b"0000")
+    o.flush()
+
+
+read()
+send([b"version=1"])
+send([b"ng " + c.split(b" ")[2] + b" held\\tfor review" for c in read()])
+'''
+
+
+def test_a_refusal_with_no_parsable_line_keeps_git_lines_but_the_done_line(tmp_path: Path) -> None:
+    # A proc-receive hook whose decline reason holds a tab: git's '!' line splits into four
+    # fields, so no sentence parses, and git still prints the bare "Done" line.
+    ws, repos = _lane(tmp_path)
+    bare = tmp_path / "beta.git"
+    _git(bare, "config", "receive.procReceiveRefs", "refs/heads")
+    hook = bare / "hooks" / "proc-receive"
+    hook.write_text(f"#!{sys.executable}\n{_DECLINE_WITH_A_TAB}")
+    hook.chmod(0o755)
+    result = _push(ws)
+    assert result.exit_code == 1, result.output
+    block = _failed_block(result.output, "beta")
+    assert block[0] == f"beta: FAILED, To {bare}", block
+    assert f"  !\trefs/heads/{BRANCH}:refs/heads/{BRANCH}\t[remote rejected] (held\tfor review)" in block, block
+    assert any(line.startswith("  error: failed to push some refs") for line in block), block
+    assert "Done" not in [line.strip() for line in result.output.splitlines()], result.output
 
 
 def test_help_says_what_a_failure_prints(tmp_path: Path) -> None:

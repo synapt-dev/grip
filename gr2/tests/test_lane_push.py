@@ -294,7 +294,8 @@ def test_a_lane_tip_that_cannot_be_fetched_says_cannot_tell(tmp_path: Path, monk
 
 # A rejected push prints ONE sentence first, parsed from git's porcelain '!' line; under it, indented,
 # git's hint lines, then git's other lines verbatim. Only the bare "Done" line (porcelain's end
-# marker) is dropped; the exit code and the --json error text are otherwise unchanged.
+# marker) is dropped. The exit code is unchanged, and the --json error field carries the same text the
+# lines are printed from: the sentence, git's hints, then git's other lines without the bare Done line.
 
 
 def _rejected_beta(tmp_path: Path, *extra: str):

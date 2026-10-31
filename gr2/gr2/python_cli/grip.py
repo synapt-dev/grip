@@ -891,6 +891,23 @@ def _range_terminal_head(range_patch: str) -> str | None:
     return found
 
 
+def _merge_head_next_step(remote: str, head: str, from_head: str) -> str:
+    """The next step under range_head_mismatch. A head that is a merge has no patch form: format-patch writes the
+    merged commits and never the merge, so its range ends at another commit, and --from-range cannot carry it.
+    --source can (a range holding a merge is carried as one tree diff, base..head), and any git directory that holds
+    the head and the base will do: a reader names this host's review mirror of the remote, which holds a pushed
+    head once fetched, and an author the clone the head was made in."""
+    import shlex
+    from . import review_ephemeral
+    mirror = str(review_ephemeral.review_cache_root() / f"{review_ephemeral.mirror_basename(remote)}.git")
+    return (f"next: if {head[:12]} is a merge, it has no patch form: format-patch writes the merged commits, never "
+            f"the merge, so this range ends at {from_head[:12]}. Pin it with --source and a repository that holds "
+            f"the head and the base, which carries base..head as one tree diff. A reader can name this host's review "
+            f"mirror of the remote, {shlex.quote(mirror)}, after fetching the pushed head into it: git -C {shlex.quote(mirror)} fetch origin "
+            f"(gr2 makes that mirror the first time it opens a review of this remote). An author can name the clone "
+            f"the head was made in.")
+
+
 def create_review_bind_commit(
     workspace: Path, rows: list[dict[str, str]], *, ratified: str | None = None,
     policy_hook: list[str] | None = None,
@@ -1057,7 +1074,9 @@ def _bind_review_rows_body(
             if from_head is None:
                 raise GripReviewRefused("range_no_from_header", key, "range.patch carries no From <sha> header")
             if from_head != head:
-                raise GripReviewRefused("range_head_mismatch", head, from_head)
+                exc = GripReviewRefused("range_head_mismatch", head, from_head)
+                exc.add_note(_merge_head_next_step(remote, head, from_head))
+                raise exc
             obj = _carry_objects_from_range(workspace, remote, base, range_patch,
                                             at_base_of=observed if row.get("at_base") else None)
         if obj is not None:

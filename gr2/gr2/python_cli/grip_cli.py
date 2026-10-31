@@ -13,6 +13,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import time
 import tomllib
 from pathlib import Path, PurePosixPath
 from typing import Optional
@@ -2902,6 +2903,9 @@ def host_size_line(path: str, member: str | None, size: str, limit: str) -> str:
     return f"push refused by the host for size: {path} in {who} is {size} (host limit {limit}); nothing moved"
 
 
+_LANDED_RETRY_SECONDS = 10.0
+
+
 def _atomic_push(root: Path, refspecs: list[tuple[str, str]], verify: bool = True,
                  leases: dict[str, str] | None = None, members: list[tuple[str, str]] = ()) -> bool:
     """ONE `git push --atomic` of every (commit, ref), so the remote moves all of them or none. A refusal names
@@ -2917,17 +2921,27 @@ def _atomic_push(root: Path, refspecs: list[tuple[str, str]], verify: bool = Tru
     # whole atomic push when origin's advertised value differs, so a writer landing after the freshness check is
     # turned away and nothing moves.
     leased = [f"--force-with-lease={ref}:{value}" for ref, value in (leases or {}).items()]
-    proc = _store_git(root, "push", "--porcelain", "--atomic", *leased, *([] if verify else ["--no-verify"]), "origin",
-                      *[f"{sha}:{ref}" for sha, ref in refspecs], check=False)
-    if proc.returncode == 0:
-        return False
-    listed = _store_git(root, "ls-remote", "origin", *[ref for _, ref in refspecs], check=False)
-    try:
-        held = {name: sha for sha, name in gitops.ls_remote_rows(listed.stdout)}
-    except gitops.LsRemoteMalformed:
-        held = {}  # an unreadable answer proves nothing landed: the refusal below names the push's own rejection
-    if listed.returncode == 0 and all(held.get(ref) == sha for sha, ref in refspecs):
-        return True
+    # A push refused on a lock while another push of the same refs holds it (its locks taken, its refs not yet moved)
+    # reads origin before that push lands. While every ref is still at its lease or already at its target, the same
+    # leased push is tried again, bounded; a ref at any third value, or a refusal that is not a lock, refuses at once.
+    deadline = time.monotonic() + _LANDED_RETRY_SECONDS
+    while True:
+        proc = _store_git(root, "push", "--porcelain", "--atomic", *leased, *([] if verify else ["--no-verify"]),
+                          "origin", *[f"{sha}:{ref}" for sha, ref in refspecs], check=False)
+        if proc.returncode == 0:
+            return False
+        listed = _store_git(root, "ls-remote", "origin", *[ref for _, ref in refspecs], check=False)
+        try:
+            held = {name: sha for sha, name in gitops.ls_remote_rows(listed.stdout)}
+        except gitops.LsRemoteMalformed:
+            held = {}  # an unreadable answer proves nothing landed: the refusal below names the push's own rejection
+        if listed.returncode == 0 and all(held.get(ref) == sha for sha, ref in refspecs):
+            return True
+        in_flight = "cannot lock ref" in (proc.stderr or "") and listed.returncode == 0 and all(
+            held.get(ref, "") in {sha, (leases or {}).get(ref, held.get(ref, ""))} for sha, ref in refspecs)
+        if not in_flight or time.monotonic() >= deadline:
+            break
+        time.sleep(0.25)
     # `members` is (name, pin) for each member riding this push; its pin was fetched into the root, so it is read there.
     found = host_size_refusal(proc.stderr or "", [(name, str(root), pin) for name, pin in members])
     if found is not None:

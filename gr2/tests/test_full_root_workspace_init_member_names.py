@@ -128,12 +128,10 @@ def test_a_section_that_is_not_a_member_name_keeps_its_path(tmp_path, section, p
     assert (entry["name"], entry["path"]) == (path, path)
 
 
-@pytest.mark.xfail(strict=True, reason="pending: of_root reading a full root by shape, and the superproject scan then "
-                   "reading a full root's pins instead of refusing it")
 def test_workspace_init_at_a_full_root_read_as_full_writes_section_names(full, monkeypatch):
-    # Once of_root reads a full root by its shape, init there must still write `api` and `web`, not refuse by name.
-    # Simulated until then: of_root answers "full".
+    # of_root reads a full root by its shape, and init there still writes `api` and `web`, not refuse by name: the
+    # superproject scan asks what grip.toml declares, and a full root's pins are the members' real commits.
     root = full["root"]
-    monkeypatch.setattr(workspace_mode, "of_root", lambda *a, **k: "full")
+    assert workspace_mode.of_root(root, "HEAD") == "full"
     _init(root, monkeypatch)
     assert _spec_repos(root) == {m: PIN_PATH.format(m) for m in MEMBERS}

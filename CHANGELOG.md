@@ -85,6 +85,11 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
   with an uncaught decode error. The range is now read as bytes and every write (the stored range, `git am`,
   `git apply`, the policy hook) gives back exactly the bytes git wrote. A range path that cannot be read refuses
   with exit 2, `range_unreadable`.
+- **`gr2`: `review repin` carries a range that is not UTF-8 byte for byte.** A frozen range whose hunk holds a
+  byte that is not UTF-8, or a base move that does, crashed `review repin` (and the freeze it reads) with an
+  uncaught decode error. The range, the moved commits and the net diffs are now read as bytes, and the new
+  `range.patch` is exactly the bytes git wrote. A `range.patch` that cannot be read refuses with exit 2,
+  `range_unreadable`.
 - **`gr2`: `review checkout-pr` opens a merged PR at its head.** A merged PR's head is already in its target branch,
   so the lane dropped it as a stale local branch, started at the live tip, and the checkout refused. The fetched PR
   head is now kept (fork base start `local`, as for an open PR); `lane create` keeps its rule for a stale local branch.

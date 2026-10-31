@@ -32,6 +32,7 @@ from pathlib import Path
 
 from .clone_exec import IncompleteRemoval, rmtree_or_refuse
 from . import gitops
+from .grip import _range_bytes, _range_text
 
 _TARGET_RE = re.compile(r"^target:[^@]*@ ([0-9a-f]{40})", re.MULTILINE)
 _INTENDED_RE = re.compile(r"^repo:.*intended ref: (\S+)", re.MULTILINE)
@@ -56,8 +57,8 @@ class RebindResult:
     out_dir: Path | None = None
 
 
-def _git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
-    proc = gitops.run(repo, *args)
+def _git(repo: Path, *args: str, check: bool = True, binary: bool = False) -> subprocess.CompletedProcess:
+    proc = gitops.run(repo, *args, binary=binary)
     if check and proc.returncode:
         raise subprocess.CalledProcessError(proc.returncode, proc.args, proc.stdout, proc.stderr)
     return proc
@@ -66,9 +67,20 @@ def _git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProc
 def _patch_ids(patch_text: str) -> str:
     """Sorted set of stable patch-ids for a format-patch stream (rename-blind; the
     rename-aware _norm_diff equality below is the complement)."""
-    p = gitops.run(Path.cwd(), "patch-id", "--stable", input=patch_text, via_cwd=True)
-    ids = sorted(line.split()[0] for line in p.stdout.splitlines() if line.strip())
+    p = gitops.run(Path.cwd(), "patch-id", "--stable", input=_range_bytes(patch_text), via_cwd=True,
+                   binary=True)
+    ids = sorted(line.split()[0] for line in _range_text(p.stdout).splitlines() if line.strip())
     return "\n".join(ids)
+
+
+def _read_range(frozen_dir: Path) -> str:
+    """The frozen range.patch, read once as bytes: a non-UTF-8 hunk rides through as a
+    lone surrogate and is written back exactly as git wrote it."""
+    path = frozen_dir / "range.patch"
+    try:
+        return _range_text(path.read_bytes())
+    except OSError as exc:
+        raise RebindRefused("range_unreadable", f"{path}: {exc.strerror or exc}") from exc
 
 
 _HUNK_RE = re.compile(r"^@@ -[0-9]+(,[0-9]+)? \+[0-9]+(,[0-9]+)? @@")
@@ -104,8 +116,9 @@ def freeze(repo: Path, target_ref: str, out_dir: Path, *, title: str, body: str)
     # read the remote before out_dir exists, so a refused listing leaves no half-written dir
     state = _ref_state(repo, url, intended_ref)
     out_dir.mkdir(parents=True)
-    (out_dir / "range.patch").write_text(
-        _git(repo, "format-patch", f"{base}..HEAD", "--stdout").stdout
+    # bytes end to end: a range carrying a non-UTF-8 hunk is frozen exactly as git wrote it
+    (out_dir / "range.patch").write_bytes(
+        _git(repo, "format-patch", f"{base}..HEAD", "--stdout", binary=True).stdout
     )
     (out_dir / "metadata.fuller.txt").write_text(
         _git(repo, "log", "--format=fuller", f"{base}..HEAD").stdout
@@ -272,11 +285,12 @@ def rebind(frozen_dir: Path, repo: Path, target_ref: str, out_dir: Path,
         # since the frozen base, so the rebased range would be EMPTY — which the
         # patch-id check below reads as a divergence. Detect it first and name the
         # landing tip, rather than refusing a range that is simply already there.
+        frozen_range = _read_range(frozen_dir)
         if gitops.is_ancestor(clone, frozen_base, live_base) is True:
-            frozen_ids = {
-                x for x in _patch_ids((frozen_dir / "range.patch").read_text()).splitlines() if x
-            }
-            moved = _git(clone, "format-patch", f"{frozen_base}..{live_base}", "--stdout").stdout
+            frozen_ids = {x for x in _patch_ids(frozen_range).splitlines() if x}
+            moved = _range_text(
+                _git(clone, "format-patch", f"{frozen_base}..{live_base}", "--stdout", binary=True).stdout
+            )
             moved_ids = {x for x in _patch_ids(moved).splitlines() if x}
             if frozen_ids and frozen_ids <= moved_ids:
                 return RebindResult(
@@ -296,12 +310,14 @@ def rebind(frozen_dir: Path, repo: Path, target_ref: str, out_dir: Path,
                 "a hand re-freeze and a fresh read are required"
                 + (f" — git am said: {detail}" if detail else ""),
             )
-        new_range = _git(clone, "format-patch", f"{live_base}..HEAD", "--stdout").stdout
+        new_range = _range_text(
+            _git(clone, "format-patch", f"{live_base}..HEAD", "--stdout", binary=True).stdout
+        )
         # Defense-in-depth behind the conflict path above: a would-change range is
         # normally caught as an `am --3way` conflict, so this refusal has no known
         # reachable case (a clean 3-way apply that still yields different patch-ids).
         # Kept because that guarantee is git's, not ours; no discriminating fixture.
-        if _patch_ids((frozen_dir / "range.patch").read_text()) != _patch_ids(new_range):
+        if _patch_ids(frozen_range) != _patch_ids(new_range):
             raise RebindRefused(
                 "patch_id_diverged",
                 "patch-ids differ after rebasing onto the moved base — the range CHANGED",
@@ -314,7 +330,7 @@ def rebind(frozen_dir: Path, repo: Path, target_ref: str, out_dir: Path,
         # If the frozen base is unreconstructable in the clone, patch-id identity
         # above is authoritative. Port of the shell prototype's ENFORCED check.
         d_new = _norm_diff(
-            _git(clone, "diff", "--find-renames", f"{live_base}..{new_head}").stdout
+            _range_text(_git(clone, "diff", "--find-renames", f"{live_base}..{new_head}", binary=True).stdout)
         )
         if gitops.is_ancestor(clone, frozen_base, new_head) is True:
             scratch = f"_rebind_frozen_{os.getpid()}"
@@ -322,7 +338,7 @@ def rebind(frozen_dir: Path, repo: Path, target_ref: str, out_dir: Path,
             am2 = _git(clone, "am", "--3way", "--empty=keep", str(frozen_dir / "range.patch"), check=False)
             if am2.returncode == 0:
                 d_old = _norm_diff(
-                    _git(clone, "diff", "--find-renames", f"{frozen_base}..HEAD").stdout
+                    _range_text(_git(clone, "diff", "--find-renames", f"{frozen_base}..HEAD", binary=True).stdout)
                 )
                 _git(clone, "checkout", "--quiet", new_head, check=False)
                 _git(clone, "branch", "-D", scratch, check=False)
@@ -346,7 +362,7 @@ def rebind(frozen_dir: Path, repo: Path, target_ref: str, out_dir: Path,
         intended_ref = intended or f"refs/heads/{_branch_of(target_ref)}"
         state = _ref_state(repo, url, intended_ref)
         out_dir.mkdir(parents=True)
-        (out_dir / "range.patch").write_text(new_range)
+        (out_dir / "range.patch").write_bytes(_range_bytes(new_range))
         (out_dir / "metadata.fuller.txt").write_text(
             _git(clone, "log", "--format=fuller", f"{live_base}..HEAD").stdout
         )

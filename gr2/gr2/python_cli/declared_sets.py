@@ -19,7 +19,7 @@ import re
 import shlex
 import tomllib
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Callable, Mapping, Sequence
 
 from . import gitops
@@ -39,6 +39,17 @@ def _two_sets(member: str, first: str, second: str) -> str:
 
 class DeclaredSetError(ValueError):
     """A declaration that cannot be read, named so the author can fix grip.toml or .gitmodules."""
+
+
+def _member_path_kept(member: str, path: str, where: str) -> str:
+    """`path` as a member key, or refuses the WHOLE read when it leaves the root: absolute, or with a '..' part. One
+    rule for both readers, so grip.toml and .gitmodules refuse in the same words before any member is kept."""
+    key = member_path_key(path)
+    pure = PurePosixPath(key)
+    if pure.is_absolute() or ".." in pure.parts:
+        raise DeclaredSetError(f"member_path_outside_root: member {member!r} path {path!r} in {where} is absolute or "
+                               "has a '..' part; a member path stays inside the root")
+    return key
 
 
 @dataclass(frozen=True)
@@ -84,7 +95,8 @@ def parse(document: Mapping) -> Declaration:
         if not isinstance(member, Mapping) or not isinstance(member.get("name"), str) or not isinstance(member.get("path"), str):
             continue  # the member reader owns the refusal for a malformed member
         origin = remotes.get("origin") if isinstance(remotes, Mapping) else None
-        members[member["name"]] = {"path": member_path_key(member["path"]), "remote": origin if isinstance(origin, str) else ""}
+        members[member["name"]] = {"path": _member_path_kept(member["name"], member["path"], "grip.toml"),
+                                   "remote": origin if isinstance(origin, str) else ""}
     raw = document.get("sets", [])
     if raw in (None, []):
         return Declaration((), members, mode)
@@ -221,7 +233,7 @@ def _read_full_root(root: Path, commit: str) -> Declaration:
         if name not in members:
             _refuse_member_name(root, commit, name)
         members.setdefault(name, {"path": "", "remote": ""})["path" if field == "path" else "remote"] = (
-            member_path_key(value) if field == "path" else value)
+            _member_path_kept(name, value, f".gitmodules at {commit[:12]}") if field == "path" else value)
     owner: dict[str, str] = {}
     for key, value in _gitmodules_rows(root, blob, r"^submodule\..*\.gr2-set$"):
         member = key[len("submodule."):-len(".gr2-set")]

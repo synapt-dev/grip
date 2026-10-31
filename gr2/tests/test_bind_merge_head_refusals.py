@@ -12,9 +12,14 @@ Rows, and what turns each red:
   stale merge row:   refused base_not_ancestor_of_head, with a next line   -> drop the ancestry check
   merged-again row:  the same world after merging main again binds         -> refuse every merge range
   empty net row:     refused range_adds_nothing, never git's own text      -> drop the empty check
+  from-range row:    a merge head through --from-range is refused with a next step naming --source and the
+                     host's review mirror, quoted                           -> drop the note
+  mirror row:        a bare mirror as --source binds the pushed merge head, and open matches its tree
+                                                                            -> refuse a bare --source
 """
 from __future__ import annotations
 
+import shlex
 import subprocess
 
 from typer.testing import CliRunner
@@ -114,3 +119,50 @@ def test_a_merge_range_that_adds_nothing_is_named_at_bind(tmp_path, monkeypatch)
     assert out.exit_code == 2, out.output
     assert "refused: range_adds_nothing" in out.output, out.output
     assert "No valid patches" not in out.output, out.output
+
+
+def _merged_again(tmp_path, monkeypatch):
+    """The stale merge world after merging main again: the head is a merge that contains the live base."""
+    author, member, remote, _seed_dir, f3 = _stale_merge_world(tmp_path, monkeypatch)
+    _merge_main(member)
+    head = git(member, "rev-parse", "HEAD")
+    assert len(git(member, "rev-list", "--parents", "-n1", head).split()) == 3  # the head IS a merge
+    return author, member, remote, f3, head
+
+
+def test_a_merge_head_through_from_range_is_refused_with_the_source_step(tmp_path, monkeypatch):
+    # format-patch writes the merged commits and never the merge, so the range's last From sha is another commit and
+    # range_head_mismatch is right; the refusal used to stop there. Its next step names --source and the host's review
+    # mirror of the remote, quoted, so a reader with no clone has a path (the mirror row below proves it binds).
+    author, member, remote, f3, head = _merged_again(tmp_path, monkeypatch)
+    cache = tmp_path / "review cache"  # a space, so the printed path must be quoted to be pasted
+    monkeypatch.setenv("SYNAPT_REVIEW_CACHE_ROOT", str(cache))
+    rng = tmp_path / "range.patch"
+    rng.write_text(git(member, "format-patch", "--stdout", f"{f3}..{head}"))
+    out = runner.invoke(app, ["review", "bind", "--repo", "member", "--remote", str(remote), "--base", f3,
+                              "--head", head, "--ref", "refs/heads/main", "--from-range", str(rng)])
+    assert out.exit_code == 2, out.output
+    assert "refused: range_head_mismatch" in out.output, out.output
+    step = out.output.split("next:", 1)[1]
+    assert "is a merge" in step and "--source" in step, out.output
+    mirror = cache / "remote.git"
+    fetch = step.split("after fetching the pushed head into it: ", 1)[1].split(" (", 1)[0]
+    assert shlex.split(fetch) == ["git", "-C", str(mirror), "fetch", "origin"], fetch
+
+
+def test_a_merge_head_binds_from_a_bare_mirror_and_opens_with_its_tree(tmp_path, monkeypatch):
+    # The path the refusal names: a reader with no working clone pins the pushed merge head with --source set to a
+    # bare mirror of the remote (the review cache's shape), and the reconstruction is the merge's own tree.
+    author, member, remote, f3, head = _merged_again(tmp_path, monkeypatch)
+    git(member, "push", "origin", "HEAD:refs/heads/hold")
+    mirror = tmp_path / "mirror.git"
+    git(tmp_path, "clone", "--mirror", remote, mirror)
+    out = runner.invoke(app, ["review", "bind", "--repo", "member", "--remote", str(remote), "--base", f3,
+                              "--head", head, "--ref", "refs/heads/main", "--source", str(mirror)])
+    assert out.exit_code == 0, out.output
+    rid = out.output.strip().splitlines()[-1]
+    assert rid.startswith("gr:"), out.output
+    opened = runner.invoke(app, ["review", "open", str(author), rid, "--repo", "member",
+                                 "--lane-dir", str(tmp_path / "lane"), "--enter"])
+    assert opened.exit_code == 0, opened.output
+    assert f"bound_head: {head}" in opened.output and "tree_match: True" in opened.output, opened.output

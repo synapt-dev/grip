@@ -248,7 +248,7 @@ Pin a review gr commit for one or more repository rows; print ``gr:<commit>``.
 - `--ref`: Target ref whose live head must equal --base (default: the remote's HEAD branch, as ls-remote --symref reports it)
 - `--path`: Workspace path for the row (defaults to --repo)
 - `--source`: Author clone holding the pre-push head; required to carry the range so `review open` can reconstruct
-- `--from-range`: A frozen range.patch (freeze-public-range.sh output). Carries the range so `review open` reconstructs, deriving the head-tree by applying it over --base in a throwaway clone — NO author clone that holds the head is needed. Exclusive with --source. It does not read the repo, remote, base or head from the patch: give --repo, --remote, --base and --head too.
+- `--from-range`: A frozen range.patch (freeze-public-range.sh output). Carries the range so `review open` reconstructs, deriving the head-tree by applying it over --base in a throwaway clone — NO author clone that holds the head is needed. Exclusive with --source. It does not read the repo, remote, base or head from the patch: give --repo, --remote, --base and --head too. A head that is a merge has no patch form; pin it with --source and a repository that holds the head and the base (the clone it was made in, or this host's review mirror of the remote).
 - `--at-base`: With --from-range: pin at --base, the dev the range was cut on, even when --ref has moved past it; read-only (nothing is rebased) and recorded in the pin as at-base
 - `--title`: Platform title text (NORM-hashed into the object)
 - `--body`: Platform body text (NORM-hashed into the object)

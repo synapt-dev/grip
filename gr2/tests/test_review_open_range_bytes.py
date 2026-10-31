@@ -6,11 +6,13 @@ from __future__ import annotations
 
 from tests.native_root_helper import native_root
 
+import errno
 import hashlib
 import os
 import subprocess
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from gr2.python_cli import app as gr2_app
@@ -34,7 +36,12 @@ def _pinned(tmp_path: Path, name: str, content: bytes, *, utf8: bool = False) ->
     _git(work, "commit", "-q", "-m", "base")
     _git(work, "push", "-q", "origin", "HEAD:trunk")
     base = _git(work, "rev-parse", "HEAD").decode().strip()
-    (work / name).write_bytes(content)
+    try:
+        (work / name).write_bytes(content)
+    except OSError as e:
+        if e.errno == errno.EILSEQ:
+            pytest.skip("this filesystem refuses a file name that is not UTF-8")
+        raise
     _git(work, "add", ".")
     _git(work, "commit", "-q", "-m", "add file")
     head = _git(work, "rev-parse", "HEAD").decode().strip()

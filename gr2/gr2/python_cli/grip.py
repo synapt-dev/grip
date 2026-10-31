@@ -253,7 +253,8 @@ def _sparse_to_range_paths(lane: Path, range_patch: str) -> bool:
     if not paths or any("\n" in x or "\r" in x for x in paths):
         return False
     patterns = "".join(_sparse_pattern(x) + "\n" for x in paths)
-    if gitops.run(lane, "sparse-checkout", "set", "--no-cone", "--stdin", input=patterns).returncode != 0:
+    if gitops.run(lane, "sparse-checkout", "set", "--no-cone", "--stdin",
+                  input=patterns.encode("utf-8", "surrogateescape"), binary=True).returncode != 0:
         gitops.run(lane, "sparse-checkout", "disable")
         return False
     return True
@@ -1490,7 +1491,7 @@ def _decode_field_tree(repo: Path, tree: str) -> dict[str, object]:
                 raise GripCorruptError(f"invalid review repository tree: {key} {name} is not NORM text")
         objects = None
         if any(k in m for k in ("range_patch", "metadata", "head_tree")):
-            objects = {"range.patch": _text(m["range_patch"]) if "range_patch" in m else None,
+            objects = {"range.patch": _range_text(m["range_patch"]) if "range_patch" in m else None,
                        "metadata": _text(m.get("metadata", b"")),
                        "head-tree": m.get("head_tree", "")}
             if "committers" in m:
@@ -1583,7 +1584,7 @@ def _verify_field_tree_commit(workspace: Path, commit: str) -> dict[str, object]
         }
         if m["objects"] is not None:
             row["head_tree"] = m["objects"]["head-tree"]
-            row["range_sha256"] = hashlib.sha256((m["objects"]["range.patch"] or "").encode()).hexdigest()
+            row["range_sha256"] = hashlib.sha256(_range_bytes(m["objects"]["range.patch"] or "")).hexdigest()
         measured.append(row)
     return {"commit": commit, "stored_tree": view["tree"], "recomputed_tree": view["tree"],
             "tree_matches": True, "rows": measured,

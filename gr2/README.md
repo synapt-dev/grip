@@ -156,6 +156,37 @@ Not there yet:
 - `gr2 --help` and some verb output still say "prototype" in places; the wording is being cleaned up as verbs land.
 - The Rust `gr` (gr1) still owns `spawn`, `fleet`, and `manifest` until their gr2 ports land. Everything else — workspace sync, lanes, the multi-repo slice, its review — is gr2's job; if a verb is missing or wrong there, that is a bug worth reporting, not a reason to reach for gr1.
 
+## How it was checked
+
+Everything here is a check you can run yourself from a clone of this repository.
+
+- **The walk.** The [first five minutes](#first-five-minutes) above is the
+  check behind "What works today": run it in an empty directory and compare.
+- **The test suite.** From the repository root:
+
+  ```bash
+  pip install -e "gr2[dev]"
+  cd gr2 && pytest
+  ```
+
+  This collects `gr2/tests` and `gr2/gr2/overlay/tests` (the `testpaths` in
+  `gr2/pyproject.toml`, which are relative to `gr2/`).
+- **On every push and pull request.** The `CI` workflow
+  (`.github/workflows/ci.yml`) runs on pushes and pull requests to `main`,
+  `dev` and `release/*`. Its `gr2_python` job runs the same suite on
+  Python 3.11 (the floor in `requires-python`) and 3.13, split into six
+  shards by test file. To run one shard locally:
+  `cd gr2 && GR2_TEST_SHARD=1/6 pytest`. `gr2/tests/test_ci_shards.py`
+  checks that the six shards together cover the whole suite.
+- **No stale bytecode.** After the tests, CI runs
+  `./scripts/check-no-orphan-pyc.sh`, which fails on a `.pyc` with no
+  source beside it, and `./scripts/check-no-orphan-pyc-selftest.sh`, which
+  proves that check can fail.
+- **One summary check.** The `CI` job at the end of the workflow needs every
+  job above it.
+- **Lint is reported, not gated.** `cd gr2 && ruff check .` uses the same
+  config as CI; CI prints its findings but does not fail on them yet.
+
 ## Commands
 
 The everyday commands, what `gr2 --help` shows. `gr2 help <command>` prints any command's own help, as `git help <command>` does.

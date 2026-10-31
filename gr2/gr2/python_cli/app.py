@@ -287,7 +287,7 @@ def _pr_head_review_paths(
 
 
 def _start_lane_branch(repo_name: str, repo: Path, branch: str, ref: str | None, *, seed_is_work: bool,
-                       at_pin: bool = False, say_start: bool = False) -> tuple[str, str | None]:
+                       at_pin: bool = False, say_start: bool = False, keep_seed: bool = False) -> tuple[str, str | None]:
     """Where a freshly materialized lane branch starts, and the fork base a review measures from.
 
     The clone was just made from the member's remote, so ``refs/remotes/origin/*`` is the remote as of now. A branch
@@ -302,6 +302,8 @@ def _start_lane_branch(repo_name: str, repo: Path, branch: str, ref: str | None,
     read by ``ls-remote`` now, so a new lane is not born on a stale pin. ``--at-pin`` (``at_pin``) is the explicit
     form: the branch starts at the declared pin, and when that is behind the integration ref one line says by how much. A seed holding the author's own local branch is kept where it is ("local"), so nothing is dropped.
     ``say_start`` prints that choice as one line; only ``lane create`` asks for it.
+    ``keep_seed`` keeps the seed even when the integration ref already contains it: ``review checkout-pr`` seeds
+    the lane with the fetched PR head, which a merged PR's target contains, and the review is of that head.
     Returns the fork base and how the start was chosen ("tip", "pin", "local"; None for a continued branch)."""
     head = git(repo, "rev-parse", "HEAD").stdout.strip()
     integration = f"refs/remotes/origin/{ref or 'HEAD'}"
@@ -323,7 +325,7 @@ def _start_lane_branch(repo_name: str, repo: Path, branch: str, ref: str | None,
         fork = base.stdout.strip() if base.returncode == 0 and base.stdout.strip() else head
         print(f"gr2: {repo_name}: continues origin/{branch} at {head[:12]}; fork base {fork[:12]}", file=sys.stderr)
         return fork, None
-    if seed_is_work and gitops.is_ancestor(repo, head, integration, via_cwd=True) is True:
+    if seed_is_work and not keep_seed and gitops.is_ancestor(repo, head, integration, via_cwd=True) is True:
         seed_is_work = False  # the local branch holds nothing its target lacks: there is no work to keep
     start = "local" if seed_is_work else "pin" if at_pin else "tip"
     if start == "tip":
@@ -398,7 +400,7 @@ def _lane_source_repo_root(workspace_root: Path, owner_unit: str, repo_name: str
     return source_repo_root
 
 
-def _materialize_lane_repos(workspace_root: Path, owner_unit: str, lane_name: str, *, manual_hooks: bool = False, created_checkout_roots: list | None = None, created_lane_file: list | None = None, workspace_commit: str | None = None, at_pin: bool = False, say_start: bool = False) -> None:
+def _materialize_lane_repos(workspace_root: Path, owner_unit: str, lane_name: str, *, manual_hooks: bool = False, created_checkout_roots: list | None = None, created_lane_file: list | None = None, workspace_commit: str | None = None, at_pin: bool = False, say_start: bool = False, keep_seed: bool = False) -> None:
     lane_doc = lane_proto.load_lane_doc(workspace_root, owner_unit, lane_name)
     branch_map = dict(lane_doc.get("branch_map", {}))
     if workspace_commit is None:
@@ -479,7 +481,7 @@ def _materialize_lane_repos(workspace_root: Path, owner_unit: str, lane_name: st
             if first_materialize:
                 fork_sha, start = _start_lane_branch(repo_name, target_repo_root, branch_map[repo_name],
                                                      integration_ref, seed_is_work=seed_is_work, at_pin=at_pin,
-                                                     say_start=say_start)
+                                                     say_start=say_start, keep_seed=keep_seed)
             head = git(target_repo_root, "rev-parse", "HEAD")
             head_sha = fork_sha or (head.stdout.strip() if head.returncode == 0 else "")
             if len(head_sha) == 40:
@@ -4810,7 +4812,8 @@ def review_checkout_pr(
         created_lane_file=created_lane_file,
     )
     _materialize_lane_repos(workspace_root, owner_unit, resolved_lane, manual_hooks=manual_hooks,
-                            created_checkout_roots=created_checkout_roots, created_lane_file=created_lane_file or None)
+                            created_checkout_roots=created_checkout_roots, created_lane_file=created_lane_file or None,
+                            keep_seed=True)
     lane_repo_root = _lane_repo_root(workspace_root, owner_unit, resolved_lane, repo)
     materialized_head = git(lane_repo_root, "rev-parse", "HEAD").stdout.strip()
     try:

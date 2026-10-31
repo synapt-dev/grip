@@ -934,6 +934,98 @@ def test_checking_out_a_pr_again_after_its_head_moved_refuses_and_names_close(re
     assert not lane.exists()
 
 
+def _merged_pr_world(world, monkeypatch):
+    """The checkout-pr world after the PR merged: main holds a merge commit containing the PR head and moved one
+    commit past it, the merged branch is deleted, and the fetch makes pr/7 at the PR head again."""
+    ws, app_mod = _checkout_pr_world(world, monkeypatch)
+    source, head = world["source"], world["head_sha"]
+    _run(source, "-c", "user.name=t", "-c", "user.email=t@t", "merge", "-q", "--no-ff", "-m", "merge pr 7",
+         world["review_branch"])
+    (source / "after.txt").write_text("main moved past the merge\n")
+    _run(source, "add", "after.txt")
+    _run(source, "commit", "-q", "-m", "after the merge")
+    _run(source, "push", "-q", "origin", "main")
+    _run(source, "branch", "-D", world["review_branch"])
+
+    def fetch(*_args):
+        _run(source, "branch", world["review_branch"], head)
+        return world["review_branch"]
+
+    monkeypatch.setattr(app_mod, "_prepare_review_branch", fetch)
+    tip = _run(source, "rev-parse", "main")
+    assert subprocess.run(["git", "merge-base", "--is-ancestor", head, "main"], cwd=source).returncode == 0
+    assert tip != head
+    return ws, app_mod
+
+
+def test_checkout_pr_of_a_merged_pr_opens_at_its_head_and_close_drops_it(review_world, monkeypatch):
+    """A merged PR's head is an ancestor of its target. The lane still starts at that head (start "local"), the
+    record names it, and close drops the lane. Goes red if the seed is dropped because the target contains it
+    (the lane lands on the live tip and checkout-pr refuses)."""
+    from typer.testing import CliRunner
+    from gr2.prototypes import lane_workspace_prototype as lanes
+
+    world = review_world
+    ws, app_mod = _merged_pr_world(world, monkeypatch)
+    runner = CliRunner()
+    made = runner.invoke(app_mod.app, ["review", "checkout-pr", str(ws), "atlas", "grip", "7", "--json"])
+    assert made.exit_code == 0, (made.output, made.exception)
+    shown, _end = json.JSONDecoder().raw_decode(made.output[made.output.index("{\n"):])  # a behind line follows
+    lane = Path(shown["lane_repo_root"])
+    assert _run(lane, "rev-parse", "HEAD") == world["head_sha"]
+    record = read_review_record(review_record_paths(ws, "atlas", "review-7", "grip", lane), notice=lambda _l: None)
+    assert record["head"] == world["head_sha"]
+    fork_base = lanes.load_lane_doc(ws, "atlas", "review-7")["fork_base"]["grip"]
+    assert (fork_base["sha"], fork_base["start"]) == (world["head_sha"], "local")
+    closed = runner.invoke(app_mod.app, ["review", "close", str(ws), "atlas", "grip", "7"])
+    assert closed.exit_code == 0, (closed.output, closed.exception)
+    assert not lane.exists()
+
+
+def test_checkout_pr_of_an_open_pr_still_starts_at_its_head_local(review_world, monkeypatch):
+    """An open PR's head is not in its target: the lane starts at that head, start "local", as before."""
+    from typer.testing import CliRunner
+    from gr2.prototypes import lane_workspace_prototype as lanes
+
+    world = review_world
+    ws, app_mod = _checkout_pr_world(world, monkeypatch)
+    assert subprocess.run(["git", "merge-base", "--is-ancestor", world["head_sha"], "main"],
+                          cwd=world["source"]).returncode == 1
+    made = CliRunner().invoke(app_mod.app, ["review", "checkout-pr", str(ws), "atlas", "grip", "7", "--json"])
+    assert made.exit_code == 0, (made.output, made.exception)
+    lane = Path(json.loads(made.output[made.output.index("{\n"):])["lane_repo_root"])
+    assert _run(lane, "rev-parse", "HEAD") == world["head_sha"]
+    fork_base = lanes.load_lane_doc(ws, "atlas", "review-7")["fork_base"]["grip"]
+    assert (fork_base["sha"], fork_base["start"]) == (world["head_sha"], "local")
+
+
+def test_checkout_pr_of_a_merged_pr_whose_lane_is_not_at_its_head_still_refuses(review_world, monkeypatch):
+    """Keeping the seed does not loosen the record: a lane that ends up off the fetched head is refused (rc 2, no
+    Traceback), no record is written, and the lane and the pr/7 branch this call made are both removed."""
+    from typer.testing import CliRunner
+    from gr2.prototypes import lane_workspace_prototype as lanes
+
+    world = review_world
+    ws, app_mod = _merged_pr_world(world, monkeypatch)
+    real_start = app_mod._start_lane_branch
+
+    def start_one_back(repo_name, repo, branch, *args, **kwargs):
+        started = real_start(repo_name, repo, branch, *args, **kwargs)
+        _run(repo, "checkout", "-q", "-B", branch, "HEAD~1")
+        return started
+
+    monkeypatch.setattr(app_mod, "_start_lane_branch", start_one_back)
+    made = CliRunner().invoke(app_mod.app, ["review", "checkout-pr", str(ws), "atlas", "grip", "7"])
+    assert made.exit_code == 2, (made.output, made.exception)
+    assert "not the fetched PR head" in made.output and "Traceback" not in made.output, made.output
+    lane = lanes.lane_dir(ws, "atlas", "review-7") / "repos" / "grip"
+    paths = review_record_paths(ws, "atlas", "review-7", "grip", lane)
+    assert not paths.current.exists() and not paths.legacy.exists()
+    assert not lanes.lane_dir(ws, "atlas", "review-7").exists()
+    assert subprocess.run(["git", "show-ref", "--verify", "--quiet", f"refs/heads/{world['review_branch']}"],
+                          cwd=world["source"]).returncode == 1
+
+
 def test_checkout_pr_asks_the_platform_it_is_given_for_the_pr_base(review_world, monkeypatch):
     """The base comes from the platform adapter `--platform` names, as for `review open`; github is only the
     default. A `--branch` checkout asks it too."""

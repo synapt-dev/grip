@@ -519,15 +519,24 @@ def test_adopted_full_root_with_old_binds_refuses_the_pin_by_name_and_binds_noth
     _adopt(root, monkeypatch)
     store = _legacy_bind_store(root)
     old_refs = git(root, "--git-dir", str(store), "for-each-ref")
+    old_head = git(root, "--git-dir", str(store), "rev-parse", "HEAD")
+    old_head_bytes = (store / "HEAD").read_bytes()
     _ahead(root, MEMBERS[0])
     before = _root_state(root)
     r = gr2(root, monkeypatch, "review", "pin")
     out = _out(r)
     assert r.exit_code != 0, out
     assert "legacy_binds_left_behind: " in out and str(store) in out and str(root / ".git") in out, out
-    assert f"Move {store} aside first; it holds review binds made before full mode." in out, out
+    # the next step is a NEW full root for new reviews: the old binds are the only copy and stay where they are
+    assert "Those binds stay where they are (they are the only copy)" in out, out
+    assert "start new reviews on a new full root: `gr2 store init <new dir> --mode full`." in out, out
+    assert not any(word in out.lower() for word in ("aside", "move ", "rm ", "delete", "rename")), out
     assert _root_state(root) == before and _reviews(root) == []
+    # what makes "stay where they are" true: the old store's refs and HEAD are byte-identical after the refusal; HEAD
+    # is compared as the file's bytes, so a HEAD rewritten to a detached sha of the same commit is caught too
     assert git(root, "--git-dir", str(store), "for-each-ref") == old_refs
+    assert (store / "HEAD").read_bytes() == old_head_bytes
+    assert git(root, "--git-dir", str(store), "rev-parse", "HEAD") == old_head
 
 
 @pytest.mark.parametrize("old_store", ["empty", "absent"])

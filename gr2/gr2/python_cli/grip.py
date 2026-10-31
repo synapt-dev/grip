@@ -1961,14 +1961,17 @@ def _validate_bind_store(workspace: Path, *, create: bool = False,
     A full-mode root's own `.git` is already its store: a bind there writes its ref and nothing else (no
     grip.toml, which would turn the root native for every later verb). One that still holds binds an older
     gr2 left in `.grip/.git` (any ref, or a HEAD that resolves) is refused naming both stores: gr2 reads
-    neither alone, and binding in the root's `.git` beside them would split the record. A read at a full root refuses
+    neither alone, and binding in the root's `.git` beside them would split the record. The old store stays compat
+    until it retires and is never moved (its binds are the only copy); new reviews start on a new full root. A read
+    at a full root refuses
     with the full-mode sentence after `workspace init` too, as it does before: the spec moves none of its pins."""
     if create and is_full_mode_root(workspace):
         legacy = _layout_grip_dir(workspace) / ".git"
         if legacy.is_dir() and _store_holds_anything(legacy):
             raise LegacyBindsLeftBehind(
                 f"legacy_binds_left_behind: {legacy} still holds review binds, and this full-mode root's binds live in "
-                f"{workspace / '.git'}; gr2 reads neither alone, so nothing was bound. Move {legacy} aside first; it holds review binds made before full mode."
+                f"{workspace / '.git'}; gr2 reads neither alone, so nothing was bound. Those binds stay where they are "
+                "(they are the only copy); start new reviews on a new full root: `gr2 store init <new dir> --mode full`."
             )
         return None
     if not _is_native_workspace(workspace):

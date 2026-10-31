@@ -1,0 +1,18 @@
+[package]
+name = "gr2-gix"
+version = "0.1.0"
+edition = "2021"
+description = "Optional in-process git reader for gr2 (gix behind PyO3); gr2 falls back to git when it is absent."
+license = "MIT"
+publish = false
+
+# Its own workspace: grip's root build and CI never compile this crate.
+[workspace]
+
+[lib]
+name = "gr2_gix"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.30.1", features = ["extension-module", "abi3-py310"] }
+gix = { version = "0.90.0", default-features = false, features = ["sha1"] }

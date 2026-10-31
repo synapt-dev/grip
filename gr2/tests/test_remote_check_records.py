@@ -355,10 +355,19 @@ def test_entries_reads_object_format_once_per_listing(repositories, monkeypatch)
         return original(path, *args, **kwargs)
 
     monkeypatch.setattr(check_records, '_git', count)
+    # the git reader asks git once per listing; the optional gix reader reads the format in-process
+    monkeypatch.setenv('GR2_GIX', '0')
     entries = check_records._entries(repo, snapshot)
     assert sorted(entries) == sorted(h[:2] + '/' + h[2:] for h in heads)
     assert formats == [repo]
     assert check_records._entries(repo, None) == {}
+    assert formats == [repo]
+    try:
+        import gr2_gix  # noqa: F401
+    except ImportError:
+        return
+    monkeypatch.setenv('GR2_GIX', '1')
+    assert check_records._entries(repo, snapshot) == entries
     assert formats == [repo]
 
 

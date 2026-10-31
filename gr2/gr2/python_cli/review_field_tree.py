@@ -29,6 +29,7 @@ import os
 import importlib.resources
 import re
 import subprocess
+import sys
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -476,10 +477,14 @@ class BatchReader(GitReader):
             self._index(tree)
         return list(self._trees[tree])
 
+    def ls_tree(self, root: str) -> bytes:
+        """``git ls-tree -r -t -z <root>``, byte for byte."""
+        return _git(self.repo, "ls-tree", "-r", "-t", "-z", root, env=_local())
+
     def _index(self, root: str) -> None:
         tree_at = {"": root}
         rows: list[tuple[str, Entry]] = []
-        for line in _git(self.repo, "ls-tree", "-r", "-t", "-z", root, env=_local()).split(b"\0"):
+        for line in self.ls_tree(root).split(b"\0"):
             if not line:
                 continue
             meta, raw = line.split(b"\t", 1)
@@ -576,6 +581,129 @@ class BatchReader(GitReader):
             if stdout:
                 self._cat.stdout.close()
             self._cat = None
+
+
+def _is_extension_panic(exc: BaseException) -> bool:
+    # a Rust panic inside the extension reaches Python as pyo3_runtime.PanicException, a BaseException
+    return type(exc).__name__ == "PanicException" and type(exc).__module__ == "pyo3_runtime"
+
+
+class _PanicGuard:
+    """The extension with each call guarded: a panic inside it is said in the one line and becomes an OSError,
+    which every GixReader read already answers by asking git. Any other exception passes through unchanged."""
+
+    def __init__(self, gix):
+        self._gix = gix
+
+    def __getattr__(self, name):
+        call = getattr(self._gix, name)
+
+        def guarded(*args):
+            try:
+                return call(*args)
+            except BaseException as exc:
+                if not _is_extension_panic(exc):
+                    raise
+                _note_reader(f"the fast reader panicked: {exc}")
+                raise OSError(f"gr2_gix panicked: {exc}") from exc
+
+        return guarded
+
+
+class GixReader(BatchReader):
+    """BatchReader's reads answered in-process by the optional ``gr2_gix`` extension instead of git processes.
+    It answers only what it can answer exactly as git would; anything else (an absent or wrong-kind object, an
+    oversized blob, a failure inside the extension) is asked of git through BatchReader, so every refusal keeps
+    git's own words. A blob body is re-hashed against the id asked, as BatchReader does, so an extension bug
+    cannot pass another object's bytes."""
+
+    def __init__(self, repo: Path, gix):
+        super().__init__(repo)
+        self._gix = _PanicGuard(gix)
+
+    def object_format(self) -> str:
+        return self._gix.object_format()
+
+    def kind(self, oid: str) -> str | None:
+        """The object's type, or None when it is absent or the store cannot be read (the caller asks git)."""
+        if not _FULL_OID.fullmatch(oid):
+            return None
+        try:
+            return self._gix.kind(oid)
+        except OSError:
+            return None
+
+    def rev_parse_ref(self, name: str) -> str | None:
+        """The id a direct full ref names, unpeeled; None when absent, not a full ref name, symbolic, or the
+        store cannot be read (the caller asks git)."""
+        try:
+            return self._gix.rev_parse_ref(name)
+        except (LookupError, OSError):
+            return None
+
+    def gix_ls_tree(self, root: str) -> bytes | None:
+        """``git ls-tree -r -t -z <root>`` answered in-process, or None when only git can answer it."""
+        try:
+            return bytes(self._gix.ls_tree(root))
+        except (OSError, ValueError):
+            return None
+
+    def ls_tree(self, root: str) -> bytes:
+        found = self.gix_ls_tree(root)
+        return super().ls_tree(root) if found is None else found
+
+    def blob(self, oid: str) -> bytes:
+        if not _FULL_OID.fullmatch(oid):
+            return super().blob(oid)
+        try:
+            header = self._gix.header(oid)
+            if header is None or header[0] != "blob" or header[1] > MAX_BLOB_BYTES:
+                return super().blob(oid)
+            body = bytes(self._gix.blob(oid))
+        except (OSError, ValueError):
+            return super().blob(oid)
+        if _blob_id(body, oid) != oid:
+            raise ReviewRecordError(f"git cat-file blob failed: {oid} truncated, or answered with another object's bytes")
+        return body
+
+
+_GIX_NOTED: list[str] = []
+
+
+def _note_reader(reason: str) -> None:
+    # once per process: the fallback is said, never silent, and never repeated per read
+    if not _GIX_NOTED:
+        _GIX_NOTED.append(reason)
+        print(f"gr2: fast git reader unavailable; using plain git ({reason})", file=sys.stderr)
+
+
+def reader_for(repo: Path) -> BatchReader:
+    """A GixReader when the optional ``gr2_gix`` extension imports and opens the repository, else a BatchReader.
+    GR2_GIX=0 forces the BatchReader (the rows compare both). A missing optional extra is silent: most installs
+    never add it. An explicit GR2_GIX=1, or an installed gr2_gix that fails to load, fails to open the repository
+    or panics while opening it, says so in one line."""
+    asked = os.environ.get("GR2_GIX")
+    if asked == "0":
+        return BatchReader(repo)
+    try:
+        import gr2_gix
+    except ModuleNotFoundError as exc:
+        if exc.name != "gr2_gix" or asked == "1":
+            _note_reader(str(exc))
+        return BatchReader(repo)
+    except ImportError as exc:  # installed, but it does not load
+        _note_reader(str(exc))
+        return BatchReader(repo)
+    try:
+        return GixReader(repo, gr2_gix.Reader(str(repo)))
+    except OSError as exc:
+        _note_reader(f"cannot open {repo}: {exc}")
+        return BatchReader(repo)
+    except BaseException as exc:  # a panic while opening is outside _PanicGuard, which wraps only the reads
+        if not _is_extension_panic(exc):
+            raise
+        _note_reader(f"the fast reader panicked: {exc}")
+        return BatchReader(repo)
 
 
 def entry_name(f: Field | None, number: int, wt: int, repeated: bool) -> str:

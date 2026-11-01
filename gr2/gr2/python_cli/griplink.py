@@ -763,7 +763,7 @@ def _push_members(root: Path) -> tuple[list[str], dict[str, str]]:
             continue  # the remote already holds the pin
         if tip and not _anc(mrepo, tip, pin):
             refused.append(f"{m}: the member remote moved ({branch} is {tip[:12]}, not an ancestor of the pin "
-                           f"{pin[:12]}). next: gr2 promote {m} again, then push")
+                           f"{pin[:12]}). next: gr2 promote {shlex.quote(m)} again, then push")
             continue
         plan.append((m, mrepo, url, branch, pin))
     if refused:
@@ -783,7 +783,7 @@ def _push_members(root: Path) -> tuple[list[str], dict[str, str]]:
             said = (proc.stderr or proc.stdout or "").strip()
             raise GriplinkRefusal(
                 (f"sent to their remotes: {', '.join(sent)}\n" if sent else "") +
-                f"{m}: {said}\nthe member remote moved: gr2 promote {m} again, then push; the root was not pushed", 3)
+                f"{m}: {said}\nthe member remote moved: gr2 promote {shlex.quote(m)} again, then push; the root was not pushed", 3)
         _git(mrepo, "update-ref", f"refs/remotes/origin/{branch}", pin)
         sent.append(m)
     return sent, preflight
@@ -1221,7 +1221,7 @@ def pull(root: Path, remote: str = "origin") -> dict:
         if here != was:
             m = local.split("/")[-2]
             raise GriplinkRefusal(f"{m}: the incoming side promoted {m}'s chain, and your chain has commits past "
-                                  f"{was[:12]}, which the remote carried; nothing was pulled. next: gr2 promote {m} to "
+                                  f"{was[:12]}, which the remote carried; nothing was pulled. next: gr2 promote {shlex.quote(m)} to "
                                   "keep your work, then pull again", 3)
         drops.append(local)
     updates, merged = [], []

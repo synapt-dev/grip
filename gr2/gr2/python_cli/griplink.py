@@ -1272,7 +1272,9 @@ def pull(root: Path, remote: str = "origin") -> dict:
 def promote(root: Path, m: str) -> dict:
     """The member's workspace change becomes one commit in the member's own git; the one step that writes there. Its
     tree is the pin's with the change applied, its one parent the pin, its author, committer, both dates and message
-    the change's tip GripCommit's. Then the pin moves to it, the member's STOOK is deleted, its head follows that
+    the change's tip GripCommit's; when the member's branch (13.8 q3) has moved past the pin, as the tracking ref
+    push or pull last fetched shows (no network here), the commit lands on that tip instead, 3-way from the merge
+    base, and a real conflict refuses by member and path with nothing moved (13.8 q1). Then the pin moves to it, the member's STOOK is deleted, its head follows that
     branch again (so a head held by `pin` stops holding the old change), and the STOOK and SHADOW are cut. Records are
     untouched.
 
@@ -1332,7 +1334,29 @@ def promote(root: Path, m: str) -> dict:
         _git(mrepo, "update-index", "--force-remove", "--", p, env=ienv)
     tree = _git(mrepo, "write-tree", env=ienv)
     idx.unlink()
-    sha = _git(mrepo, "commit-tree", tree, "-p", pin, input=rd(GC_MSG), env=env)
+    parent = pin
+    branch = member_branch(root, m, "promoted")
+    tip = _cur(mrepo, f"refs/remotes/origin/{branch}")
+    if tip and tip != pin and _anc(mrepo, tip, pin) is False:
+        # 13.8 q1: the member's branch moved past the pin, as push or pull last fetched it (no network here): the
+        # change lands on that tip, 3-way from the merge base, both changes in it; a real conflict moves nothing
+        mb = gitops.run(mrepo, "merge-base", pin, tip)
+        if mb.returncode:
+            raise GriplinkRefusal(f"{m}: the pin {pin[:12]} and {branch} at {tip[:12]} share no history; nothing was "
+                                  "promoted", 3)
+        change = _git(mrepo, "commit-tree", tree, "-p", pin, input=rd(GC_MSG), env=env)
+        mt = gitops.run(mrepo, "merge-tree", "--write-tree", "--name-only", "--no-messages",
+                        "--merge-base", mb.stdout.strip(), tip, change)
+        out = (mt.stdout or "").splitlines()
+        if mt.returncode == 1:
+            raise GriplinkRefusal(f"{m}: the change and {branch} at {tip[:12]} both changed {', '.join(out[1:])}; "
+                                  "nothing was promoted. next: change those paths in the workspace so they no longer "
+                                  "collide, gr2 commit -a, then promote again", 3)
+        if mt.returncode or not out:
+            raise GriplinkRefusal(f"{m}: cannot merge the change onto {branch} at {tip[:12]}: "
+                                  f"{(mt.stderr or '').strip()}; nothing was promoted", 5)
+        tree, parent = out[0], tip
+    sha = _git(mrepo, "commit-tree", tree, "-p", parent, input=rd(GC_MSG), env=env)
     # every check is behind us: now the refs move, the member's first
     _git(mrepo, "checkout", "-q", "--detach", "-f", sha)
     _git(root, "update-ref", "-d", member_ref(m))

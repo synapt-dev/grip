@@ -182,6 +182,22 @@ def member_dir(root: Path, m: str) -> Path:
     return root / f"{m}.griplink" / PIN
 
 
+def member_branch(root: Path, m: str, done: str = "pushed") -> str:
+    """The member branch promote lands on and push pushes to (13.1, 13.8 q3): the member's `branch` line in
+    .gitmodules, else main. A "." means the root's own branch, as git reads it. A value git would not take as a branch
+    name refuses by member, naming the line; nothing was `done`."""
+    got = gitops.run(root, "config", "-f", str(root / ".gitmodules"), f"submodule.{m}.branch")
+    b = (got.stdout or "").strip() if got.returncode == 0 else ""
+    if not b:
+        return "main"
+    if b == ".":
+        return MAIN[len("refs/heads/"):]
+    if b.startswith("-") or gitops.run(root, "check-ref-format", f"refs/heads/{b}").returncode:
+        raise GriplinkRefusal(f"{m}: its .gitmodules branch line {b!r} is not a branch name; nothing was {done}. next: "
+                              f"fix submodule.{m}.branch in .gitmodules, commit, then run it again", 3)
+    return b
+
+
 def _links(root: Path, tree: str) -> dict[str, str]:
     return {n[: -len(".griplink")]: s for n, (_, _, s) in _ls_tree(root, tree).items() if n.endswith(".griplink")}
 

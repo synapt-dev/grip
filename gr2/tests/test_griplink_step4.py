@@ -1,7 +1,7 @@
 """Full mode on the griplink root, step 4: promote, called as a function.
 
 Promote is the one step that writes into a member's own git: the workspace change becomes one member commit, the pin
-moves to it, and the member's STOOK goes. Carrying that deletion through push and pull is open beside 13.6 item 2.
+moves to it, and the member's STOOK goes. Push and pull carry that deletion (13.8 q4) when push_members is on: step 5.
 """
 from __future__ import annotations
 

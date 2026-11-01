@@ -721,7 +721,63 @@ def _require_remote(root: Path, remote: str, done: str, verb: str) -> None:
                               f"{shlex.quote(remote)} <url> at the root, then gr2 {shlex.quote(verb)} again", 5)
 
 
-def push(root: Path, remote: str = "origin", allow_rewind: bool = False) -> dict:
+def _push_members(root: Path) -> list[str]:
+    """13.2 push as amended 2026-10-31 (13.8 q2 and q3): send each member's pin that its own remote's branch lacks,
+    fast-forward only, before the root moves. Every member is read first: its branch is fetched from its own remote
+    (so the tracking ref promote reads is fresh), and a member whose remote moved past the pin refuses with the step.
+    Then a dry run of every push, so each member clone's own pre-push hook judges its own remote before any byte is
+    sent; a member clone with no such hook gets the dry run too, which proves reach and fast-forward only. Only then
+    the real pushes, member by member. Any refusal raises with every member named and the root not pushed. A member
+    with no checkout holds no commit made here and is skipped. Returns the members sent."""
+    plan, refused = [], []
+    for m, link in sorted(_links(root, _tree_of(root, "HEAD")).items()):
+        mrepo = member_dir(root, m)
+        if not (mrepo / ".git").exists():
+            continue
+        pin = _ls_tree(root, link)[PIN][2]
+        url = _git(root, "config", "-f", str(root / ".gitmodules"), f"submodule.{m}.url")
+        _check_url(m, url)
+        branch = member_branch(root, m)
+        track = f"refs/remotes/origin/{branch}"
+        listed = gitops.run(mrepo, "ls-remote", "--", url, f"refs/heads/{branch}")
+        if listed.returncode:
+            raise GriplinkRefusal(f"{m}: cannot read its remote: {(listed.stderr or '').strip()}; nothing was pushed", 5)
+        tip = None
+        if listed.stdout.strip():  # absent: the branch's first push
+            got = gitops.run(mrepo, "fetch", "-q", "--no-tags", "--no-write-fetch-head", "--", url,
+                             f"+refs/heads/{branch}:{track}")
+            if got.returncode:
+                raise GriplinkRefusal(f"{m}: cannot fetch its remote's {branch}: {(got.stderr or '').strip()}; nothing "
+                                      "was pushed", 5)
+            tip = _cur(mrepo, track)
+        if tip and _anc(mrepo, pin, tip):
+            continue  # the remote already holds the pin
+        if tip and not _anc(mrepo, tip, pin):
+            refused.append(f"{m}: the member remote moved ({branch} is {tip[:12]}, not an ancestor of the pin "
+                           f"{pin[:12]}). next: gr2 promote {m} again, then push")
+            continue
+        plan.append((m, mrepo, url, branch, pin))
+    if refused:
+        raise GriplinkRefusal("\n".join(refused) + "\nnothing was pushed", 3)
+    for m, mrepo, url, branch, pin in plan:
+        dry = gitops.run(mrepo, "push", "--dry-run", "--porcelain", "--", url, f"{pin}:refs/heads/{branch}")
+        if dry.returncode:
+            said = (dry.stderr or dry.stdout or "").strip()
+            raise GriplinkRefusal(f"{m}: the dry run to its remote refused: {said}\nnothing was pushed", 3)
+    sent = []
+    for m, mrepo, url, branch, pin in plan:
+        proc = gitops.run(mrepo, "push", "--porcelain", "--", url, f"{pin}:refs/heads/{branch}")
+        if proc.returncode:
+            said = (proc.stderr or proc.stdout or "").strip()
+            raise GriplinkRefusal(
+                (f"sent to their remotes: {', '.join(sent)}\n" if sent else "") +
+                f"{m}: {said}\nthe member remote moved: gr2 promote {m} again, then push; the root was not pushed", 3)
+        _git(mrepo, "update-ref", f"refs/remotes/origin/{branch}", pin)
+        sent.append(m)
+    return sent
+
+
+def push(root: Path, remote: str = "origin", allow_rewind: bool = False, push_members: bool = False) -> dict:
     """One atomic push of main, SHADOW, STOOK and every member and record ref that is ahead; never forced. Refused, with nothing
     pushed: (1) "fetch first" when the remote's shadow is not an ancestor of ours after a fresh fetch; (2) an entry
     that would move back from what the remote's shadow recorded, by entry (--allow-rewind is the recorded
@@ -774,6 +830,7 @@ def push(root: Path, remote: str = "origin", allow_rewind: bool = False) -> dict
                 raise GriplinkRefusal(
                     f"{_show(path)}: {sha[:12]} does not descend from {old[path][:12]}, which the remote shadow "
                     "recorded (a rewind; --allow-rewind records one); nothing was pushed", 3)
+    members_sent = _push_members(root) if push_members else []
     listed = gitops.run(root, "ls-remote", remote, NS + "/*")
     rem = dict(reversed(line.split("\t")) for line in (listed.stdout or "").splitlines() if "\t" in line)
     subs = [r for prefix in ("/__members__/", "/__records__/") for r in gitops.for_each_ref_rows(
@@ -804,6 +861,7 @@ def push(root: Path, remote: str = "origin", allow_rewind: bool = False) -> dict
         raise GriplinkRefusal((size_sentence(found) + "\n" if found else "") + said, 5)
     _git(root, "update-ref", f"refs/remotes/{remote}/main", _git(root, "rev-parse", MAIN))
     return {"shadow": _git(root, "rev-parse", MAIN),
+            "member_remotes": members_sent,
             "members": [r.split("/")[-2] for r in send if r.startswith(NS + "/__members__/")],
             "records": [r.split("/")[-1] for r in send if r.startswith(NS + "/__records__/")]}
 

@@ -125,3 +125,67 @@ def test_p2b_unfetched_tracking_ref_promotes_on_the_pin_with_no_network(world):
     griplink.commit(ws, "api f1", stage_all=True)
     got = griplink.promote(ws, "api")
     assert git(griplink.member_dir(ws, "api"), "rev-parse", f"{got['commit']}^@") == pin0
+
+
+def _promote_both(ws: Path) -> None:
+    _write(ws, "api", "src/f1.py", "api change 1\n")
+    _write(ws, "web", "src/f3.py", "web change 3\n")
+    griplink.commit(ws, "api and web", stage_all=True)
+    griplink.promote(ws, "api")
+    griplink.promote(ws, "web")
+
+
+def _remote_tips(w: dict) -> tuple[str, str, str]:
+    root_main = git(w["tmp"], "--git-dir", str(w["remote"]), "rev-parse", "refs/heads/main")
+    return _remote_main(w, "api"), _remote_main(w, "web"), root_main
+
+
+def test_p2_a_moved_member_remote_refuses_with_the_promote_step_and_pushes_nothing(world):
+    ws = world["ws"]
+    _promote_both(ws)  # promoted on the pin: the other desk's commit below was never fetched here
+    _other_pusher(world, "api", "src/f2.py", "other desk's f2\n")
+    before = _remote_tips(world)
+    with pytest.raises(GriplinkRefusal) as e:
+        griplink.push(ws, push_members=True)
+    assert e.value.args[0].startswith("api: the member remote moved (main is ")
+    assert "next: gr2 promote api again, then push" in e.value.args[0]
+    assert e.value.args[0].endswith("nothing was pushed")
+    assert _remote_tips(world) == before  # web was not sent either, and the root did not move
+
+
+def test_p4_a_rerun_re_sends_nothing(world):
+    ws = world["ws"]
+    _promote_both(ws)
+    assert griplink.push(ws, push_members=True)["member_remotes"] == ["api", "web"]
+    again = griplink.push(ws, push_members=True)
+    assert again["member_remotes"] == [] and again["member_preflight"] == {}
+
+
+def test_g1_a_member_hook_that_refuses_stops_the_push_before_any_member_or_the_root_moves(world):
+    ws = world["ws"]
+    _promote_both(ws)
+    hook = griplink.member_dir(ws, "web") / ".git" / "hooks" / "pre-push"
+    hook.write_text("#!/bin/sh\necho 'web: this remote is gated' >&2\nexit 1\n")
+    hook.chmod(0o755)
+    before = _remote_tips(world)
+    with pytest.raises(GriplinkRefusal) as e:
+        griplink.push(ws, push_members=True)
+    assert e.value.args[0].startswith("web: the dry run to its remote refused: ")
+    assert "web: this remote is gated" in e.value.args[0]
+    assert _remote_tips(world) == before  # api sorts first and was still not sent
+
+
+def test_g2_a_member_with_no_hook_still_gets_the_dry_run_and_is_named(world, tmp_path, monkeypatch):
+    ws = world["ws"]
+    _promote_both(ws)
+    log, shim = tmp_path / "dry.log", tmp_path / "shim"
+    shim.mkdir()
+    real = subprocess.run(["sh", "-c", "command -v git"], capture_output=True, text=True, check=True).stdout.strip()
+    (shim / "git").write_text(f'#!/bin/sh\nfor a in "$@"; do [ "$a" = --dry-run ] && pwd >> {log}; done\n'
+                              f'exec {real} "$@"\n')
+    (shim / "git").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{shim}:{__import__('os').environ['PATH']}")
+    got = griplink.push(ws, push_members=True)
+    assert got["member_preflight"] == {"api": "no pre-push hook", "web": "no pre-push hook"}
+    assert sorted(Path(p).name for p in log.read_text().split()) == [griplink.PIN, griplink.PIN]
+    assert len(log.read_text().split()) == 2

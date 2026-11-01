@@ -721,14 +721,15 @@ def _require_remote(root: Path, remote: str, done: str, verb: str) -> None:
                               f"{shlex.quote(remote)} <url> at the root, then gr2 {shlex.quote(verb)} again", 5)
 
 
-def _push_members(root: Path) -> list[str]:
+def _push_members(root: Path) -> tuple[list[str], dict[str, str]]:
     """13.2 push as amended 2026-10-31 (13.8 q2 and q3): send each member's pin that its own remote's branch lacks,
     fast-forward only, before the root moves. Every member is read first: its branch is fetched from its own remote
     (so the tracking ref promote reads is fresh), and a member whose remote moved past the pin refuses with the step.
     Then a dry run of every push, so each member clone's own pre-push hook judges its own remote before any byte is
     sent; a member clone with no such hook gets the dry run too, which proves reach and fast-forward only. Only then
     the real pushes, member by member. Any refusal raises with every member named and the root not pushed. A member
-    with no checkout holds no commit made here and is skipped. Returns the members sent."""
+    with no checkout holds no commit made here and is skipped. Returns the members sent, and for each member the
+    preflight read: "pre-push hook" or "no pre-push hook" (reach and fast-forward only, no guard)."""
     plan, refused = [], []
     for m, link in sorted(_links(root, _tree_of(root, "HEAD")).items()):
         mrepo = member_dir(root, m)
@@ -759,7 +760,10 @@ def _push_members(root: Path) -> list[str]:
         plan.append((m, mrepo, url, branch, pin))
     if refused:
         raise GriplinkRefusal("\n".join(refused) + "\nnothing was pushed", 3)
+    preflight = {}
     for m, mrepo, url, branch, pin in plan:
+        hook = mrepo / _git(mrepo, "rev-parse", "--git-path", "hooks/pre-push")  # honours core.hooksPath, as git does
+        preflight[m] = "pre-push hook" if hook.is_file() and os.access(hook, os.X_OK) else "no pre-push hook"
         dry = gitops.run(mrepo, "push", "--dry-run", "--porcelain", "--", url, f"{pin}:refs/heads/{branch}")
         if dry.returncode:
             said = (dry.stderr or dry.stdout or "").strip()
@@ -774,7 +778,7 @@ def _push_members(root: Path) -> list[str]:
                 f"{m}: {said}\nthe member remote moved: gr2 promote {m} again, then push; the root was not pushed", 3)
         _git(mrepo, "update-ref", f"refs/remotes/origin/{branch}", pin)
         sent.append(m)
-    return sent
+    return sent, preflight
 
 
 def push(root: Path, remote: str = "origin", allow_rewind: bool = False, push_members: bool = False) -> dict:
@@ -830,7 +834,7 @@ def push(root: Path, remote: str = "origin", allow_rewind: bool = False, push_me
                 raise GriplinkRefusal(
                     f"{_show(path)}: {sha[:12]} does not descend from {old[path][:12]}, which the remote shadow "
                     "recorded (a rewind; --allow-rewind records one); nothing was pushed", 3)
-    members_sent = _push_members(root) if push_members else []
+    members_sent, preflight = _push_members(root) if push_members else ([], {})
     listed = gitops.run(root, "ls-remote", remote, NS + "/*")
     rem = dict(reversed(line.split("\t")) for line in (listed.stdout or "").splitlines() if "\t" in line)
     subs = [r for prefix in ("/__members__/", "/__records__/") for r in gitops.for_each_ref_rows(
@@ -862,6 +866,7 @@ def push(root: Path, remote: str = "origin", allow_rewind: bool = False, push_me
     _git(root, "update-ref", f"refs/remotes/{remote}/main", _git(root, "rev-parse", MAIN))
     return {"shadow": _git(root, "rev-parse", MAIN),
             "member_remotes": members_sent,
+            "member_preflight": preflight,
             "members": [r.split("/")[-2] for r in send if r.startswith(NS + "/__members__/")],
             "records": [r.split("/")[-1] for r in send if r.startswith(NS + "/__records__/")]}
 

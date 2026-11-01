@@ -190,3 +190,53 @@ def test_g2_a_member_with_no_hook_still_gets_the_dry_run_and_is_named(world, tmp
     dry = log.read_text().splitlines()
     assert len(dry) == 2
     assert [any(f"remote-{m}.git" in line for line in dry) for m in ("api", "web")] == [True, True]
+
+
+def _second_desk(w: dict) -> Path:
+    """A second workspace on the same root remote, pulled once so it carries the remote's chains."""
+    ws2 = w["tmp"] / "ws2"
+    subprocess.run(["git", "clone", "-q", "--no-local", f"file://{w['remote']}", str(ws2)], check=True,
+                   capture_output=True)
+    griplink.pull(ws2)
+    griplink.checkout(ws2)
+    return ws2
+
+
+def _remote_chain(w: dict, m: str) -> str:
+    return git(w["tmp"], "ls-remote", str(w["remote"]), griplink.member_ref(m))
+
+
+def test_p5_push_deletes_the_promoted_chain_and_the_other_desks_pull_drops_it(world):
+    ws = world["ws"]
+    _write(ws, "api", "src/f1.py", "api change 1\n")
+    griplink.commit(ws, "api f1", stage_all=True)
+    griplink.push(ws)
+    assert _remote_chain(world, "api")  # the chain is on the root remote
+    ws2 = _second_desk(world)
+    assert git(ws2, "rev-parse", griplink.member_ref("api")) == git(ws, "rev-parse", griplink.member_ref("api"))
+    griplink.promote(ws, "api")
+    got = griplink.push(ws, push_members=True)
+    assert got["chains_deleted"] == ["api"] and got["member_remotes"] == ["api"]
+    assert _remote_chain(world, "api") == ""
+    pulled = griplink.pull(ws2)
+    assert pulled["dropped"] == ["api"]
+    assert git(ws2, "for-each-ref", griplink.member_ref("api")) == ""
+    assert _pin(ws2, "api") == _pin(ws, "api")
+
+
+def test_p5b_a_chain_with_this_desks_commits_past_the_carried_tip_refuses_by_member(world):
+    ws = world["ws"]
+    _write(ws, "api", "src/f1.py", "api change 1\n")
+    griplink.commit(ws, "api f1", stage_all=True)
+    griplink.push(ws)
+    ws2 = _second_desk(world)
+    _write(ws2, "api", "src/f2.py", "desk two's f2\n")
+    griplink.commit(ws2, "api f2 on desk two", stage_all=True)
+    mine_chain, mine_head = git(ws2, "rev-parse", griplink.member_ref("api")), git(ws2, "rev-parse", "HEAD")
+    griplink.promote(ws, "api")
+    griplink.push(ws, push_members=True)
+    with pytest.raises(GriplinkRefusal) as e:
+        griplink.pull(ws2)
+    assert e.value.args[0].startswith("api: the incoming side promoted api's chain, and your chain has commits past ")
+    assert "nothing was pulled. next: gr2 promote api to keep your work, then pull again" in e.value.args[0]
+    assert (git(ws2, "rev-parse", griplink.member_ref("api")), git(ws2, "rev-parse", "HEAD")) == (mine_chain, mine_head)

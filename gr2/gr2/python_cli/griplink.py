@@ -845,8 +845,12 @@ def push(root: Path, remote: str = "origin", allow_rewind: bool = False, push_me
         if there == here or (there and _anc(root, here, there) is True):
             continue
         send.append(r)
+    # 13.8 q4: a member chain the remote still carries, gone here, whose tip this root's history holds, was promoted
+    # here: the root push deletes it, by lease on that tip, so a chain another desk moved since is never deleted
+    gone = [(r, there) for r, there in sorted(rem.items()) if r.startswith(NS + "/__members__/")
+            and not _cur(root, r) and _anc(root, there, mine) is True]
     specs = [f"{MAIN}:{MAIN}", f"{SHADOW}:{SHADOW}", f"{STOOK}:{STOOK}"] + \
-        [f"{'+' if allow_rewind else ''}{r}:{r}" for r in send]
+        [f"{'+' if allow_rewind else ''}{r}:{r}" for r in send] + [f":{r}" for r, _ in gone]
     if rewound:
         # The recorded exception (10-12 design sec 5, today's push lease 2): one commit at rewound/<tip>, parent and
         # tree the tip's, its message naming each member and both shas; it rides the same atomic push.
@@ -855,7 +859,8 @@ def push(root: Path, remote: str = "origin", allow_rewind: bool = False, push_me
                       input=f"push: rewound under --allow-rewind at {mine}\n\n{lines}")
         _git(root, "update-ref", rewound_ref(mine), record)
         specs.append(f"{rewound_ref(mine)}:{rewound_ref(mine)}")
-    proc = gitops.run(root, "push", "--atomic", "--porcelain", remote, *specs)
+    leases = [f"--force-with-lease={r}:{there}" for r, there in gone]
+    proc = gitops.run(root, "push", "--atomic", "--porcelain", *leases, remote, *specs)
     if proc.returncode:
         said = (proc.stderr or proc.stdout or "").strip()
         from .grip_cli import host_size_refusal  # the parser lives with today's push; step 1 is its first caller
@@ -864,7 +869,10 @@ def push(root: Path, remote: str = "origin", allow_rewind: bool = False, push_me
                                                       for r in send if r.startswith(NS + "/__members__/")])
         raise GriplinkRefusal((size_sentence(found) + "\n" if found else "") + said, 5)
     _git(root, "update-ref", f"refs/remotes/{remote}/main", _git(root, "rev-parse", MAIN))
+    for r, _ in gone:
+        gitops.run(root, "update-ref", "-d", f"refs/remotes/{remote}/grip" + r[len(NS):])
     return {"shadow": _git(root, "rev-parse", MAIN),
+            "chains_deleted": [r.split("/")[-2] for r, _ in gone],
             "member_remotes": members_sent,
             "member_preflight": preflight,
             "members": [r.split("/")[-2] for r in send if r.startswith(NS + "/__members__/")],
@@ -1182,7 +1190,9 @@ def pull(root: Path, remote: str = "origin") -> dict:
         raise GriplinkRefusal(f"{remote} lists more than one row named {MAIN}; nothing was pulled", 5) from None
     if listed_main is None:
         return _pull_no_main(root, remote)
-    fetched = gitops.run(root, "fetch", "-q", "--no-recurse-submodules", "--no-tags", remote,
+    carried = {r: _git(root, "rev-parse", r) for r in gitops.for_each_ref_rows(
+        _git(root, "for-each-ref", "--format=%(refname)", f"{rg}/__members__/"))}  # what the remote last carried
+    fetched = gitops.run(root, "fetch", "-q", "--prune", "--no-recurse-submodules", "--no-tags", remote,
                          f"+{MAIN}:refs/remotes/{remote}/main", f"+{NS}/*:{rg}/*")
     if fetched.returncode:
         raise GriplinkRefusal(f"cannot read the remote shadow from {remote}: {(fetched.stderr or '').strip()}; nothing "
@@ -1190,6 +1200,22 @@ def pull(root: Path, remote: str = "origin") -> dict:
     theirs = _git(root, "rev-parse", f"refs/remotes/{remote}/main")
     mine = _git(root, "rev-parse", "HEAD")
     their_stook = _cur(root, f"{rg}/STOOK")
+    # 13.8 q4, the pull half: a chain the remote carried and no longer does was promoted by the incoming side; it is
+    # dropped here only if this desk added nothing past what the remote carried, else refused by member
+    drops = []
+    for r, was in sorted(carried.items()):
+        if _cur(root, r):
+            continue
+        local = NS + r[len(rg):]
+        here = _cur(root, local)
+        if not here:
+            continue
+        if here != was:
+            m = local.split("/")[-2]
+            raise GriplinkRefusal(f"{m}: the incoming side promoted {m}'s chain, and your chain has commits past "
+                                  f"{was[:12]}, which the remote carried; nothing was pulled. next: gr2 promote {m} to "
+                                  "keep your work, then pull again", 3)
+        drops.append(local)
     updates, merged = [], []
     for r in gitops.for_each_ref_rows(_git(root, "for-each-ref", "--format=%(refname)", f"{rg}/__members__/",
                                            f"{rg}/__records__/")):
@@ -1219,7 +1245,10 @@ def pull(root: Path, remote: str = "origin") -> dict:
     if up:
         for local, sha in updates:
             _git(root, "update-ref", local, sha)
-        return {"how": "up to date", "shadow": mine, "merged": merged, "updated": [u[0] for u in updates]}
+        for local in drops:
+            _git(root, "update-ref", "-d", local)
+        return {"how": "up to date", "shadow": mine, "merged": merged, "updated": [u[0] for u in updates],
+                "dropped": [d.split("/")[-2] for d in drops]}
     if ff:
         scratched = _pins_readable(root, {m: (p, theirs) for m, p in _pins(root, theirs).items()})
         try:
@@ -1229,6 +1258,8 @@ def pull(root: Path, remote: str = "origin") -> dict:
             raise
         for local, sha in updates:
             _git(root, "update-ref", local, sha)
+        for local in drops:
+            _git(root, "update-ref", "-d", local)
         for ref in (MAIN, SHADOW):
             _git(root, "update-ref", ref, theirs)
         if their_stook:
@@ -1265,12 +1296,15 @@ def pull(root: Path, remote: str = "origin") -> dict:
             _git(root, "update-index", "--add", "--cacheinfo", f"160000,{pin},{p}")
         for local, sha in updates:
             _git(root, "update-ref", local, sha)
+        for local in drops:
+            _git(root, "update-ref", "-d", local)
         _git(root, "merge", "--quit")  # the cut's soft reset refuses mid-merge; the two parents go to the cut
         _cut(root, f"pull: merge {theirs[:12]}", [mine, theirs], names=names,
              extra_stook_parents=(their_stook,) if their_stook else ())
         how = "merged"
     checkout(root, committed_from=mine)
-    return {"how": how, "shadow": _git(root, "rev-parse", "HEAD"), "merged": merged, "updated": [u[0] for u in updates]}
+    return {"how": how, "shadow": _git(root, "rev-parse", "HEAD"), "merged": merged, "updated": [u[0] for u in updates],
+            "dropped": [d.split("/")[-2] for d in drops]}
 
 
 # ---- promote (step 4) ------------------------------------------------------------------------------------------------

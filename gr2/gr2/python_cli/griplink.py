@@ -185,8 +185,10 @@ def member_dir(root: Path, m: str) -> Path:
 def member_branch(root: Path, m: str, done: str = "pushed") -> str:
     """The member branch promote lands on and push pushes to (13.1, 13.8 q3): the member's `branch` line in
     .gitmodules, else main. A "." means the root's own branch, as git reads it. A value git would not take as a branch
-    name refuses by member, naming the line; nothing was `done`."""
-    got = gitops.run(root, "config", "-f", str(root / ".gitmodules"), f"submodule.{m}.branch")
+    name refuses by member, naming the line; nothing was `done`. The line is read from the .gitmodules the root's HEAD
+    commit holds, the commit whose pins are pushed, never from an uncommitted edit of the file (a guard judging the
+    push reads that commit too)."""
+    got = gitops.run(root, "config", "--blob", "HEAD:.gitmodules", f"submodule.{m}.branch")
     b = (got.stdout or "").strip() if got.returncode == 0 else ""
     if not b:
         return "main"
@@ -725,8 +727,10 @@ def _push_members(root: Path) -> tuple[list[str], dict[str, str]]:
     """13.2 push as amended 2026-10-31 (13.8 q2 and q3): send each member's pin that its own remote's branch lacks,
     fast-forward only, before the root moves. Every member is read first: its branch is fetched from its own remote
     (so the tracking ref promote reads is fresh), and a member whose remote moved past the pin refuses with the step.
-    Then a dry run of every push, so each member clone's own pre-push hook judges its own remote before any byte is
-    sent; a member clone with no such hook gets the dry run too, which proves reach and fast-forward only. Only then
+    Each member's url and branch come from the .gitmodules in the root's HEAD commit, the commit whose pins are sent; a
+    relative url refuses. Then a dry run of every push, so each member clone's own pre-push hook judges its own remote
+    before any byte is sent; a member clone with no such hook gets the dry run too, which proves reach and fast-forward
+    only. Only then
     the real pushes, member by member. Any refusal raises with every member named and the root not pushed. A member
     with no checkout holds no commit made here and is skipped. Returns the members sent, and for each member the
     preflight read: "pre-push hook" or "no pre-push hook" (reach and fast-forward only, no guard)."""
@@ -736,8 +740,12 @@ def _push_members(root: Path) -> tuple[list[str], dict[str, str]]:
         if not (mrepo / ".git").exists():
             continue
         pin = _ls_tree(root, link)[PIN][2]
-        url = _git(root, "config", "-f", str(root / ".gitmodules"), f"submodule.{m}.url")
+        url = _git(root, "config", "--blob", "HEAD:.gitmodules", f"submodule.{m}.url")  # the pins' own commit
         _check_url(m, url)
+        if url.startswith(("./", "../")):
+            raise GriplinkRefusal(f"{m}: its .gitmodules url {url!r} is relative, and gr2 pushes a member only to a url "
+                                  f"it can name; nothing was pushed. next: set submodule.{m}.url to the member's full "
+                                  "url, commit, then push again", 3)
         branch = member_branch(root, m)
         track = f"refs/remotes/origin/{branch}"
         listed = gitops.run(mrepo, "ls-remote", "--", url, f"refs/heads/{branch}")

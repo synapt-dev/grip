@@ -25,8 +25,18 @@ def _remote_main(w: dict, m: str) -> str:
     return git(w["tmp"], "--git-dir", str(w["tmp"] / f"remote-{m}.git"), "rev-parse", "refs/heads/main")
 
 
-def _branch_line(ws: Path, m: str, value: str) -> None:
+def _branch_line(ws: Path, m: str, value: str, commit: bool = True) -> None:
+    """The member's branch line; committed by default, since gr2 reads .gitmodules from the root's HEAD commit."""
     git(ws, "config", "-f", str(ws / ".gitmodules"), f"submodule.{m}.branch", value)
+    if commit:
+        git(ws, "add", ".gitmodules")
+        git(ws, "commit", "-q", "-m", f"{m}: branch line")
+
+
+def test_q3_an_uncommitted_branch_line_is_not_read(world):
+    _branch_line(world["ws"], "api", "dev")
+    _branch_line(world["ws"], "api", "other", commit=False)
+    assert griplink.member_branch(world["ws"], "api") == "dev"
 
 
 def test_q3_branch_is_main_when_gitmodules_names_none(world):
@@ -268,3 +278,32 @@ def test_p6_a_pin_its_member_remote_does_not_serve_refuses_by_member_and_moves_n
         griplink.pull(ws2)
     assert e.value.args[0].startswith(f"api: its remote does not serve {new[:12]}; nothing was pulled.")
     assert git(ws2, "rev-parse", "HEAD") == head0
+
+
+def _url_line(ws: Path, m: str, url: str) -> None:
+    git(ws, "config", "-f", str(ws / ".gitmodules"), f"submodule.{m}.url", url)
+
+
+def test_p7_push_sends_to_the_url_head_names_never_an_uncommitted_edit(world):
+    ws = world["ws"]
+    _promote_both(ws)
+    _url_line(ws, "api", str(world["tmp"] / "nowhere.git"))  # edited in the worktree, never committed
+    got = griplink.push(ws, push_members=True)
+    assert got["member_remotes"] == ["api", "web"]
+    assert _remote_main(world, "api") == _pin(ws, "api")
+    assert not (world["tmp"] / "nowhere.git").exists()
+
+
+def test_p7b_a_relative_member_url_in_head_refuses_and_pushes_nothing(world):
+    ws = world["ws"]
+    _promote_both(ws)
+    _url_line(ws, "api", "../remote-api.git")
+    git(ws, "add", ".gitmodules")
+    git(ws, "commit", "-q", "-m", "api: a relative url")
+    before = _remote_tips(world)
+    with pytest.raises(GriplinkRefusal) as e:
+        griplink.push(ws, push_members=True)
+    assert e.value.args[0].startswith("api: its .gitmodules url '../remote-api.git' is relative, and gr2 pushes a "
+                                      "member only to a url it can name; nothing was pushed")
+    assert e.value.code == 3
+    assert _remote_tips(world) == before

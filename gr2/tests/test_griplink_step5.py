@@ -181,11 +181,12 @@ def test_g2_a_member_with_no_hook_still_gets_the_dry_run_and_is_named(world, tmp
     log, shim = tmp_path / "dry.log", tmp_path / "shim"
     shim.mkdir()
     real = subprocess.run(["sh", "-c", "command -v git"], capture_output=True, text=True, check=True).stdout.strip()
-    (shim / "git").write_text(f'#!/bin/sh\nfor a in "$@"; do [ "$a" = --dry-run ] && pwd >> {log}; done\n'
+    (shim / "git").write_text(f'#!/bin/sh\nfor a in "$@"; do [ "$a" = --dry-run ] && echo "$*" >> {log}; done\n'
                               f'exec {real} "$@"\n')
     (shim / "git").chmod(0o755)
     monkeypatch.setenv("PATH", f"{shim}:{__import__('os').environ['PATH']}")
     got = griplink.push(ws, push_members=True)
     assert got["member_preflight"] == {"api": "no pre-push hook", "web": "no pre-push hook"}
-    assert sorted(Path(p).name for p in log.read_text().split()) == [griplink.PIN, griplink.PIN]
-    assert len(log.read_text().split()) == 2
+    dry = log.read_text().splitlines()
+    assert len(dry) == 2
+    assert [any(f"remote-{m}.git" in line for line in dry) for m in ("api", "web")] == [True, True]

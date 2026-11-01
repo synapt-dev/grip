@@ -240,3 +240,31 @@ def test_p5b_a_chain_with_this_desks_commits_past_the_carried_tip_refuses_by_mem
     assert e.value.args[0].startswith("api: the incoming side promoted api's chain, and your chain has commits past ")
     assert "nothing was pulled. next: gr2 promote api to keep your work, then pull again" in e.value.args[0]
     assert (git(ws2, "rev-parse", griplink.member_ref("api")), git(ws2, "rev-parse", "HEAD")) == (mine_chain, mine_head)
+
+
+def test_p6_pull_fetches_the_promoted_pin_from_the_member_remote_before_any_ref_moves(world):
+    ws = world["ws"]
+    ws2 = _second_desk(world)
+    _write(ws, "api", "src/f1.py", "api change 1\n")
+    griplink.commit(ws, "api f1", stage_all=True)
+    new = griplink.promote(ws, "api")["commit"]
+    griplink.push(ws, push_members=True)
+    m2 = griplink.member_dir(ws2, "api")
+    assert subprocess.run(["git", "-C", str(m2), "cat-file", "-e", f"{new}^{{commit}}"]).returncode != 0
+    griplink.pull(ws2)
+    assert _pin(ws2, "api") == new and git(m2, "rev-parse", "HEAD") == new
+    assert (m2 / "src" / "f1.py").read_text() == "api change 1\n"
+
+
+def test_p6_a_pin_its_member_remote_does_not_serve_refuses_by_member_and_moves_nothing(world):
+    ws = world["ws"]
+    ws2 = _second_desk(world)
+    _write(ws, "api", "src/f1.py", "api change 1\n")
+    griplink.commit(ws, "api f1", stage_all=True)
+    new = griplink.promote(ws, "api")["commit"]
+    griplink.push(ws)  # switch off: the root moves, the member remote never gets the pin
+    head0 = git(ws2, "rev-parse", "HEAD")
+    with pytest.raises(GriplinkRefusal) as e:
+        griplink.pull(ws2)
+    assert e.value.args[0].startswith(f"api: its remote does not serve {new[:12]}; nothing was pulled.")
+    assert git(ws2, "rev-parse", "HEAD") == head0

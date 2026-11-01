@@ -847,8 +847,8 @@ def push(root: Path, remote: str = "origin", allow_rewind: bool = False, push_me
         send.append(r)
     # 13.8 q4: a member chain the remote still carries, gone here, whose tip this root's history holds, was promoted
     # here: the root push deletes it, by lease on that tip, so a chain another desk moved since is never deleted
-    gone = [(r, there) for r, there in sorted(rem.items()) if r.startswith(NS + "/__members__/")
-            and not _cur(root, r) and _anc(root, there, mine) is True]
+    gone = [(r, there) for r, there in sorted(rem.items()) if push_members and r.startswith(NS + "/__members__/")
+            and not _cur(root, r) and _anc(root, there, mine) is True]  # behind the same switch as the member push
     specs = [f"{MAIN}:{MAIN}", f"{SHADOW}:{SHADOW}", f"{STOOK}:{STOOK}"] + \
         [f"{'+' if allow_rewind else ''}{r}:{r}" for r in send] + [f":{r}" for r, _ in gone]
     if rewound:
@@ -1320,8 +1320,8 @@ def promote(root: Path, m: str) -> dict:
     Everything is read and checked before it moves any local ref: a member gr2 does not know, a member that is not
     checked out or does not hold its pin, uncommitted work in it, a change the shadow does not hold yet, and each path
     and mode of the change, all refused by name. The new commit is in the member's local git only; it reaches the
-    member's remote with the member's own push (13.6 item 2), and push and pull do not yet carry the deleted STOOK
-    (open beside it). Returns {"member", "commit", "paths", "shadow"}; with nothing to
+    member's remote with `gr2 push` when push_members is on (13.8 q2), which also deletes the old chain on the root
+    remote by lease (13.8 q4), and pull drops a chain the incoming side promoted. Returns {"member", "commit", "paths", "shadow"}; with nothing to
     promote, commit is None and nothing moves."""
     _one_branch(root, "promote")
     _check_name(m)

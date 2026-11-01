@@ -171,7 +171,8 @@ def test_a_member_not_checked_out_refuses(world):
 
 
 def test_push_after_a_promote_pushes_and_leaves_the_remote_chain_alone(world):
-    """Open beside 13.6 item 2: push and pull do not carry the deleted STOOK yet, so the remote keeps the old chain."""
+    """With push_members off (the default until the shell guard reads every member remote), push carries no member
+    and deletes no chain, so the remote keeps the old chain; with it on, step 5's P5 deletes it by lease."""
     ws, remote = world["ws"], world["remote"]
     _change(ws)
     griplink.push(ws)

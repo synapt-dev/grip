@@ -1,7 +1,7 @@
 """Full mode on the griplink root, step 4: promote, called as a function.
 
 Promote is the one step that writes into a member's own git: the workspace change becomes one member commit, the pin
-moves to it, and the member's STOOK goes. Carrying that deletion through push and pull is open beside 13.6 item 2.
+moves to it, and the member's STOOK goes. Push and pull carry that deletion (13.8 q4) when push_members is on: step 5.
 """
 from __future__ import annotations
 
@@ -171,7 +171,8 @@ def test_a_member_not_checked_out_refuses(world):
 
 
 def test_push_after_a_promote_pushes_and_leaves_the_remote_chain_alone(world):
-    """Open beside 13.6 item 2: push and pull do not carry the deleted STOOK yet, so the remote keeps the old chain."""
+    """With push_members off (the default until the shell guard reads every member remote), push carries no member
+    and deletes no chain, so the remote keeps the old chain; with it on, step 5's P5 deletes it by lease."""
     ws, remote = world["ws"], world["remote"]
     _change(ws)
     griplink.push(ws)

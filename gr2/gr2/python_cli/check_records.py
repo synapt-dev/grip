@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Mapping, Sequence
 
 from . import gitops
-from .review_field_tree import BatchReader, ReviewRecordError
+from .review_field_tree import GixReader, ReviewRecordError, reader_for
 
 CHECK_REF = "refs/dev.synapt.grip/__checks__/v1"
 
@@ -36,17 +36,35 @@ def _git(repo: Path, *args: str, data: bytes | None = None) -> bytes:
 
 class _Store:
     """One repository's reads of the check store for one invocation: the object format asked once and every blob
-    read through one ``cat-file --batch``."""
+    read through one ``cat-file --batch``, or in-process when the optional gix reader is installed (reader_for).
+    The gix reader answers only what it can answer as git would; every other answer is git's."""
 
     def __init__(self, repo: Path):
         self.repo = Path(repo)
         self._size: int | None = None
-        self._reader = BatchReader(self.repo)
+        self._reader = reader_for(self.repo)
 
     def size(self) -> int:
         if self._size is None:
-            self._size = _size(self.repo)
+            fmt = None
+            if isinstance(self._reader, GixReader):
+                try:
+                    fmt = self._reader.object_format()
+                except OSError:  # the extension failed (a panic is noted once): ask git
+                    fmt = None
+            self._size = (64 if fmt == "sha256" else 40) if fmt else _size(self.repo)
         return self._size
+
+    def is_commit(self, oid: str) -> bool:
+        """True only when the in-process reader saw a commit; False means "ask git", never "not a commit"."""
+        return isinstance(self._reader, GixReader) and self._reader.kind(oid) == "commit"
+
+    def rev_parse_ref(self, name: str) -> str | None:
+        return self._reader.rev_parse_ref(name) if isinstance(self._reader, GixReader) else None
+
+    def ls_tree(self, tree: str) -> bytes:
+        found = self._reader.gix_ls_tree(tree) if isinstance(self._reader, GixReader) else None
+        return _git(self.repo, "ls-tree", "-r", "-t", "-z", tree) if found is None else found
 
     def blob(self, oid: str) -> bytes:
         try:
@@ -73,7 +91,7 @@ def _oid(repo: Path, value: str, store: _Store | None = None) -> str:
     size = store.size() if store else _size(repo)
     if not re.fullmatch(r"[0-9a-f]{%d}" % size, value):
         raise CheckRefused("head_must_be_full_commit_id")
-    if _git(repo, "cat-file", "-t", value).strip() != b"commit":
+    if (store is None or not store.is_commit(value)) and _git(repo, "cat-file", "-t", value).strip() != b"commit":
         raise CheckRefused("head_must_be_commit")
     return value
 
@@ -139,7 +157,7 @@ def _snapshot(repo: Path, remote: str, store: _Store | None = None) -> str | Non
     fetched = None
     try:
         _git(repo, "fetch", "--no-tags", "--no-write-fetch-head", remote, f"{CHECK_REF}:{staging}")
-        fetched = _git(repo, "rev-parse", "--verify", staging).decode().strip()
+        fetched = (store and store.rev_parse_ref(staging)) or _git(repo, "rev-parse", "--verify", staging).decode().strip()
         return _oid(repo, fetched, store)
     finally:
         if fetched:
@@ -156,7 +174,7 @@ def _entries(repo: Path, snapshot: str | None, store: _Store | None = None) -> d
     seen = set()
     fanouts = []
     # Refuse unexpected tree shapes, including executable or symbolic-link blobs.
-    for raw in _git(repo, "ls-tree", "-r", "-t", "-z", snapshot).split(b"\0"):
+    for raw in store.ls_tree(snapshot).split(b"\0"):
         if not raw:
             continue
         metadata, name = raw.split(b"\t", 1)

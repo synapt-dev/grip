@@ -131,6 +131,7 @@ def test_a_raise_between_blobs_ends_the_batch_process(tmp_path, monkeypatch):
 
 def test_a_raise_mid_body_through_the_check_store_ends_the_batch_process(tmp_path, monkeypatch):
     # check_records._Store owns a BatchReader; its __exit__ must hand the raise on, not close() and wait
+    monkeypatch.setenv("GR2_GIX", "0")  # these rows watch git's batch process; the gix reader starts none
     repo, oid = _repo(tmp_path, 1 << 20)
     box: dict = {}
     orig = fd.gitops.start
@@ -170,6 +171,7 @@ def test_a_raise_mid_body_through_the_check_store_ends_the_batch_process(tmp_pat
 def test_a_swallowed_raise_mid_body_in_read_remote_check_ends_the_batch_process(tmp_path, monkeypatch):
     # _read_remote_check turns an OSError into a fail status inside `with own:`, so the store exits
     # cleanly: the reader itself must end git when the body read raises, or close() waits on it
+    monkeypatch.setenv("GR2_GIX", "0")  # these rows watch git's batch process; the gix reader starts none
     repo, oid = _repo(tmp_path, 300 << 10)
     git(repo, "add", "big")
     git(repo, "commit", "-qm", "c")
@@ -201,6 +203,7 @@ def test_a_swallowed_raise_mid_body_in_read_remote_check_ends_the_batch_process(
 def test_a_swallowed_raise_on_the_header_in_read_remote_check_ends_the_batch_process(tmp_path, monkeypatch):
     # the header read can raise before any body byte, with git blocked writing a >64 KiB answer:
     # read_remote_check swallows it inside `with own:` the same way, so the reader must end git there too
+    monkeypatch.setenv("GR2_GIX", "0")  # these rows watch git's batch process; the gix reader starts none
     repo, oid = _repo(tmp_path, 300 << 10)
     git(repo, "add", "big")
     git(repo, "commit", "-qm", "c")

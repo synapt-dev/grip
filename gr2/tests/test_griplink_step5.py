@@ -647,3 +647,48 @@ def test_u6_checkout_refuses_an_ignored_file_at_a_path_the_pin_tracks(world, tmp
         griplink.checkout(ws)
     assert exc.value.code == 3 and "checkout would overwrite build.log" in str(exc.value), str(exc.value)
     assert (api / "build.log").read_text() == "mine, ignored here\n"
+
+
+def _root_remote_refuses(w: dict) -> None:
+    hook = w["remote"] / "hooks" / "pre-receive"
+    hook.write_text("#!/bin/sh\necho 'root remote: refused by policy' >&2\nexit 1\n")
+    hook.chmod(0o755)
+
+
+def test_s1_a_root_push_refused_after_members_were_sent_names_the_members_sent(world):
+    ws = world["ws"]
+    _promote_both(ws)
+    _root_remote_refuses(world)
+    root_before = _remote_tips(world)[2]
+    with pytest.raises(GriplinkRefusal) as e:
+        griplink.push(ws, push_members=True)
+    assert e.value.code == 5
+    assert e.value.args[0].startswith("sent to their remotes: api, web\n"), e.value.args[0]
+    assert "root remote: refused by policy" in e.value.args[0]
+    assert _remote_tips(world) == (_pin(ws, "api"), _pin(ws, "web"), root_before)  # members sent, root unmoved
+
+
+def test_s2_control_a_root_push_refused_with_no_member_sent_names_none(world):
+    ws = world["ws"]
+    _promote_both(ws)
+    _root_remote_refuses(world)
+    before = _remote_tips(world)
+    with pytest.raises(GriplinkRefusal) as e:
+        griplink.push(ws)  # push_members off: no member is sent
+    assert e.value.code == 5
+    assert "sent to their remotes" not in e.value.args[0], e.value.args[0]
+    assert "root remote: refused by policy" in e.value.args[0]
+    assert _remote_tips(world) == before
+
+
+def test_s3_the_prefix_names_only_the_members_this_push_sent(world):
+    ws = world["ws"]
+    _write(ws, "api", "src/f1.py", "api change 1\n")
+    griplink.commit(ws, "api f1", stage_all=True)
+    griplink.promote(ws, "api")
+    assert _remote_main(world, "web") == _pin(ws, "web")  # web never changed: its remote already holds its pin
+    _root_remote_refuses(world)
+    with pytest.raises(GriplinkRefusal) as e:
+        griplink.push(ws, push_members=True)  # api is sent; web is not
+    assert e.value.args[0].startswith("sent to their remotes: api\n"), e.value.args[0]
+    assert _remote_main(world, "api") == _pin(ws, "api")

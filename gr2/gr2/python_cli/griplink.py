@@ -904,7 +904,8 @@ def push(root: Path, remote: str = "origin", allow_rewind: bool = False, push_me
         # only member refs go to the size parser: a record is not a member, and a wrong member is worse than none
         found = host_size_refusal(proc.stderr or "", [(r.split("/")[-2], root, _git(root, "rev-parse", r))
                                                       for r in send if r.startswith(NS + "/__members__/")])
-        raise GriplinkRefusal((size_sentence(found) + "\n" if found else "") + said, 5)
+        sent = f"sent to their remotes: {', '.join(members_sent)}\n" if members_sent else ""  # as _push_members says
+        raise GriplinkRefusal(sent + (size_sentence(found) + "\n" if found else "") + said, 5)
     _git(root, "update-ref", f"refs/remotes/{remote}/main", _git(root, "rev-parse", MAIN))
     for r, _ in gone:
         gitops.run(root, "update-ref", "-d", f"refs/remotes/{remote}/grip" + r[len(NS):])

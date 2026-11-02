@@ -80,6 +80,12 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Fixed
 
+- **`gr2`: a root push refused after members were sent names those members.** With member pushes on, `push` sends
+  each member's pin to its own remote before the root's atomic push. When the root's push then failed, the refusal
+  printed git's words only, so nothing said that some member remotes had already moved. It now begins with
+  `sent to their remotes: <members>`, the line a member refusal already prints, naming only the members this push
+  sent. Nothing is rolled back, and a re-run sends nothing for them.
+
 - **`gr2`: `promote` never overwrites a member's untracked or ignored file.** Every promote ends in a forced
   checkout in the member, so a file there that git does not track, at a path the new commit writes (or where it needs
   a directory, or a directory where it writes a file), was overwritten with no word. Promote now refuses by member and

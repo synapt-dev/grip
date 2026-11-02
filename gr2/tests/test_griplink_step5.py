@@ -451,3 +451,34 @@ def test_p8i_two_authors_whose_change_the_tip_already_holds_pin_the_tip_and_refu
     got = griplink.promote(ws, "api")
     assert (got["commit"], got["paths"]) == (other, 0)
     assert _pin(ws, "api") == other
+
+
+def _tracking_as_a_tag(mrepo: Path) -> str:
+    """The member's tracking ref removed and a TAG of the same name put at its sha, as a member remote can carry one;
+    returns that sha. git's rev-parse resolves refs/remotes/origin/main to refs/tags/refs/remotes/origin/main then."""
+    sha = git(mrepo, "rev-parse", "refs/remotes/origin/main")
+    git(mrepo, "update-ref", "-d", "refs/remotes/origin/main")
+    git(mrepo, "update-ref", "refs/tags/refs/remotes/origin/main", sha)
+    return sha
+
+
+def test_p9_a_tag_named_like_the_tracking_ref_is_not_a_moved_tip_to_reland_on(world):
+    ws = world["ws"]
+    mrepo, promoted, other = _promoted_then_remote_moved(world, "src/f3.py", "other desk's f3\n")
+    assert _tracking_as_a_tag(mrepo) == other
+    shadow0 = git(ws, "rev-parse", "HEAD")
+    assert griplink.promote(ws, "api")["commit"] is None
+    assert (_pin(ws, "api"), git(ws, "rev-parse", "HEAD")) == (promoted, shadow0)
+
+
+def test_p9b_a_change_promoted_with_only_the_lookalike_tag_lands_on_its_pin(world):
+    ws = world["ws"]
+    mrepo = griplink.member_dir(ws, "api")
+    other = _other_pusher(world, "api", "src/f3.py", "other desk's f3\n")
+    git(mrepo, "fetch", "-q", "origin")
+    pin0 = _pin(ws, "api")
+    assert _tracking_as_a_tag(mrepo) == other
+    _write(ws, "api", "src/f1.py", "api change 1\n")
+    griplink.commit(ws, "api f1", stage_all=True)
+    got = griplink.promote(ws, "api")["commit"]
+    assert git(mrepo, "rev-parse", f"{got}^@") == pin0

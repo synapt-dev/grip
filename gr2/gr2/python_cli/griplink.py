@@ -118,6 +118,11 @@ def _copy_blob(src: Path, dst: Path, sha: str) -> None:
 
 
 def _cur(repo: Path, ref: str) -> str | None:
+    """The sha a ref holds, or None. A full name (refs/...) is read as exactly that ref: rev-parse resolves a name by
+    git's dwim rules, so with refs/remotes/origin/main absent, refs/tags/refs/remotes/origin/main (a tag a member
+    remote can carry) or a local branch of that name would answer for it."""
+    if ref.startswith("refs/"):
+        return _try(repo, "show-ref", "--verify", "--hash", ref)
     return _try(repo, "rev-parse", "-q", "--verify", ref)
 
 

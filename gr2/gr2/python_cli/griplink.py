@@ -607,6 +607,44 @@ def _change_in(root: Path, shadow: str | None, m: str) -> tuple[list[tuple[str, 
     return overlay, deleted
 
 
+def _would_overwrite(mrepo: Path, tree: str, extra: list[str] = ()) -> list[str]:
+    """The member's untracked and ignored files that checking out `tree` (plus the paths in `extra`) would overwrite:
+    one at a path the tree puts a file, or where it needs a directory, or a directory where it puts a file. Plain git
+    checkout refuses the untracked ones and overwrites the ignored ones; gr2 refuses both, since an ignored file at a
+    path a tree starts tracking is still the user's own (a local .env, say)."""
+    def loose(*spec: str) -> list[str]:
+        raw = gitops.out_bytes(mrepo, "status", "--porcelain=v1", "-z", "--untracked-files=all", *spec)
+        return [e[3:] for e in raw.decode("utf-8", "surrogateescape").split("\0")
+                if len(e) > 3 and e[2] == " " and e[:2] in ("??", "!!")]
+    found = loose("--ignored=matching")
+    if not found:
+        return []
+    listed = gitops.out_bytes(mrepo, "ls-tree", "-r", "-z", "--name-only", tree)
+    # Where the member's filesystem folds case or Unicode normalization (git sets core.ignorecase and
+    # core.precomposeunicode at clone), NEW.txt and new.txt, or the NFC and NFD spellings of café.txt, are one
+    # file, so the paths are compared folded.
+    def flag(k: str) -> bool:
+        return gitops.run(mrepo, "config", "--bool", k).stdout.strip() == "true"
+    ic, nf = flag("core.ignorecase"), flag("core.precomposeunicode")
+    def fold(s: str) -> str:
+        if nf or ic:
+            s = unicodedata.normalize("NFC", s)
+        return s.casefold() if ic else s
+    wanted = set(listed.decode("utf-8", "surrogateescape").split("\0")) - {""}
+    wanted = {fold(w) for w in wanted | set(extra)}
+    # git names an ignored directory once (build/), not its files; one the tree writes into, or writes as a file, is
+    # read file by file, so a file the tree only adds beside the ignored ones refuses nothing
+    files = []
+    for u in found:
+        d = fold(u.rstrip("/"))
+        if not u.endswith("/"):
+            files.append(u)
+        elif any(w == d or w.startswith(d + "/") for w in wanted):
+            files += loose("--ignored=traditional", "--", ":(literal)" + u)
+    return [u for u in files if fold(u) in wanted or any(
+        w.startswith(fold(u) + "/") or fold(u).startswith(w + "/") for w in wanted)]
+
+
 def _plan(root: Path, rev: str, committed_from: str | None = None) -> list[tuple]:
     """Read and check what a checkout of shadow `rev` would write, writing nothing: each name, each url, each path and
     mode of each workspace change (the root's remote wrote them), and each member checkout that already exists, which
@@ -637,30 +675,16 @@ def _plan(root: Path, rev: str, committed_from: str | None = None) -> list[tuple
             if dirty:
                 raise GriplinkRefusal(f"{m}: uncommitted work in {', '.join(dirty)}; nothing was checked out. next: "
                                       "commit it into the workspace with gr2 commit, or discard it yourself", 3)
-            # An untracked file where the pin or the change puts a file (or needs a directory) would be overwritten,
-            # which plain git checkout refuses too.
             listed = gitops.run(mrepo, "ls-tree", "-r", "-z", "--name-only", e[PIN][2], binary=True)
             if listed.returncode:
                 raise GriplinkRefusal(f"{m}: its checkout does not hold the pin {e[PIN][2][:12]}; nothing was checked "
                                       "out. next: fetch in the member, then check out again", 3)
-            # Where the member's filesystem folds case or Unicode normalization (git sets core.ignorecase and
-            # core.precomposeunicode at clone), NEW.txt and new.txt, or the NFC and NFD spellings of café.txt, are one
-            # file, so the paths are compared folded.
-            def flag(k: str) -> bool:
-                return gitops.run(mrepo, "config", "--bool", k).stdout.strip() == "true"
-            ic, nf = flag("core.ignorecase"), flag("core.precomposeunicode")
-            def fold(s: str) -> str:
-                if nf or ic:
-                    s = unicodedata.normalize("NFC", s)
-                return s.casefold() if ic else s
-            wanted = set(listed.stdout.decode("utf-8", "surrogateescape").split("\0")) - {""}
-            wanted = {fold(w) for w in wanted | {p for p, _, _ in overlay}}
-            hit = [u[3:] for u in entries if u.startswith("??") and (fold(u[3:]) in wanted or any(
-                w.startswith(fold(u[3:]) + "/") or fold(u[3:]).startswith(w + "/") for w in wanted))]
+            hit = _would_overwrite(mrepo, e[PIN][2], [p for p, _, _ in overlay])
             if hit:
-                raise GriplinkRefusal(f"{m}: untracked files would be overwritten: {', '.join(hit)}; nothing was "
-                                      "checked out. next: move them aside, or add them in the member and commit "
-                                      "them into the workspace with gr2 commit", 3)
+                raise GriplinkRefusal(f"{m}: checkout would overwrite {', '.join(hit)} in the member's checkout "
+                                      "(untracked or ignored there); nothing was checked out. next: move them aside, "
+                                      "or add them in the member and commit them into the workspace with gr2 commit",
+                                      3)
         plan.append((m, url, e[PIN][2], overlay, deleted))
     return plan
 
@@ -1368,8 +1392,16 @@ def _reland_promoted(root: Path, m: str, mrepo: Path, pin: str) -> tuple[str, in
                GIT_COMMITTER_NAME=who[3], GIT_COMMITTER_EMAIL=who[4], GIT_COMMITTER_DATE="@" + who[5])
     msg = "\n\n".join(_git(mrepo, "log", "-1", "--format=%B", c).strip() for c in commits) + "\n"
     sha = _git(mrepo, "commit-tree", out[0], "-p", tip, input=msg, env=env)
-    paths = len(_git(mrepo, "diff", "--name-only", base, pin).splitlines())
+    paths = len(_git(mrepo, "diff", "--name-only", tip, sha).splitlines())
     return sha, paths
+
+
+def _refuse_overwrite(mrepo: Path, m: str, sha: str) -> None:
+    hit = _would_overwrite(mrepo, sha)
+    if hit:
+        raise GriplinkRefusal(f"{m}: promote would overwrite {', '.join(hit)} in the member's checkout (untracked or "
+                              "ignored there); nothing was promoted. next: move them aside, or add and commit them in "
+                              f"the member, then gr2 promote {shlex.quote(m)} again", 3)
 
 
 def promote(root: Path, m: str) -> dict:
@@ -1412,6 +1444,7 @@ def promote(root: Path, m: str) -> dict:
         if relanded is None:
             return {"member": m, "commit": None, "paths": 0, "shadow": shadow}
         sha, paths = relanded
+        _refuse_overwrite(mrepo, m, sha)
         _git(mrepo, "checkout", "-q", "--detach", "-f", sha)
         _git(root, "update-index", "--cacheinfo", f"160000,{sha},{m}.griplink/{PIN}")
         _set_field(root, f"{m}.griplink/{HEADF}", REFP + member_ref(m))
@@ -1469,6 +1502,7 @@ def promote(root: Path, m: str) -> dict:
             raise GriplinkRefusal(f"{m}: cannot merge the change onto {branch} at {tip[:12]}: "
                                   f"{(mt.stderr or '').strip()}; nothing was promoted", 5)
         tree, parent = out[0], tip
+    _refuse_overwrite(mrepo, m, tree)
     sha = _git(mrepo, "commit-tree", tree, "-p", parent, input=rd(GC_MSG), env=env)
     # every check is behind us: now the refs move, the member's first
     _git(mrepo, "checkout", "-q", "--detach", "-f", sha)

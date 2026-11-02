@@ -482,3 +482,168 @@ def test_p9b_a_change_promoted_with_only_the_lookalike_tag_lands_on_its_pin(worl
     griplink.commit(ws, "api f1", stage_all=True)
     got = griplink.promote(ws, "api")["commit"]
     assert git(mrepo, "rev-parse", f"{got}^@") == pin0
+
+
+def _state(ws: Path, mrepo: Path) -> tuple[str, str, str]:
+    return _pin(ws, "api"), git(mrepo, "rev-parse", "HEAD"), git(ws, "rev-parse", "HEAD")
+
+
+def test_u1_relanding_over_an_untracked_file_the_moved_tip_adds_refuses_by_path_and_moves_nothing(world):
+    ws = world["ws"]
+    mrepo, _, _ = _promoted_then_remote_moved(world, "src/elsewhere.py", "upstream\n")
+    (mrepo / "src" / "elsewhere.py").write_text("my local work\n")
+    before = _state(ws, mrepo)
+    with pytest.raises(GriplinkRefusal) as e:
+        griplink.promote(ws, "api")
+    assert e.value.args[0].startswith("api: promote would overwrite src/elsewhere.py in the member's checkout"), e.value.args[0]
+    assert "nothing was promoted. next: move them aside, or add and commit them in the member, then gr2 promote api again" in e.value.args[0]
+    assert e.value.code == 3
+    assert (mrepo / "src" / "elsewhere.py").read_text() == "my local work\n"
+    assert _state(ws, mrepo) == before
+
+
+def test_u3_a_carried_change_landing_on_a_moved_tip_over_an_untracked_file_refuses(world):
+    ws = world["ws"]
+    mrepo = griplink.member_dir(ws, "api")
+    _other_pusher(world, "api", "src/elsewhere.py", "upstream\n")
+    git(mrepo, "fetch", "-q", "origin")
+    _write(ws, "api", "src/f1.py", "api change 1\n")
+    griplink.commit(ws, "api f1", stage_all=True)
+    (mrepo / "src" / "elsewhere.py").write_text("my local work\n")
+    before = _state(ws, mrepo)
+    with pytest.raises(GriplinkRefusal) as e:
+        griplink.promote(ws, "api")
+    assert e.value.args[0].startswith("api: promote would overwrite src/elsewhere.py"), e.value.args[0]
+    assert (mrepo / "src" / "elsewhere.py").read_text() == "my local work\n"
+    assert _state(ws, mrepo) == before
+
+
+def test_u4_an_ignored_file_at_a_path_the_moved_tip_adds_refuses_too(world):
+    ws = world["ws"]
+    mrepo, _, _ = _promoted_then_remote_moved(world, "build.log", "upstream log\n")
+    with open(mrepo / ".git" / "info" / "exclude", "a") as f:
+        f.write("build.log\n")
+    (mrepo / "build.log").write_text("my ignored local file\n")
+    assert git(mrepo, "status", "--porcelain", "--untracked-files=all") == ""  # git calls it ignored, not untracked
+    before = _state(ws, mrepo)
+    with pytest.raises(GriplinkRefusal) as e:
+        griplink.promote(ws, "api")
+    assert e.value.args[0].startswith("api: promote would overwrite build.log"), e.value.args[0]
+    assert (mrepo / "build.log").read_text() == "my ignored local file\n"
+    assert _state(ws, mrepo) == before
+
+
+def test_u7_an_untracked_directory_where_the_moved_tip_adds_a_file_of_its_name_refuses(world):
+    ws = world["ws"]
+    mrepo, _, _ = _promoted_then_remote_moved(world, "docs", "upstream docs is a file\n")
+    (mrepo / "docs").mkdir()
+    (mrepo / "docs" / "x.txt").write_text("my untracked work in a directory\n")
+    before = _state(ws, mrepo)
+    with pytest.raises(GriplinkRefusal) as e:
+        griplink.promote(ws, "api")
+    assert e.value.args[0].startswith("api: promote would overwrite docs/x.txt"), e.value.args[0]
+    assert e.value.code == 3
+    assert (mrepo / "docs" / "x.txt").read_text() == "my untracked work in a directory\n"
+    assert _state(ws, mrepo) == before
+
+def test_u8_control_an_ignored_directory_the_tip_only_adds_beside_refuses_nothing(world):
+    ws = world["ws"]
+    mrepo, promoted, other = _promoted_then_remote_moved(world, "build/README", "upstream readme\n")
+    with open(mrepo / ".git" / "info" / "exclude", "a") as f:
+        f.write("build/\n")
+    (mrepo / "build" / "sub").mkdir(parents=True)
+    (mrepo / "build" / "sub" / "keep.txt").write_text("my ignored output\n")
+    got = griplink.promote(ws, "api")
+    assert git(mrepo, "rev-parse", f"{got['commit']}^@") == other
+    assert (mrepo / "build" / "sub" / "keep.txt").read_text() == "my ignored output\n"
+    assert (mrepo / "build" / "README").read_text() == "upstream readme\n"
+
+
+def test_u9_an_ignored_file_inside_an_ignored_directory_refuses_by_its_own_path(world):
+    ws = world["ws"]
+    mrepo, _, _ = _promoted_then_remote_moved(world, "build/out.txt", "upstream out\n")
+    with open(mrepo / ".git" / "info" / "exclude", "a") as f:
+        f.write("build/\n")
+    (mrepo / "build").mkdir()
+    (mrepo / "build" / "out.txt").write_text("my ignored output\n")
+    (mrepo / "build" / "other.txt").write_text("also mine\n")
+    before = _state(ws, mrepo)
+    with pytest.raises(GriplinkRefusal) as e:
+        griplink.promote(ws, "api")
+    assert e.value.args[0].startswith("api: promote would overwrite build/out.txt in the member's checkout"), e.value.args[0]
+    assert (mrepo / "build" / "out.txt").read_text() == "my ignored output\n"
+    assert _state(ws, mrepo) == before
+
+def test_u10_an_untracked_file_where_the_moved_tip_needs_a_directory_of_its_name_refuses(world):
+    ws = world["ws"]
+    mrepo, _, _ = _promoted_then_remote_moved(world, "vendor/lib.py", "upstream lib\n")
+    (mrepo / "vendor").write_text("my untracked file named vendor\n")
+    before = _state(ws, mrepo)
+    with pytest.raises(GriplinkRefusal) as e:
+        griplink.promote(ws, "api")
+    assert e.value.args[0].startswith("api: promote would overwrite vendor in the member's checkout"), e.value.args[0]
+    assert (mrepo / "vendor").read_text() == "my untracked file named vendor\n"
+    assert _state(ws, mrepo) == before
+
+def test_u11_an_ignored_directory_the_tree_never_touches_is_never_read_file_by_file(world, monkeypatch):
+    ws = world["ws"]
+    mrepo, _, other = _promoted_then_remote_moved(world, "src/elsewhere.py", "upstream\n")
+    with open(mrepo / ".git" / "info" / "exclude", "a") as f:
+        f.write("node_modules/\n")
+    (mrepo / "node_modules" / "pkg").mkdir(parents=True)
+    (mrepo / "node_modules" / "pkg" / "index.js").write_text("big and ignored\n")
+    calls = []
+    real = griplink.gitops.out_bytes
+    def spy(repo, *args, **kw):
+        calls.append(args)
+        return real(repo, *args, **kw)
+    monkeypatch.setattr(griplink.gitops, "out_bytes", spy)
+    got = griplink.promote(ws, "api")
+    assert git(mrepo, "rev-parse", f"{got['commit']}^@") == other
+    assert any("--ignored=matching" in a for a in calls), calls  # the check ran
+    assert not any("--ignored=traditional" in a for a in calls), calls
+
+def test_u5_control_an_untracked_file_nothing_writes_survives_and_promote_proceeds(world):
+    ws = world["ws"]
+    mrepo, promoted, other = _promoted_then_remote_moved(world, "src/elsewhere.py", "upstream\n")
+    (mrepo / "notes.txt").write_text("mine, nowhere in any tree\n")
+    got = griplink.promote(ws, "api")
+    assert got["commit"] not in (None, promoted)
+    assert git(mrepo, "rev-parse", f"{got['commit']}^@") == other
+    assert (mrepo / "notes.txt").read_text() == "mine, nowhere in any tree\n"
+
+
+def test_c1_a_tip_holding_part_of_the_change_reports_the_commits_own_path_count(world):
+    ws = world["ws"]
+    _write(ws, "api", "src/f1.py", "api change 1\n")
+    _write(ws, "api", "src/f2.py", "api change 2\n")
+    git(griplink.member_dir(ws, "api"), "add", "src/f2.py")
+    griplink.commit(ws, "api f1 and f2", stage_all=True)
+    griplink.promote(ws, "api")
+    _other_pusher(world, "api", "src/f1.py", "api change 1\n")  # the tip already holds f1, not f2
+    mrepo = griplink.member_dir(ws, "api")
+    git(mrepo, "fetch", "-q", "origin")
+    got = griplink.promote(ws, "api")
+    assert got["paths"] == 1, got
+    assert git(mrepo, "diff", "--name-only", f"{got['commit']}^", got["commit"]) == "src/f2.py"
+
+
+def test_u6_checkout_refuses_an_ignored_file_at_a_path_the_pin_tracks(world, tmp_path):
+    src = tmp_path / "src-api"
+    (src / "build.log").write_text("tracked at the new pin\n")
+    git(src, "add", "-f", "build.log")
+    git(src, "commit", "-q", "-m", "api: build.log")
+    git(src, "push", "-q", str(tmp_path / "remote-api.git"), "HEAD:main")
+    ws = world["ws"]
+    api = griplink.member_dir(ws, "api")
+    git(api, "pull", "-q", "--ff-only", "origin", "main")
+    git(ws, "add", "api.griplink/001.2_pin")
+    git(ws, "commit", "-q", "-m", "api pin moves")
+    git(api, "checkout", "-q", "--detach", "HEAD~1")
+    with open(api / ".git" / "info" / "exclude", "a") as f:
+        f.write("build.log\n")
+    (api / "build.log").write_text("mine, ignored here\n")
+    with pytest.raises(GriplinkRefusal) as exc:
+        griplink.checkout(ws)
+    assert exc.value.code == 3 and "checkout would overwrite build.log" in str(exc.value), str(exc.value)
+    assert (api / "build.log").read_text() == "mine, ignored here\n"

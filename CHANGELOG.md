@@ -80,6 +80,16 @@ Entries marked `gr2` are for the next gr2 release; the rest are gr1 changes, for
 
 ### Fixed
 
+- **`gr2`: `promote` never overwrites a member's untracked or ignored file.** Every promote ends in a forced
+  checkout in the member, so a file there that git does not track, at a path the new commit writes (or where it needs
+  a directory, or a directory where it writes a file), was overwritten with no word. Promote now refuses by member and
+  path, exit 3, with nothing moved. `checkout` already refused an untracked file in the way and now refuses an ignored
+  one too, which plain git would overwrite: an ignored file at a path a tree starts tracking is still the user's own.
+  An ignored directory is read file by file only where the tree writes into it, so a file the tree adds beside
+  ignored ones refuses nothing and a large ignored directory it never touches costs nothing.
+  Both refusals read `<member>: <verb> would overwrite <paths> in the member's checkout (untracked or ignored there)`.
+  A promote that re-lands on a moved tip now reports the paths its own commit changes, not the merge base's.
+
 - **`gr2`: `review open`, `show` and `verify` carry a range that is not UTF-8 byte for byte.** A range that pin
   stored with a byte that is not UTF-8 was refused by all three readers as a corrupt text field, so a pinned
   Latin-1 or high-byte hunk could not be opened. The readers now carry the range the way pin does: open rebuilds

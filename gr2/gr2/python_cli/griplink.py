@@ -118,6 +118,11 @@ def _copy_blob(src: Path, dst: Path, sha: str) -> None:
 
 
 def _cur(repo: Path, ref: str) -> str | None:
+    """The sha a ref holds, or None. A full name (refs/...) is read as exactly that ref: rev-parse resolves a name by
+    git's dwim rules, so with refs/remotes/origin/main absent, refs/tags/refs/remotes/origin/main (a tag a member
+    remote can carry) or a local branch of that name would answer for it."""
+    if ref.startswith("refs/"):
+        return _try(repo, "show-ref", "--verify", "--hash", ref)
     return _try(repo, "rev-parse", "-q", "--verify", ref)
 
 
@@ -1316,6 +1321,57 @@ def pull(root: Path, remote: str = "origin") -> dict:
 
 
 # ---- promote (step 4) ------------------------------------------------------------------------------------------------
+def _reland_promoted(root: Path, m: str, mrepo: Path, pin: str) -> tuple[str, int] | None:
+    """13.8 q1 for a change already promoted to a member commit (13.2 promote: "already a member commit the remote
+    lacks"): when the member's branch, as push or pull last fetched it (no network here), has moved past the pin and
+    does not hold it, the pin's commits land on that tip as ONE commit, 3-way from the merge base. It keeps the pin
+    commit's author, committer and both dates; only the parent and the tree change. The messages of the commits the
+    remote lacks are joined oldest first, and only when one author made them all: mixed authors refuse with nothing
+    moved, since joining would drop an author. A real conflict refuses by member and path with nothing moved.
+    When the 3-way tree equals the tip's, the branch already holds the change and the tip itself is returned with 0
+    paths, so no empty commit is written. Returns (the commit the pin moves to, the paths it carries), or None when
+    there is nothing to re-land."""
+    branch = member_branch(root, m, "promoted")
+    tip = _cur(mrepo, f"refs/remotes/origin/{branch}")
+    if not tip or tip == pin or _anc(mrepo, tip, pin) is not False or _anc(mrepo, pin, tip) is not False:
+        return None
+    mb = gitops.run(mrepo, "merge-base", pin, tip)
+    if mb.returncode:
+        raise GriplinkRefusal(f"{m}: the pin {pin[:12]} and {branch} at {tip[:12]} share no history; nothing was "
+                              "promoted", 3)
+    base = mb.stdout.strip()
+    mt =gitops.run(mrepo, "merge-tree", "--write-tree", "--name-only", "--no-messages", "--merge-base", base, tip,
+                    pin)
+    out = (mt.stdout or "").splitlines()
+    if mt.returncode == 1:
+        raise GriplinkRefusal(f"{m}: the change and {branch} at {tip[:12]} both changed {', '.join(out[1:])}; "
+                              "nothing was promoted. next: in the member's checkout, git merge "
+                              f"origin/{shlex.quote(branch)} and resolve, then gr2 commit -a, then gr2 promote "
+                              f"{shlex.quote(m)} again", 3)
+    if mt.returncode or not out:
+        raise GriplinkRefusal(f"{m}: cannot merge the change onto {branch} at {tip[:12]}: "
+                              f"{(mt.stderr or '').strip()}; nothing was promoted", 5)
+    if out[0] == _git(mrepo, "rev-parse", f"{tip}^{{tree}}"):
+        # the branch already holds the change by content (landed upstream as a rebase or squash): no commit is
+        # written, the pin moves to the tip itself, and push has nothing of this member to send
+        return tip, 0
+    # authors are counted only when a commit is to be written: a branch that already holds the change joins nothing
+    commits = _git(mrepo, "rev-list", "--reverse", f"{base}..{pin}").split()
+    authors = {_git(mrepo, "log", "-1", "--format=%an <%ae>", c) for c in commits}
+    if len(authors) > 1:
+        raise GriplinkRefusal(f"{m}: the {len(commits)} commits {branch} lacks carry {len(authors)} authors, and gr2 "
+                              "joins one author's commits only; nothing was promoted. next: in the member's checkout, "
+                              f"git rebase origin/{shlex.quote(branch)}, then gr2 commit -a, then gr2 promote "
+                              f"{shlex.quote(m)} again", 3)
+    who = _git(mrepo, "log", "-1", "--date=raw", "--format=%an%x00%ae%x00%ad%x00%cn%x00%ce%x00%cd", pin).split("\0")
+    env = dict(os.environ, GIT_AUTHOR_NAME=who[0], GIT_AUTHOR_EMAIL=who[1], GIT_AUTHOR_DATE="@" + who[2],
+               GIT_COMMITTER_NAME=who[3], GIT_COMMITTER_EMAIL=who[4], GIT_COMMITTER_DATE="@" + who[5])
+    msg = "\n\n".join(_git(mrepo, "log", "-1", "--format=%B", c).strip() for c in commits) + "\n"
+    sha = _git(mrepo, "commit-tree", out[0], "-p", tip, input=msg, env=env)
+    paths = len(_git(mrepo, "diff", "--name-only", base, pin).splitlines())
+    return sha, paths
+
+
 def promote(root: Path, m: str) -> dict:
     """The member's workspace change becomes one commit in the member's own git; the one step that writes there. Its
     tree is the pin's with the change applied, its one parent the pin, its author, committer, both dates and message
@@ -1350,7 +1406,17 @@ def promote(root: Path, m: str) -> dict:
     shadow = _git(root, "rev-parse", "HEAD")
     overlay, deleted = _change_in(root, "HEAD", m)
     if not overlay and not deleted:
-        return {"member": m, "commit": None, "paths": 0, "shadow": shadow}
+        # 13.2 promote also covers a change that is already a member commit the remote lacks: re-land it on the
+        # member's branch when that branch moved past it (13.8 q1), else there is nothing to promote
+        relanded = _reland_promoted(root, m, mrepo, pin)
+        if relanded is None:
+            return {"member": m, "commit": None, "paths": 0, "shadow": shadow}
+        sha, paths = relanded
+        _git(mrepo, "checkout", "-q", "--detach", "-f", sha)
+        _git(root, "update-index", "--cacheinfo", f"160000,{sha},{m}.griplink/{PIN}")
+        _set_field(root, f"{m}.griplink/{HEADF}", REFP + member_ref(m))
+        shadow = _cut(root, f"promote {m} -> {sha[:12]}", [shadow])[1]
+        return {"member": m, "commit": sha, "paths": paths, "shadow": shadow}
     tip = _git(root, "cat-file", "blob", e[HEADF][2])
     for p, mode, _ in overlay:
         _check_path(m, p)

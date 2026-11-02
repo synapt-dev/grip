@@ -307,3 +307,147 @@ def test_p7b_a_relative_member_url_in_head_refuses_and_pushes_nothing(world):
                                       "member only to a url it can name; nothing was pushed")
     assert e.value.code == 3
     assert _remote_tips(world) == before
+
+
+def _promoted_then_remote_moved(w: dict, path: str, text: str) -> tuple[Path, str, str]:
+    """api's change promoted to a member commit (no chain left), then another desk pushes to api's remote and this
+    desk fetches; returns (member checkout, the promoted commit, the other desk's tip)."""
+    ws = w["ws"]
+    _write(ws, "api", "src/f1.py", "api change 1\n")
+    griplink.commit(ws, "api f1", stage_all=True)
+    promoted = griplink.promote(ws, "api")["commit"]
+    other = _other_pusher(w, "api", path, text)
+    mrepo = griplink.member_dir(ws, "api")
+    git(mrepo, "fetch", "-q", "origin")
+    return mrepo, promoted, other
+
+
+def test_p8_promote_again_lands_an_already_promoted_commit_on_the_moved_tip(world, monkeypatch):
+    ws = world["ws"]
+    mrepo, promoted, other = _promoted_then_remote_moved(world, "src/f3.py", "other desk's f3\n")
+    # whoever runs the second promote, and when, must not show: a commit made with the ambient identity and clock
+    # would carry these, so the identity check below cannot pass by the two promotes sharing a second
+    for who in ("AUTHOR", "COMMITTER"):
+        monkeypatch.setenv(f"GIT_{who}_NAME", "Second Promoter")
+        monkeypatch.setenv(f"GIT_{who}_EMAIL", "second@example.invalid")
+        monkeypatch.setenv(f"GIT_{who}_DATE", "@1600000000 +0000")
+    got = griplink.promote(ws, "api")
+    assert got["commit"] not in (None, promoted)
+    assert git(mrepo, "rev-parse", f"{got['commit']}^@") == other
+    assert git(mrepo, "show", f"{got['commit']}:src/f1.py") == "api change 1"
+    assert git(mrepo, "show", f"{got['commit']}:src/f3.py") == "other desk's f3"
+    assert _pin(ws, "api") == got["commit"]
+    who = "--format=%an%n%ae%n%ad%n%cn%n%ce%n%cd%n%B"
+    assert git(mrepo, "log", "-1", "--date=raw", who, got["commit"]) == git(mrepo, "log", "-1", "--date=raw", who, promoted)
+
+
+def test_p8b_a_same_line_conflict_after_promote_refuses_by_path_and_moves_nothing(world):
+    ws = world["ws"]
+    mrepo, promoted, _ = _promoted_then_remote_moved(world, "src/f1.py", "other desk's f1\n")
+    pin0, head0, shadow0 = _pin(ws, "api"), git(mrepo, "rev-parse", "HEAD"), git(ws, "rev-parse", "HEAD")
+    assert pin0 == promoted
+    with pytest.raises(GriplinkRefusal) as e:
+        griplink.promote(ws, "api")
+    assert e.value.args[0].startswith("api: the change and main at ")
+    assert "both changed src/f1.py; nothing was promoted" in e.value.args[0]
+    assert (_pin(ws, "api"), git(mrepo, "rev-parse", "HEAD"), git(ws, "rev-parse", "HEAD")) == (pin0, head0, shadow0)
+
+
+def test_p8c_control_a_promoted_pin_the_remote_already_holds_has_nothing_to_promote(world):
+    ws = world["ws"]
+    _write(ws, "api", "src/f1.py", "api change 1\n")
+    griplink.commit(ws, "api f1", stage_all=True)
+    griplink.promote(ws, "api")
+    griplink.push(ws, push_members=True)
+    shadow0 = git(ws, "rev-parse", "HEAD")
+    assert griplink.promote(ws, "api")["commit"] is None
+    assert git(ws, "rev-parse", "HEAD") == shadow0
+
+
+def test_p8d_control_an_unfetched_moved_remote_leaves_nothing_to_promote(world):
+    ws = world["ws"]
+    _write(ws, "api", "src/f1.py", "api change 1\n")
+    griplink.commit(ws, "api f1", stage_all=True)
+    promoted = griplink.promote(ws, "api")["commit"]
+    _other_pusher(world, "api", "src/f3.py", "other desk's f3\n")  # on the remote, never fetched here
+    assert griplink.promote(ws, "api")["commit"] is None
+    assert _pin(ws, "api") == promoted
+
+
+def test_p8e_two_unpushed_promotes_land_as_one_commit_with_both_messages_oldest_first(world):
+    ws = world["ws"]
+    _write(ws, "api", "src/f1.py", "api change 1\n")
+    griplink.commit(ws, "api f1", stage_all=True)
+    griplink.promote(ws, "api")
+    mrepo = griplink.member_dir(ws, "api")
+    _write(ws, "api", "src/f4.py", "api change 4\n")
+    git(mrepo, "add", "src/f4.py")  # a new file: commit -a stages tracked paths only, as git's does
+    griplink.commit(ws, "api f4", stage_all=True)
+    griplink.promote(ws, "api")
+    other = _other_pusher(world, "api", "src/f3.py", "other desk's f3\n")
+    git(mrepo, "fetch", "-q", "origin")
+    got = griplink.promote(ws, "api")
+    assert git(mrepo, "rev-parse", f"{got['commit']}^@") == other
+    for path, text in (("src/f1.py", "api change 1"), ("src/f4.py", "api change 4"), ("src/f3.py", "other desk's f3")):
+        assert git(mrepo, "show", f"{got['commit']}:{path}") == text
+    body = git(mrepo, "log", "-1", "--format=%B", got["commit"])
+    assert "api f1" in body and "api f4" in body and body.index("api f1") < body.index("api f4"), body
+
+
+def test_p8f_commits_by_two_authors_refuse_by_member_and_move_nothing(world, monkeypatch):
+    ws = world["ws"]
+    _write(ws, "api", "src/f1.py", "api change 1\n")
+    griplink.commit(ws, "api f1", stage_all=True)
+    griplink.promote(ws, "api")
+    mrepo = griplink.member_dir(ws, "api")
+    _write(ws, "api", "src/f5.py", "by another author\n")
+    git(mrepo, "add", "src/f5.py")
+    with monkeypatch.context() as mp:  # the second change and its promote are another author's
+        mp.setenv("GIT_AUTHOR_NAME", "Other Author")
+        mp.setenv("GIT_AUTHOR_EMAIL", "other@example.invalid")
+        griplink.commit(ws, "another author's change", stage_all=True)
+    griplink.promote(ws, "api")
+    _other_pusher(world, "api", "src/f3.py", "other desk's f3\n")
+    git(mrepo, "fetch", "-q", "origin")
+    pin0, head0, shadow0 = _pin(ws, "api"), git(mrepo, "rev-parse", "HEAD"), git(ws, "rev-parse", "HEAD")
+    with pytest.raises(GriplinkRefusal) as e:
+        griplink.promote(ws, "api")
+    assert e.value.args[0].startswith("api: the 2 commits main lacks carry 2 authors"), e.value.args[0]
+    assert "git rebase origin/main, then gr2 commit -a, then gr2 promote api again" in e.value.args[0]
+    assert e.value.code == 3
+    assert (_pin(ws, "api"), git(mrepo, "rev-parse", "HEAD"), git(ws, "rev-parse", "HEAD")) == (pin0, head0, shadow0)
+
+
+def test_p8h_a_change_the_moved_tip_already_holds_writes_no_commit_and_pins_the_tip(world):
+    """The other desk lands the IDENTICAL change upstream (a rebase or squash merge). The 3-way tree equals the tip's,
+    so promote again writes no commit (none whose tree equals its parent's) and the pin moves to the tip itself."""
+    ws = world["ws"]
+    mrepo, promoted, other = _promoted_then_remote_moved(world, "src/f1.py", "api change 1\n")
+    got = griplink.promote(ws, "api")
+    assert (got["commit"], got["paths"]) == (other, 0)
+    assert _pin(ws, "api") == other
+    assert git(mrepo, "rev-parse", "HEAD") == other
+    assert git(mrepo, "rev-list", "--count", f"{other}..HEAD") == "0"
+
+
+def test_p8i_two_authors_whose_change_the_tip_already_holds_pin_the_tip_and_refuse_nothing(world, monkeypatch):
+    """Mixed authors refuse only when a commit is to be written (joining would drop one). When the moved tip already
+    holds the whole change by content, nothing is joined, so the pin moves to the tip with no refusal."""
+    ws = world["ws"]
+    _write(ws, "api", "src/f1.py", "api change 1\n")
+    griplink.commit(ws, "api f1", stage_all=True)
+    griplink.promote(ws, "api")
+    mrepo = griplink.member_dir(ws, "api")
+    _write(ws, "api", "src/f5.py", "by another author\n")
+    git(mrepo, "add", "src/f5.py")
+    with monkeypatch.context() as mp:
+        mp.setenv("GIT_AUTHOR_NAME", "Other Author")
+        mp.setenv("GIT_AUTHOR_EMAIL", "other@example.invalid")
+        griplink.commit(ws, "another author's change", stage_all=True)
+    griplink.promote(ws, "api")
+    _other_pusher(world, "api", "src/f1.py", "api change 1\n")
+    other = _other_pusher(world, "api", "src/f5.py", "by another author\n")
+    git(mrepo, "fetch", "-q", "origin")
+    got = griplink.promote(ws, "api")
+    assert (got["commit"], got["paths"]) == (other, 0)
+    assert _pin(ws, "api") == other

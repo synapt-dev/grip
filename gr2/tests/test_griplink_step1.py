@@ -512,7 +512,7 @@ def test_checkout_refuses_an_untracked_file_the_change_would_overwrite(world):
     head = git(api, "rev-parse", "HEAD")
     with pytest.raises(GriplinkRefusal) as exc:
         griplink.checkout(ws)
-    assert exc.value.code == 3 and str(exc.value).startswith("api: untracked files would be overwritten: src/mine.py"), \
+    assert exc.value.code == 3 and str(exc.value).startswith("api: checkout would overwrite src/mine.py"), \
         str(exc.value)
     assert (api / "src" / "mine.py").read_text() == "my untracked work\n"
     assert git(api, "rev-parse", "HEAD") == head
@@ -533,7 +533,7 @@ def test_checkout_refuses_an_untracked_file_at_a_path_the_pin_tracks(world, tmp_
     (api / "src" / "new.py").write_text("mine, untracked here\n")
     with pytest.raises(GriplinkRefusal) as exc:
         griplink.checkout(ws)
-    assert exc.value.code == 3 and "untracked files would be overwritten: src/new.py" in str(exc.value), str(exc.value)
+    assert exc.value.code == 3 and "checkout would overwrite src/new.py" in str(exc.value), str(exc.value)
     assert (api / "src" / "new.py").read_text() == "mine, untracked here\n"
 
 
@@ -548,7 +548,7 @@ def test_checkout_refuses_an_untracked_case_twin_of_a_path_the_change_adds(world
     (api / "NEW.txt").write_text("mine\n")
     with pytest.raises(GriplinkRefusal) as exc:
         griplink.checkout(ws)
-    assert exc.value.code == 3 and "untracked files would be overwritten: NEW.txt" in str(exc.value), str(exc.value)
+    assert exc.value.code == 3 and "checkout would overwrite NEW.txt" in str(exc.value), str(exc.value)
     assert (api / "NEW.txt").read_text() == "mine\n"
 
 
@@ -570,7 +570,7 @@ def test_checkout_refuses_an_untracked_normalization_twin_of_a_path_the_change_a
     (api / nfc).write_text("mine\n")
     with pytest.raises(GriplinkRefusal) as exc:
         griplink.checkout(ws)
-    assert exc.value.code == 3 and "untracked files would be overwritten: " in str(exc.value), str(exc.value)
+    assert exc.value.code == 3 and "checkout would overwrite " in str(exc.value), str(exc.value)
     assert (api / nfc).read_text() == "mine\n"
 
 

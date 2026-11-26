@@ -27,6 +27,7 @@ from __future__ import annotations
 from pathlib import Path
 import os
 import json
+import typing
 
 import pytest
 import typer
@@ -83,13 +84,33 @@ def _arguments(command):
     return [p for p in command.params if p.param_type_name == "argument"]
 
 
+def _kind(param) -> str:
+    """The parameter's value kind, "Int", "Path" or the type's own name, on either typer.
+
+    typer up to 0.27 hands click parameters whose `.type` is a click ParamType (IntParamType, Path).
+    typer 0.29 hands its own TyperArgument/TyperOption with no `.type`; the declared type is on
+    `type_descriptor` (`.annotation` with Optional unwrapped, `.is_path`). Each branch reads only its
+    own typer's attribute, and a parameter carrying neither raises, so no row passes on a default."""
+    if hasattr(param, "type"):
+        name = type(param.type).__name__
+        return "Int" if "Int" in name else "Path" if "Path" in name else name
+    descriptor = param.type_descriptor
+    annotation = descriptor.annotation
+    if descriptor.is_list:  # a repeated option or variadic argument: its element type, as click's .type gives
+        args = typing.get_args(annotation)
+        annotation = args[0] if args else str
+    if descriptor.is_path or (isinstance(annotation, type) and issubclass(annotation, Path)):
+        return "Path"
+    return "Int" if annotation is int else getattr(annotation, "__name__", str(annotation))
+
+
 def _words(command, tmp_path: Path, *, with_optional: bool) -> list[str]:
     """Plausible words for every positional AFTER the root: required ones, plus the optional ones."""
     words = []
     for index, param in enumerate(_arguments(command)[1:]):
         if not param.required and not with_optional:
             continue
-        kind = type(param.type).__name__
+        kind = _kind(param)
         if "Int" in kind:
             words.append("7")
         elif "Path" in kind:
@@ -105,8 +126,16 @@ def _options(command, tmp_path: Path) -> list[str]:
     out: list[str] = []
     for param in command.params:
         if param.param_type_name == "option" and param.required and param.name != "root":
-            out += [param.opts[0], str(tmp_path) if "Path" in type(param.type).__name__ else "x"]
+            out += [param.opts[0], str(tmp_path) if _kind(param) == "Path" else "x"]
     return out
+
+
+def test_kind_reads_the_element_of_a_list_of_paths():
+    """`change --repo-path` is a list of paths. Older typer gives click's element type (a Path) on `.type`;
+    typer 0.29 gives `List[Path]` on `type_descriptor` with `is_path` false. Both must read as a Path, or a
+    required list-of-paths option gets "x" instead of a directory."""
+    param = next(p for p in LEAVES["change"].params if p.name == "repo_path")
+    assert _kind(param) == "Path"
 
 
 def _parse(verb: str, args: list[str], tmp_path: Path | None = None) -> dict:
@@ -516,13 +545,16 @@ def test_review_open_named_parser_refusals(case, ws, at, tmp_path):
     args, diagnostic = {
         "double-reconstruction": ([str(ws), target, "-C", str(ws)], "given twice"),
         "double-pr": ([str(ws), "unit", "repo", "123", "-C", str(ws)], "given twice"),
-        "invalid-number": ([str(ws), "unit", "repo", "invalid"], "not a valid int"),
+        # typer's own words, which changed with typer 0.29 (pydantic's text); the part both keep is pinned
+        "invalid-number": ([str(ws), "unit", "repo", "invalid"], "invalid value for 'pr_number'"),
         "missing-legacy-root": (["unit", "repo", "123"], "is not a directory"),
         "outside": ([], "no workspace at or above"),
     }[case]
     with pytest.raises(UsageError) as exc:
         _parse("review/open", args)
     assert diagnostic in exc.value.format_message().lower()
+    if case == "invalid-number":  # typer's parse refusal, by class, on every typer this file runs on
+        assert type(exc.value).__name__ == "BadParameter"
 
 
 def test_review_open_incomplete_pr_fields_not_completed(ws, at):
